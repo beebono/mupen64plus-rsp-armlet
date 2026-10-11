@@ -26,7 +26,7 @@ because the run is killed; they are compared over the common prefix.
 | file | role |
 |---|---|
 | `build-tools.sh` | builds the test plugins (`rsp-shim.so`, `input-det.so`, `audio-adump.so`) for native / aarch64 / rg35xxsp |
-| `rsp_shim.c` | RSP shim: forwards to `$RSPT_TARGET`; `RSPT_HASH`, `RSPT_LOG` (1 Hz RSP ms), `RSPT_MARK` (at the first RSP call after a screenshot file exists: RSP ms, emulation-thread and process CPU ms) |
+| `rsp_shim.c` | RSP shim: forwards to `$RSPT_TARGET`; `RSPT_HASH`, `RSPT_LOG` (1 Hz RSP ms), `RSPT_MARK` (a comma list of screenshot files; at the first RSP call after each exists: RSP ms, emulation-thread and process CPU ms, one MARK line per file) |
 | `inp_det.c` | the deterministic pad script |
 | `device/runner.sh` | runs a list of `TAG|BUILD|ROM|KIND|LAST` lines; `ref`, `armlet`, `armlet-hle` (arMLEt with `ARMLET_GFX=hle`, exercising the ucode-id path); `e2e` or `time` runs |
 | `device/rgdsplus.sh` | ROCKNIX flavour: Wayland env, private HOME, performance governor when `PIN` is set |
@@ -137,3 +137,17 @@ second batch, passes on its wider spread). Its emulation-thread time is +0.007 /
 batches. The cause is not known and was not investigated; candidates, untested: code layout of the one-module build (the reference has rsp-hle and
 parallel-rsp in two objects), or the nead audio HLE that MK64 runs every frame. On the A53 every delta is positive (+0.007 to +0.042 ms/frame, 0.2-1.3 %); on the A55 they
 are -0.013 to +0.033 ms/frame.
+
+## Profiler checks (docs/profiling.md)
+
+The profiler and the `PRSP_HOOKS` hooks in the fork must not change what the module does. Checks, with the foir `devel` build at 88d1722:
+
+| check | result |
+|---|---|
+| the normal module of the tree with the hooks and the profiler sources against the tree before them (`git archive` of the old commits, same `scripts/build.sh`) | `.so` md5 identical for `native`, `aarch64` and `rg35xxsp` (the compiled `rsp_jit.cpp` / `cp0.cpp` objects of the rg35xxsp build are byte-identical too); the rg35xxsp `.so` is also the one phase A built |
+| the fork's own tests with the hooks in the tree (default build) | `jit_diff` (aarch64 under qemu-aarch64) `div` 26192 runs, `all` 30240, `vu` 1000: 0 mismatches; `dma_diff` 3 seeds x 30000 iterations: 0 mismatches (also compiled with `-DPRSP_HOOKS`, no hooks installed) |
+| `PRSP_SHADOW` build (`build.sh rg35xxsp --shadow`) on rgdsplus | SM64 (497 tasks) and DK64 (584 tasks): 0 differences in registers, DMEM/IMEM, CP0, RDP lists (756626 and 166429 lists) and RDRAM DMA writes; 0 stale compiled regions |
+| equivalence harness, normal module, desktop (x86_64, 900 frames) | SM64 and OoT: RSP hash stream, 6 screenshots and audio identical to the reference pairing; the reference twice agrees with itself |
+| equivalence harness, normal module, rgdsplus, SM64, 3700 frames | 5321 RSP calls, 6 of 6 screenshots, 7.99 MB of audio identical (and ref against ref) |
+| JIT code images (`PRSP_DUMP_JIT`) of five runs of SM64 on rgdsplus: normal module, profiler level 1 twice (no marker nodes), level 2 twice (marker nodes) | all 82816 bytes; any two differ only in 595 move-immediate words (1190 between different `.so` files): the absolute addresses, which ASLR moves |
+| profiler runs (levels 1, 2, 3) against the normal module | the RSP state hash streams (`RSPT_HASH`) are identical over their common prefix: desktop SM64 (724 calls; normal module, level 1, 2 with walker and task log, 3), rgdsplus SM64 (966 calls; levels 1, 2, 3), and on rgdsplus every `fit` (level 2) / `cnt` (level 3) pair of the profiling sessions (1692 to 5086 calls per game) |

@@ -68,7 +68,9 @@ EXPORT m64p_error CALL PluginGetVersion(m64p_plugin_type *type, int *version, in
 
 EXPORT unsigned int CALL DoRspCycles(unsigned int cycles)
 {
+    ARMLET_PROF_BEFORE(&l_ctx);
     hle_execute(&l_ctx.hle);
+    ARMLET_PROF_AFTER(&l_ctx);
     armlet_log_new_handler(&l_ctx);
     return cycles;
 }
@@ -91,6 +93,7 @@ EXPORT void CALL InitiateRSP(RSP_INFO info, unsigned int *cycle_count)
         armlet_log(M64MSG_INFO, "GfxMode=hle: this build has no native graphics handlers yet, graphics run on parallel-rsp");
 
     c->prsp = info;
+    ARMLET_PROF_INIT(c);
     parallelRSPInitiateRSP(c->prsp, cycle_count);
 }
 
@@ -99,5 +102,6 @@ EXPORT void CALL RomClosed(void)
     l_ctx.hle.cached_ucodes.count = 0;
     l_ctx.cached_seen = 0;
     armlet_gfx_reset();
+    ARMLET_PROF_ROMCLOSED();
     parallelRSPRomClosed();
 }

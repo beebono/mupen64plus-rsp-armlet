@@ -35,12 +35,21 @@ What is shared and what is separate compared with the two-module pairing:
 | | rsp-hle + RspFallback | arMLEt |
 |---|---|---|
 | modules | two `.so`, the fallback `dlopen`ed by rsp-hle | one `.so`; parallel-rsp's `parallelRSP*` entry points are called directly |
-| RSP_INFO to parallel-rsp | the core's, unchanged | a copy (`ctx.prsp`), unchanged today; a later profiling wrapper can swap `ProcessRdpList` / `CheckInterrupts` in the copy without touching `cp0.cpp` |
+| RSP_INFO to parallel-rsp | the core's, unchanged | a copy (`ctx.prsp`), unchanged in the normal module; the profiler build swaps `ProcessRdpList` / `CheckInterrupts` in the copy for timing wrappers, without touching `cp0.cpp` |
 | `PluginStartup` / `Shutdown` of the fallback | called, no-ops in parallel-rsp | none |
 | `RomClosed` | rsp-hle clears its ucode cache, then the fallback's `RomClosed` | the same, plus the ucode-id cache |
 | second `InitiateRSP` in one process | the fallback is unloaded and loaded again (fresh JIT) | the JIT state of the first one stays (the core calls it once per run; a front-end that reuses the process would see a warm JIT) |
 | messages | rsp-hle's, unprefixed | rsp-hle's unchanged; arMLEt's own start with `arMLEt: ` |
 | config | `Rsp-HLE` (`RspFallback` ...) | `Rsp-Armlet`, see [options.md](options.md) |
+
+## Profiler
+
+`src/prof/` is compiled only with `-DARMLET_PROFILE` (`scripts/build.sh <target> --prof`, a separate `.so`); the normal module contains none of it and is
+byte-identical to a build of the tree without it. It measures where the graphics time goes: per task (type, ucode id), the JIT address map
+and, with `--prof3`, how often every instruction of the ucode ran. It watches parallel-rsp through `ext/parallel-rsp/prsp_hooks.h`: `PRSP_HOOK_*`
+macros at region compilation (code address, size and the code offset of every instruction), VU stub and thunk creation, block lookup and
+compile time, IMEM invalidation, SP DMA, and the per-instruction counter, which expand to nothing unless `PRSP_HOOKS` is defined. Method and
+results: [profiling.md](profiling.md).
 
 ## Source layout and build
 

@@ -11,3 +11,7 @@
 .idea/
 *.swp
 *~
+
+# tools
+/tools/ucodemap/rspdis
+__pycache__/

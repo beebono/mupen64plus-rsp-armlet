@@ -34,9 +34,10 @@ scripts/build.sh rg35xxsp                 # glibc 2.31 sysroot, host GCC 13 / g+
 ```
 
 CMake and Ninja; the build runs on a copy of the sources (`work/`). The Mupen64Plus API headers are taken from `../mupen64plus-core/src/api`
-(`M64P_API_INCLUDE_DIR`). The module exports only the six plugin API functions. `-O3`, generic armv8-a, no LTO. `--prof` builds parallel-rsp's
-instruction-mix profiling variant, `--shadow` its shadow-verification variant. `scripts/build.sh ref <target>` builds the reference pairing
-that the equivalence tests compare against.
+(`M64P_API_INCLUDE_DIR`). The module exports only the six plugin API functions. `-O3`, generic armv8-a, no LTO. `--prof` and `--prof3` build
+the profiler (`src/prof`, [docs/profiling.md](docs/profiling.md)): levels 1-2, and also the per-instruction counts of level 3; `--shadow`
+builds parallel-rsp's shadow-verification variant. The profiler is not in the normal module (it is a different `.so`). `scripts/build.sh ref <target>`
+builds the reference pairing that the equivalence tests compare against.
 
 ## Layout
 
@@ -45,8 +46,11 @@ that the equivalence tests compare against.
 | `src/` | the plugin: API entry (`plugin.c`), config (`config.c`), rsp-hle callbacks and the graphics hand-off (`hle_glue.c`), dispatch and ucode identification |
 | `ext/` | submodules: `parallel-rsp` (fork, `m64p-aarch64`), `mupen64plus-rsp-hle` (upstream, pinned) |
 | `cmake/` | source lists and the drift check against the submodules |
+| `src/prof/` | the profiler: per-task statistics, the JIT address map, per-site counts (`ARMLET_PROFILE` builds only) |
 | `scripts/` | `build.sh`, `check-commit.sh` |
 | `tools/equiv/` | the equivalence harness (test plugins, device scripts, comparison) |
-| `docs/` | design, testing, options |
+| `tools/session/` | the profiling sessions (runner, device and desktop drivers) and the analysis scripts (timing tables, cost model, perf mapping, native-cost model) |
+| `tools/ucodemap/` | `ucodemap.py`: attributes the dynamic instructions of a graphics ucode to routines; `rspdis`, its decoder |
+| `docs/` | design, testing, options, profiling |
 
 Licence: GPL-2.0-or-later for arMLEt's own code; the binary is effectively GPL-3.0-or-later, see [NOTICE.md](NOTICE.md).

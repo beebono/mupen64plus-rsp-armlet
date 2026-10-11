@@ -59,4 +59,25 @@ void armlet_vlog_raw(int level, const char *fmt, va_list ap);   /* no "arMLEt: "
 /* hle_glue.c */
 void armlet_log_new_handler(struct armlet_ctx *c);
 
+
+/* profiler hooks (ARMLET_PROFILE builds only, see docs/profiling.md): nothing in the normal build */
+#ifdef ARMLET_PROFILE
+#include "prof/prof.h"
+void armlet_prof_before(struct armlet_ctx *c);
+void armlet_prof_after(struct armlet_ctx *c);
+#define ARMLET_PROF_INIT(c) armlet_prof_init(&(c)->rsp, &(c)->prsp)
+#define ARMLET_PROF_BEFORE(c) armlet_prof_before(c)
+#define ARMLET_PROF_AFTER(c) armlet_prof_after(c)
+#define ARMLET_PROF_FWD_BEGIN() armlet_prof_fwd_begin()
+#define ARMLET_PROF_FWD_END() armlet_prof_fwd_end()
+#define ARMLET_PROF_ROMCLOSED() armlet_prof_rom_closed()
+#else
+#define ARMLET_PROF_INIT(c) ((void)0)
+#define ARMLET_PROF_BEFORE(c) ((void)0)
+#define ARMLET_PROF_AFTER(c) ((void)0)
+#define ARMLET_PROF_FWD_BEGIN() ((void)0)
+#define ARMLET_PROF_FWD_END() ((void)0)
+#define ARMLET_PROF_ROMCLOSED() ((void)0)
+#endif
+
 #endif
