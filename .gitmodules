@@ -1,0 +1,7 @@
+[submodule "ext/parallel-rsp"]
+	path = ext/parallel-rsp
+	url = https://github.com/beebono/parallel-rsp
+	branch = m64p-aarch64
+[submodule "ext/mupen64plus-rsp-hle"]
+	path = ext/mupen64plus-rsp-hle
+	url = https://github.com/mupen64plus/mupen64plus-rsp-hle

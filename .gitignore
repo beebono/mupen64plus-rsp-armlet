@@ -1,0 +1,13 @@
+# build outputs
+/build*/
+/out/
+/work/
+
+# test results and ROM-derived data (regenerate locally; see docs/testing.md)
+/test-output/
+
+# editors
+.vscode/
+.idea/
+*.swp
+*~

@@ -1,0 +1,62 @@
+/*
+ * arMLEt (ARM-focused Mid-Level Emulation RSP plugin) - armlet.h
+ *
+ * Copyright (C) 2026 arMLEt contributors
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ */
+#ifndef ARMLET_H
+#define ARMLET_H
+
+#include <stdbool.h>
+#include <stdarg.h>
+#include <stdint.h>
+
+#include "m64p_types.h"
+#include "m64p_plugin.h"
+#include "hle_internal.h"
+
+#define ARMLET_MAX_ALLOW 32
+
+enum { ARMLET_GFX_LLE, ARMLET_GFX_HLE };
+
+struct armlet_config {
+    int gfx_mode;                       /* ARMLET_GFX_* */
+    unsigned n_allow;                   /* 0 = every ucode with a native handler */
+    uint64_t allow[ARMLET_MAX_ALLOW];
+};
+
+struct armlet_ctx {
+    struct hle_t hle;                   /* rsp-hle state; hle.user_defined points back here */
+    RSP_INFO rsp;                       /* as given by the core */
+    RSP_INFO prsp;                      /* the copy handed to parallel-rsp */
+    struct armlet_config cfg;
+    int cached_seen;                    /* hle.cached_ucodes.count after the last task, to log new handlers */
+};
+
+/* DMEM task header (the OSTask), DMEM words are host-endian */
+enum {
+    ARMLET_TASK_TYPE = 0xfc0,
+    ARMLET_TASK_FLAGS = 0xfc4,
+    ARMLET_TASK_UCODE_BOOT_SIZE = 0xfcc,
+    ARMLET_TASK_UCODE = 0xfd0,
+    ARMLET_TASK_UCODE_SIZE = 0xfd4,
+    ARMLET_TASK_UCODE_DATA = 0xfd8,
+    ARMLET_TASK_UCODE_DATA_SIZE = 0xfdc,
+    ARMLET_TASK_DATA_PTR = 0xff0,
+    ARMLET_TASK_DATA_SIZE = 0xff4
+};
+
+static inline uint32_t armlet_dmem32(const struct armlet_ctx *c, unsigned off)
+{
+    return *(const uint32_t *)(c->rsp.DMEM + (off & 0xffc));
+}
+
+/* log.c */
+void armlet_log_set(void (*cb)(void *, int, const char *), void *ctx);
+void armlet_log(int level, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
+void armlet_vlog_raw(int level, const char *fmt, va_list ap);   /* no "arMLEt: " prefix */
+
+/* hle_glue.c */
+void armlet_log_new_handler(struct armlet_ctx *c);
+
+#endif
