@@ -2,6 +2,7 @@
 /build*/
 /out/
 /work/
+/**/out*/
 
 # test results and ROM-derived data (regenerate locally; see docs/testing.md)
 /test-output/
