@@ -9,8 +9,8 @@ On the aarch64 handhelds a part of every frame goes to the RSP running the graph
 Lightning JIT, ahead of the RDP plugin ([foir](../../mupen64plus-rdp-foir)). Replacing that with native code (vertex transform and lighting,
 clipping, triangle setup written for NEON) would be much cheaper, but a native version of a ucode has to produce exactly the RDP command
 stream and RSP state the LLE run produces, or be correct enough to accept. That needs a safe place to plug it in, with the JIT as fallback and
-as the bit-exact reference to compare against. arMLEt is that place. Nothing native exists yet; the plugin as it stands is a drop-in for
-`mupen64plus-rsp-hle` + `RspFallback = parallel-rsp`.
+as the bit-exact reference to compare against. arMLEt is that place. With `GfxNative = off` (the default) the plugin is a drop-in for
+`mupen64plus-rsp-hle` + `RspFallback = parallel-rsp`; the routine hook is described under [Native routines](#native-routines).
 
 ## Flow of one RSP task
 
@@ -96,6 +96,77 @@ What needs no trigger, and why:
 
 The fork changes are behind `PRSP_RDP_DEFER` (`ext/parallel-rsp/prsp_rdp_defer.h`, branch `rdp-defer`): four call sites in `rsp/cp0.cpp` and `parallel.cpp`, empty macros when the
 define is absent, so the default fork build is byte-identical ([testing.md](testing.md)). The module defines the two hook functions.
+
+## Native routines
+
+Native routines replace stretches of a graphics microcode (a vertex transform, a triangle setup) with C / NEON code that works on the RSP state, while the JIT
+keeps running everything around them and stays the reference. The interface, with the exactness contract, is `src/native/native.h`; the framework is
+`src/native/native.c`; the hook in the fork is `ext/parallel-rsp/prsp_native.h` (`-DPRSP_NATIVE`, the fork's `native-hook` branch). Nothing of this runs unless
+`GfxNative` is `on` or `verify` ([options.md](options.md)).
+
+**The hook (fork).** The JIT enters a block through `blocks[pc]`, and the enter thunk looks that table up inline; only a block that is not compiled yet goes
+through `get_jit_block`. The hook lives on that miss path, so a block that has no routine costs nothing:
+
+- the host declares *entry* pcs (the first instruction of a routine) and *split* pcs (entries and static exits). On a miss at an entry pc `get_jit_block` asks the
+  host's `lookup(pc, imem)`: does a routine apply to the IMEM content as it is now? If so `blocks[pc]` gets a *stub*, a few instructions that call a thunk
+  (`native_thunk`, next to the enter and return thunks), instead of a compiled region. The thunk calls `CPU::native_enter`, which returns the block to continue in:
+  the one at the pc the host returns after running the routine, or, if the host declines (or a delay slot is pending: a stub is entered at a block boundary
+  only), the JIT's own region for the entry pc, compiled on demand.
+- A compiled region never extends across a split pc (the region ends before it and continues through the enter thunk). Without this a `j` or a fall-through
+  inside a region would reach the entry without going through `blocks[]`, and the JIT could not be stopped at an exit either.
+- The match is keyed on **content**. The stub sits in `blocks[]` like any region, so SP DMA that changes the code removes it (the existing 256-byte-block
+  invalidation), and `invalidate_code()` also removes a stub when a changed block overlaps `[dep_lo, dep_hi)` of its match (what the host's decision depended
+  on, beyond the region the JIT would compile). The next entry looks up again. The host decides on (ucode id, entry pc, FNV-1a-64 of IMEM
+  `[dep_lo, dep_hi)`): `struct armlet_routine`.
+- The *oracle*: `prsp_native_oracle(entry, stop)` runs the JIT's own code from an entry until it is about to execute `stop`, nested inside the host's `enter`
+  (`enter_frame` is re-entrant: it is the C-callable entry of the thunks). Stubs decline meanwhile; the entry pc runs the JIT region, `stop` has a one-instruction
+  block that returns `MODE_NATIVE_STOP`. A `CHECK_FLAGS` return (SP DMA into IMEM that changed code) is handled as `run_rsp_task` does: invalidate and go on,
+  unless an interrupt or a halt ends the task.
+- `prsp_native_record(1)`: `RSP_MTC0` and the DMA code emit an event for every effectful SP register write (DMA read, DMA write with an FNV hash of the bytes
+  written to RDRAM, SP_STATUS, semaphore, DPC_START, DPC_END with a hash of the list bytes, DPC_STATUS), whether the JIT or the host caused it.
+  `prsp_native_sandbox(1)`: SP DMA writes to RDRAM are done but their old bytes kept (put back by `sandbox(0)`), the RDP is not run (no `ProcessRdpList`, no
+  deferral flush). `prsp_native_save/load` copy all RSP state (GPRs, vector registers, accumulator, flags, divide unit, DMEM, IMEM, SP/DPC registers, interrupt flag,
+  the status-poll counters, the JIT pc and delay-slot state) to and from a `PrspNativeSnap`.
+
+With `PRSP_NATIVE` undefined the fork compiles to the same object code as before (md5s of every object and the `.so` are identical to the base commit; [testing.md](testing.md)).
+
+**The routine.** `int run(struct armlet_env *e)`: `e->rsp` is a view of the JIT's state (GPRs, vector registers, accumulator, flags, divide unit, DMEM words, IMEM), the
+return value is the pc to continue at, or `ARMLET_NATIVE_DECLINE` with the state untouched. The routine never touches RDRAM or the RDP: `armlet_mtc0`, `armlet_mfc0`,
+`armlet_dma_read` and `armlet_dma_write` do what the microcode's `mtc0` / `mfc0` sequences do (the fork's own DMA code, the same RDP-list path with its
+coalescing), so verify mode can sandbox them. Routines register themselves with `ARMLET_ROUTINE(x) = { ... }` into the section `armlet_routines`; a family adds one
+file under `src/native/` and touches nothing shared.
+
+**The exactness contract.** When a routine returns the pc P, the machine is what the microcode run from the entry up to its first arrival at P leaves:
+
+| state | compared |
+|---|---|
+| GPRs `sr[1..31]`, vector registers `vr[0..31]`, accumulator (HI, MD, LO), VCO / VCC / VCE, `div_out` / `div_in` / `dp_flag` | all, unless the routine declares them dead (below) |
+| DMEM, IMEM | all 4 KiB each |
+| the SP / DPC registers | final values (the DPC registers are the video plugin's once a list was submitted: compared through the events) |
+| the effectful SP register writes | the same sequence: DMA reads (addresses, length register), DMA writes (and the hash of the bytes written to RDRAM), DPC_START / DPC_END (and the hash of the list), SP_STATUS, semaphore |
+| the status-poll counters (`MFC0` of SP_STATUS), `SP_STATUS_TIMEOUT`, the interrupt flag, IMEM dirty bits (if neither side did IMEM DMA) | equal |
+| the exit pc, no delay slot pending | equal |
+
+A routine may declare live-out masks (`dead_sr`, `dead_vr`, `dead_acc`, `dead_flags`, `dead_div`): state the code at the routine's exits overwrites before reading it, so that
+the native routine need not compute it. Verify excludes exactly these; `ARMLET_NATIVE_POISON=1` overwrites them with a pattern after the routine, so that a wrong
+claim shows up downstream (RSP hash stream, screenshots). The default, and the goal, is full equality.
+
+**Verify mode** (`GfxNative=verify`, for tests): at every entry the framework saves the state, runs the routine in the sandbox with recording on, puts the
+state and RDRAM back, runs the JIT's code to the routine's exit with recording on (this is the run that stands: the machine always continues from the JIT's
+result), saves, and compares. The first differences are reported with their values (`native %s MISMATCH`, the registers, vector lanes, DMEM words, the
+first differing SP write); `ARMLET_NATIVE_ABORT=1` aborts at the first one, `ARMLET_NATIVE_CAPTURE=<dir>` writes snapshot files of entries (and of mismatches).
+A routine that declines must leave the state as it found it: verify checks that too. If the JIT run does not arrive at the pc the routine returned (a wrong exit)
+that is a mismatch as well.
+
+**Offline harness** (`tools/native/replay.c`, `scripts/build.sh <target> --tools` -> `armlet-native-replay`): a snapshot file holds the entry state (`PrspNativeSnap`: RSP state, DMEM,
+IMEM), the RDRAM rows the routine's DMA reads read, and the state and effect log the JIT left. The program loads it into a private RSP (the fork's `JIT::CPU`, private RDRAM)
+and runs the same verify as the module does, then checks that the JIT's result still equals the recorded one. `--bench N` times the routine and the JIT's code for the same
+stretch from the snapshot, N times each. Snapshots come from any run with `ARMLET_NATIVE_CAPTURE=<dir>` and are ROM-derived: keep them in the git-ignored `test-output/`.
+
+**Selection.** Each graphics task identifies its ucode as before (`gfx_ucode.c`); when the id changes, the routines of that ucode that the allow-list admits
+(`GfxNativeRoutines`) are selected and their entry and exit pcs given to the fork (which drops its compiled blocks only if the sets changed). A routine named
+`test.*` is only selected when the allow-list names it. DMEM data that a routine relies on being constant is the routine's business: it reads it from DMEM per
+call, or checks it (ucode id and IMEM content identify the code, not the data segment).
 
 ## Profiler
 

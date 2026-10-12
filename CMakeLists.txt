@@ -17,6 +17,8 @@ set(M64P_API_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../mupen64plus-core/src/ap
     "Directory with m64p_types.h / m64p_plugin.h")
 option(ARMLET_PRSP_PROFILE "parallel-rsp dynamic instruction-mix profiling (-DPRSP_PROFILE)" OFF)
 option(ARMLET_PROFILE "the profiler (src/prof, docs/profiling.md): per-task stats, the JIT address map; with ARMLET_PRSP_PROFILE also per-site counts" OFF)
+option(ARMLET_NATIVE "native microcode routines (src/native; needs the fork's prsp_native.h hook, -DPRSP_NATIVE); inert unless GfxNative is on" ON)
+set(ARMLET_NATIVE_MUTATE 0 CACHE STRING "test builds only: a deliberate error in the test.dma routine (src/native/test_dma.c), to show that verify catches it")
 option(ARMLET_RDP_DEFER "coalescing of the RDP list calls (needs the fork's prsp_rdp_defer.h hooks, -DPRSP_RDP_DEFER); OFF builds the module without it" ON)
 set(ARMLET_RDP_MUTATE 0 CACHE STRING "test builds only: drop safeguard N of the RDP-list coalescing (src/rdp_defer.c)")
 option(ARMLET_PRSP_SHADOW "parallel-rsp shadow verification: every task is replayed on a second JIT (-DPRSP_SHADOW)" OFF)
@@ -50,6 +52,11 @@ list(TRANSFORM ARMLET_HLE_C PREPEND "${ARMLET_HLE_DIR}/src/" OUTPUT_VARIABLE hle
 set(armlet_c
     src/plugin.c src/config.c src/hle_glue.c src/dispatch.c src/gfx_ucode.c src/log.c src/rdp_defer.c)
 
+if(ARMLET_NATIVE)
+    file(GLOB armlet_native_c CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/native/*.c")
+    list(APPEND armlet_c ${armlet_native_c})
+endif()
+
 set(armlet_cpp)
 if(ARMLET_PROFILE)
     list(APPEND armlet_c src/prof/prof_glue.c)
@@ -80,6 +87,13 @@ target_compile_definitions(mupen64plus-rsp-armlet PRIVATE
 if(ARMLET_RDP_DEFER)
     target_compile_definitions(mupen64plus-rsp-armlet PRIVATE ARMLET_RDP_DEFER "$<$<COMPILE_LANGUAGE:CXX>:PRSP_RDP_DEFER>")
 endif()
+if(ARMLET_NATIVE_MUTATE)
+    set_source_files_properties(src/native/test_dma.c PROPERTIES COMPILE_DEFINITIONS ARMLET_NATIVE_MUTATE=${ARMLET_NATIVE_MUTATE})
+endif()
+if(ARMLET_NATIVE)
+    target_compile_definitions(mupen64plus-rsp-armlet PRIVATE ARMLET_NATIVE "$<$<COMPILE_LANGUAGE:CXX>:PRSP_NATIVE>")
+    target_include_directories(mupen64plus-rsp-armlet PRIVATE "$<$<COMPILE_LANGUAGE:C>:${ARMLET_PRSP_DIR}>")
+endif()
 if(ARMLET_RDP_MUTATE)
     target_compile_definitions(mupen64plus-rsp-armlet PRIVATE ARMLET_RDP_MUTATE=${ARMLET_RDP_MUTATE})
 endif()
@@ -107,6 +121,21 @@ set_source_files_properties(${armlet_c} PROPERTIES COMPILE_OPTIONS "-Wextra;-Wno
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64|ARM64")
     set_source_files_properties("${ARMLET_PRSP_DIR}/rsp/vu_inline.cpp" PROPERTIES COMPILE_FLAGS
         "-ffixed-x9 -ffixed-x10 -ffixed-x11 -ffixed-x12 -ffixed-x13 -ffixed-x14 -ffixed-x15 -ffixed-x18 -ffixed-x20 -ffixed-x21 -ffixed-x22 -ffixed-x23 -ffixed-x24 -ffixed-x25 -ffixed-x26 -ffixed-x27 -ffixed-x28")
+endif()
+
+# Offline harness for native routines (tools/native/replay.c): the same sources, linked as a program
+option(ARMLET_NATIVE_TOOLS "build the offline native-routine harness armlet-native-replay (needs ARMLET_NATIVE)" OFF)
+if(ARMLET_NATIVE_TOOLS AND ARMLET_NATIVE)
+    add_executable(armlet-native-replay tools/native/replay.c src/gfx_ucode.c src/log.c ${armlet_native_c} ${prsp_cpp} ${prsp_extra_cpp})
+    set_target_properties(armlet-native-replay PROPERTIES LINKER_LANGUAGE CXX)
+    target_include_directories(armlet-native-replay PRIVATE
+        "${M64P_API_INCLUDE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/src"
+        "$<$<COMPILE_LANGUAGE:C>:${ARMLET_HLE_DIR}/src>" "$<$<COMPILE_LANGUAGE:C>:${ARMLET_PRSP_DIR}>"
+        "$<$<COMPILE_LANGUAGE:CXX>:${ARMLET_PRSP_DIR}>" "$<$<COMPILE_LANGUAGE:CXX>:${ARMLET_PRSP_DIR}/arch/simd/rsp>")
+    target_compile_definitions(armlet-native-replay PRIVATE ARMLET_NATIVE "$<$<COMPILE_LANGUAGE:CXX>:PRSP_NATIVE;PARALLEL_INTEGRATION;M64P_PLUGIN_API;PARALLEL_RSP_LIGHTNING>")
+    target_compile_options(armlet-native-replay PRIVATE
+        "$<$<COMPILE_LANGUAGE:CXX>:-Wall;-Wno-missing-field-initializers;-Wno-empty-body;-ffast-math;-Wno-unused-parameter;-Wno-parentheses>" "$<$<COMPILE_LANGUAGE:C>:-Wall>")
+    target_link_libraries(armlet-native-replay PRIVATE lightning-m64p dl m)
 endif()
 
 # Only the six plugin API symbols leave the module; Lightning's _emit_* and everything else stay private.

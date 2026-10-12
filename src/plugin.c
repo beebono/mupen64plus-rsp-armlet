@@ -97,6 +97,7 @@ EXPORT void CALL InitiateRSP(RSP_INFO info, unsigned int *cycle_count)
     ARMLET_PROF_INIT(c);
     armlet_rdp_defer_init(c);           /* after the profiler: it wraps the video plugin's callback, the deferral wraps that */
     parallelRSPInitiateRSP(c->prsp, cycle_count);
+    ARMLET_NATIVE_INIT(c);              /* after parallel-rsp: the hook needs its CPU state */
 }
 
 EXPORT void CALL RomClosed(void)
@@ -106,5 +107,6 @@ EXPORT void CALL RomClosed(void)
     armlet_gfx_reset();
     armlet_rdp_defer_reset();
     ARMLET_PROF_ROMCLOSED();
+    ARMLET_NATIVE_RESET();
     parallelRSPRomClosed();
 }

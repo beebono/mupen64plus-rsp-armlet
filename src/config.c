@@ -8,6 +8,7 @@
  */
 #include <ctype.h>
 #include <dlfcn.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
@@ -25,6 +26,8 @@
 #define CFG_VERSION "Version"
 #define CFG_GFX_MODE "GfxMode"
 #define CFG_GFX_UCODES "GfxHleUcodes"
+#define CFG_GFX_NATIVE "GfxNative"
+#define CFG_GFX_NATIVE_ROUTINES "GfxNativeRoutines"
 #define CFG_RDP_COALESCE "RdpCoalesce"
 #define CFG_RDP_COALESCE_BYTES "RdpCoalesceBytes"
 
@@ -98,6 +101,11 @@ m64p_error armlet_config_startup(m64p_dynlib_handle core)
         "hle = tasks whose microcode has a native handler run natively (none yet), the rest run as lle");
     ConfigSetDefaultString(l_section, CFG_GFX_UCODES, "",
         "Comma-separated 64-bit ucode ids (hex, as logged) allowed to run natively in GfxMode=hle; empty = all with a handler");
+    ConfigSetDefaultString(l_section, CFG_GFX_NATIVE, "off",
+        "Native microcode routines (vertex transform, triangle setup) in place of the JIT's code: off, on, or verify "
+        "(runs the JIT as well and compares; for testing)");
+    ConfigSetDefaultString(l_section, CFG_GFX_NATIVE_ROUTINES, "",
+        "Comma-separated routine names or families (f3dex2, f3dex2.vtx ...) that may run natively; -name excludes; empty = all");
     ConfigSetDefaultString(l_section, CFG_RDP_COALESCE, "auto",
         "Coalesce the video plugin's ProcessRdpList calls of graphics ucode (exact, see docs): auto = on when the video plugin is foir, on, off");
     ConfigSetDefaultInt(l_section, CFG_RDP_COALESCE_BYTES, ARMLET_COALESCE_BYTES_DEFAULT,
@@ -133,6 +141,8 @@ void armlet_config_load(struct armlet_config *cfg)
 {
     const char *mode = l_section ? ConfigGetParamString(l_section, CFG_GFX_MODE) : "lle";
     const char *ucodes = l_section ? ConfigGetParamString(l_section, CFG_GFX_UCODES) : "";
+    const char *native = l_section ? ConfigGetParamString(l_section, CFG_GFX_NATIVE) : "off";
+    const char *nroutines = l_section ? ConfigGetParamString(l_section, CFG_GFX_NATIVE_ROUTINES) : "";
     const char *coalesce = l_section ? ConfigGetParamString(l_section, CFG_RDP_COALESCE) : "auto";
     int bytes = l_section ? ConfigGetParamInt(l_section, CFG_RDP_COALESCE_BYTES) : ARMLET_COALESCE_BYTES_DEFAULT;
     const char *env;
@@ -145,6 +155,10 @@ void armlet_config_load(struct armlet_config *cfg)
         bytes = atoi(env);
     if ((env = getenv("ARMLET_UCODES")))
         ucodes = env;
+    if ((env = getenv("ARMLET_NATIVE")) && *env)
+        native = env;
+    if ((env = getenv("ARMLET_NATIVE_ROUTINES")))
+        nroutines = env;
 
     memset(cfg, 0, sizeof(*cfg));
     if (mode && !strcasecmp(mode, "hle"))
@@ -152,6 +166,16 @@ void armlet_config_load(struct armlet_config *cfg)
     else if (mode && strcasecmp(mode, "lle"))
         armlet_log(M64MSG_WARNING, "unknown GfxMode '%s' (lle or hle); using lle", mode);
     parse_ucodes(cfg, ucodes ? ucodes : "");
+
+    cfg->native_mode = ARMLET_NATIVE_OFF;
+    if (native && (!strcasecmp(native, "on") || !strcmp(native, "1") || !strcasecmp(native, "true")))
+        cfg->native_mode = ARMLET_NATIVE_ON;
+    else if (native && !strcasecmp(native, "verify"))
+        cfg->native_mode = ARMLET_NATIVE_VERIFY;
+    else if (native && strcasecmp(native, "off") && strcmp(native, "0") && strcasecmp(native, "false"))
+        armlet_log(M64MSG_WARNING, "unknown GfxNative '%s' (off, on or verify); using off", native);
+    if (nroutines)
+        snprintf(cfg->native_routines, sizeof(cfg->native_routines), "%s", nroutines);
 
     cfg->rdp_coalesce_mode = ARMLET_COALESCE_AUTO;
     if (coalesce && (!strcasecmp(coalesce, "off") || !strcmp(coalesce, "0") || !strcasecmp(coalesce, "false")))

@@ -246,3 +246,34 @@ The profiler and the `PRSP_HOOKS` hooks in the fork must not change what the mod
 | equivalence harness, normal module, rgdsplus, SM64, 3700 frames | 5321 RSP calls, 6 of 6 screenshots, 7.99 MB of audio identical (and ref against ref) |
 | JIT code images (`PRSP_DUMP_JIT`) of five runs of SM64 on rgdsplus: normal module, profiler level 1 twice (no marker nodes), level 2 twice (marker nodes) | all 82816 bytes; any two differ only in 595 move-immediate words (1190 between different `.so` files): the absolute addresses, which ASLR moves |
 | profiler runs (levels 1, 2, 3) against the normal module | the RSP state hash streams (`RSPT_HASH`) are identical over their common prefix: desktop SM64 (724 calls; normal module, level 1, 2 with walker and task log, 3), rgdsplus SM64 (966 calls; levels 1, 2, 3), and on rgdsplus every `fit` (level 2) / `cnt` (level 3) pair of the profiling sessions (1692 to 5086 calls per game) |
+
+## Native routines: the framework (docs/design.md, "Native routines")
+
+The framework is tested with `test.dma`, a deliberately small routine (`src/native/test_dma.c`): the SP-DMA helper at IMEM 0xfd8 that every F3DEX2 microcode ends with. It has the
+properties that matter for the hook, in about ten instructions: a dynamic exit (`jr ra`), SP register writes that run a real DMA (read into DMEM and IMEM, write to RDRAM), and in the
+boot sequence a DMA into IMEM that changes code. It saves nothing (a stub call costs more), so it only runs when named. The real routines are listed in their families' sections.
+
+| check | result |
+|---|---|
+| default fork build unchanged: every object file and the `.so` of the fork's plugin target, built from the base commit (`git archive f067b3a`) and from the tree, same path, same flags | `native` (x86_64), `aarch64` (stock cross toolchain) and `rg35xxsp` (glibc 2.31 sysroot): all 20 object files and the `.so` have identical md5 |
+| the module with `GfxNative=off` against the reference pairing (rsp-hle + parallel-rsp): RSP hash stream, state stream, 6 screenshots, audio | DK64, 900 frames: identical on the desktop and on rgdsplus |
+| `GfxNative=on`, `test.dma` named | the same, identical on the desktop and on rgdsplus (53422 native calls in 900 frames on rgdsplus; 0 declined) |
+| `GfxNative=verify`, `test.dma` named, `ARMLET_NATIVE_ABORT=1` | the same; 53422 calls verified on rgdsplus, 0 mismatches (the module would have aborted) |
+| offline harness: `armlet-native-replay` over 32 snapshots captured from DK64 (`ARMLET_NATIVE_CAPTURE_EVERY=50`) | 32 of 32 native == JIT, the recorded JIT result reproduced in all |
+| micro-benchmark (`--bench 5000`, desktop) | `test.dma`: native 30 ns, JIT 39 ns per call (the JIT runs about 12 instructions): no gain, as expected |
+
+**The verify machinery catches errors.** `scripts/build.sh native --tools --nmut=N` builds `test.dma` with one deliberate error; `tools/native/mutcheck.sh` replays the 32 snapshots with each of the
+eight builds. What reports it, in the order of the first line of the report:
+
+| mutation | caught by | first difference reported |
+|---|---|---|
+| 1 `t3` (a GPR) ends as 1 | the GPR comparison | `sr[11]: native 00000001, JIT 00000000` |
+| 2 another GPR changed | the GPR comparison | `sr[2]: native ..b1, JIT ..b0` |
+| 3 a DMEM word changed | the DMEM comparison | `DMEM[7f0]: native 000001ff, JIT 000000ff` |
+| 4 DMA length register one short | the log of effectful SP writes | `SP write #0: native kind 2 .. 0000018e, JIT .. 0000018f` |
+| 5 exit pc `ra + 4` | the JIT run does not stop where the routine said: it runs on to that pc and the whole state differs | 135 differences, `sr[1]` first |
+| 6 the SP_DRAM_ADDR write left out | the SP register comparison and the write log | `SP/DPC register 1: native .., JIT ..` and `SP write #0` |
+| 7 the DMA write goes to the wrong RDRAM address | the hash of the bytes written to RDRAM, in the write log (the RDRAM itself is put back by the sandbox) | `SP write #0: native kind 2 .. <hash>, JIT .. <hash>` |
+| 8 a vector register changed | the vector register comparison | `vr[17]` with the lanes of both |
+
+All eight are caught in every snapshot where they apply (7: the snapshots whose call is a DMA write).

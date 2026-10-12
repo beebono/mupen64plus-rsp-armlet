@@ -14,6 +14,8 @@ COALESCE0=${ARMLET_RDP_COALESCE-__unset__}      # the caller's setting (desk.sh)
 
 equiv_run() {
     TAG=$1; BUILD=$2; ROM=$3; KIND=$4; LAST=$5
+    # BUILD may carry environment for the run: armlet+VAR=value+VAR=value (e.g. armlet+ARMLET_NATIVE=verify+ARMLET_NATIVE_ABORT=1)
+    EXTRA=; case $BUILD in *+*) EXTRA=${BUILD#*+}; BUILD=${BUILD%%+*} ;; esac
     P=$X/plug; OUT=$X/out/$TAG
     rm -rf "$OUT"; mkdir -p "$OUT"; echo "$LAST" > "$OUT/last"
     # every run starts from the same state: no save file (a game that finds one boots differently) and a fresh config
@@ -25,7 +27,13 @@ equiv_run() {
     armlet|armlet-hle|armlet-off) export RSPT_TARGET=$P/mupen64plus-rsp-armlet.so ;;
     *) echo "$TAG: unknown build $BUILD" >> "$X/out/session.info"; return ;;
     esac
-    unset ARMLET_GFX RSPT_HASH RSPT_STATE RSPT_MARK ADUMP_FILE
+    unset ARMLET_GFX RSPT_HASH RSPT_STATE RSPT_MARK ADUMP_FILE ARMLET_NATIVE ARMLET_NATIVE_ROUTINES ARMLET_NATIVE_ABORT ARMLET_NATIVE_STATS \
+          ARMLET_NATIVE_POISON ARMLET_NATIVE_CAPTURE ARMLET_NATIVE_CAPTURE_MAX ARMLET_NATIVE_CAPTURE_EVERY
+    if [ -n "$EXTRA" ]; then
+        _oifs=$IFS; IFS=+
+        for _kv in $EXTRA; do export "$_kv"; done
+        IFS=$_oifs
+    fi
     [ "$BUILD" = armlet-hle ] && export ARMLET_GFX=hle
     # the runs of one session share this shell: armlet-off must not leak into the next run
     if [ "$BUILD" = armlet-off ]; then export ARMLET_RDP_COALESCE=off

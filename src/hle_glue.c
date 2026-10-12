@@ -67,6 +67,7 @@ int HleForwardTask(void *user_defined)
 {
     if (armlet_gfx_try_native(CTX(user_defined)))
         return 0;
+    ARMLET_NATIVE_TASK_BEGIN(CTX(user_defined));
     armlet_rdp_defer_task_begin(CTX(user_defined));
     ARMLET_PROF_FWD_BEGIN();
     parallelRSPDoRspCycles(~0u);

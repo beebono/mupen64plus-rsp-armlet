@@ -18,6 +18,7 @@
 #define ARMLET_MAX_ALLOW 32
 
 enum { ARMLET_GFX_LLE, ARMLET_GFX_HLE };
+enum { ARMLET_NATIVE_OFF, ARMLET_NATIVE_ON, ARMLET_NATIVE_VERIFY };
 enum { ARMLET_COALESCE_OFF, ARMLET_COALESCE_ON, ARMLET_COALESCE_AUTO };
 #define ARMLET_COALESCE_BYTES_DEFAULT 4096
 
@@ -28,6 +29,8 @@ struct armlet_config {
     int rdp_coalesce_mode;              /* ARMLET_COALESCE_*, as configured */
     int rdp_coalesce;                   /* resolved at InitiateRSP: coalescing is active (auto: the video plugin is foir) */
     unsigned rdp_coalesce_bytes;        /* flush threshold, bytes of pending RDP list */
+    int native_mode;                    /* ARMLET_NATIVE_*: native microcode routines (src/native, docs/design.md) */
+    char native_routines[256];          /* allow-list: comma-separated routine names / family prefixes; "-x" excludes; empty = all */
 };
 
 struct armlet_ctx {
@@ -64,6 +67,20 @@ void armlet_vlog_raw(int level, const char *fmt, va_list ap);   /* no "arMLEt: "
 /* hle_glue.c */
 void armlet_log_new_handler(struct armlet_ctx *c);
 
+
+/* native microcode routines (src/native, docs/design.md): compiled out without ARMLET_NATIVE */
+#ifdef ARMLET_NATIVE
+void armlet_native_init(struct armlet_ctx *c);
+void armlet_native_task_begin(struct armlet_ctx *c);
+void armlet_native_reset(void);
+#define ARMLET_NATIVE_INIT(c) armlet_native_init(c)
+#define ARMLET_NATIVE_TASK_BEGIN(c) armlet_native_task_begin(c)
+#define ARMLET_NATIVE_RESET() armlet_native_reset()
+#else
+#define ARMLET_NATIVE_INIT(c) ((void)0)
+#define ARMLET_NATIVE_TASK_BEGIN(c) ((void)0)
+#define ARMLET_NATIVE_RESET() ((void)0)
+#endif
 
 /* profiler hooks (ARMLET_PROFILE builds only, see docs/profiling.md): nothing in the normal build */
 #ifdef ARMLET_PROFILE
