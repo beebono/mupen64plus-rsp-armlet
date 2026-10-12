@@ -17,6 +17,8 @@ set(M64P_API_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../mupen64plus-core/src/ap
     "Directory with m64p_types.h / m64p_plugin.h")
 option(ARMLET_PRSP_PROFILE "parallel-rsp dynamic instruction-mix profiling (-DPRSP_PROFILE)" OFF)
 option(ARMLET_PROFILE "the profiler (src/prof, docs/profiling.md): per-task stats, the JIT address map; with ARMLET_PRSP_PROFILE also per-site counts" OFF)
+option(ARMLET_RDP_DEFER "coalescing of the RDP list calls (needs the fork's prsp_rdp_defer.h hooks, -DPRSP_RDP_DEFER); OFF builds the module without it" ON)
+set(ARMLET_RDP_MUTATE 0 CACHE STRING "test builds only: drop safeguard N of the RDP-list coalescing (src/rdp_defer.c)")
 option(ARMLET_PRSP_SHADOW "parallel-rsp shadow verification: every task is replayed on a second JIT (-DPRSP_SHADOW)" OFF)
 
 set(ARMLET_PRSP_DIR "${CMAKE_CURRENT_SOURCE_DIR}/ext/parallel-rsp")
@@ -46,7 +48,7 @@ list(TRANSFORM ARMLET_PRSP_CPP PREPEND "${ARMLET_PRSP_DIR}/" OUTPUT_VARIABLE prs
 list(TRANSFORM ARMLET_PRSP_EXTRA_CPP PREPEND "${ARMLET_PRSP_DIR}/" OUTPUT_VARIABLE prsp_extra_cpp)
 list(TRANSFORM ARMLET_HLE_C PREPEND "${ARMLET_HLE_DIR}/src/" OUTPUT_VARIABLE hle_c)
 set(armlet_c
-    src/plugin.c src/config.c src/hle_glue.c src/dispatch.c src/gfx_ucode.c src/log.c)
+    src/plugin.c src/config.c src/hle_glue.c src/dispatch.c src/gfx_ucode.c src/log.c src/rdp_defer.c)
 
 set(armlet_cpp)
 if(ARMLET_PROFILE)
@@ -75,6 +77,12 @@ target_include_directories(mupen64plus-rsp-armlet PRIVATE
 # parallel-rsp: PARALLEL_INTEGRATION selects real SP DMA / RDP list handling in cp0.cpp, the release JIT has no DEBUG_JIT.
 target_compile_definitions(mupen64plus-rsp-armlet PRIVATE
     "$<$<COMPILE_LANGUAGE:CXX>:PARALLEL_INTEGRATION;M64P_PLUGIN_API;PARALLEL_RSP_LIGHTNING>")
+if(ARMLET_RDP_DEFER)
+    target_compile_definitions(mupen64plus-rsp-armlet PRIVATE ARMLET_RDP_DEFER "$<$<COMPILE_LANGUAGE:CXX>:PRSP_RDP_DEFER>")
+endif()
+if(ARMLET_RDP_MUTATE)
+    target_compile_definitions(mupen64plus-rsp-armlet PRIVATE ARMLET_RDP_MUTATE=${ARMLET_RDP_MUTATE})
+endif()
 if(ARMLET_PROFILE)
     # PRSP_HOOKS turns on the observation hooks of the fork's prsp_hooks.h; the profiler's C++ files see the same definition
     target_compile_definitions(mupen64plus-rsp-armlet PRIVATE ARMLET_PROFILE "$<$<COMPILE_LANGUAGE:CXX>:PRSP_HOOKS>")

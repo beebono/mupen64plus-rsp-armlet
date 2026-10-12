@@ -7,6 +7,8 @@
 # --prof: the arMLEt profiler, levels 1-2 (-DARMLET_PROFILE, parallel-rsp built with the PRSP_HOOKS observation hooks); --prof3: the same plus
 # parallel-rsp's per-instruction profiling hook (-DPRSP_PROFILE) for the level-3 site counts (4-5x slower: counts only).
 # --shadow: parallel-rsp's shadow verification (-DPRSP_SHADOW). See docs/profiling.md.
+# --mutate=N (N = 1..5): a test build of the RDP-list coalescing with one safeguard dropped (-DARMLET_RDP_MUTATE=N, src/rdp_defer.c; docs/testing.md)
+#   -> out/<target>-mutN/
 # ref is the equivalence-test reference: rsp-hle (Makefile, -O3, same compiler) with RspFallback = parallel-rsp from the same submodules.
 # M64P_API_INCLUDE_DIR may point at the directory holding m64p_types.h (default ../mupen64plus-core/src/api).
 set -e
@@ -15,9 +17,9 @@ API=${M64P_API_INCLUDE_DIR:-$R/../mupen64plus-core/src/api}
 RG35=${RG35_TOOLCHAIN:-$R/../toolchains/rg35xxsp}
 ref=0; [ "$1" = ref ] && { ref=1; shift; }
 target=$1; shift || true
-prof=0; prof3=0; shadow=0
-for a in "$@"; do case $a in --prof) prof=1 ;; --prof3) prof3=1 ;; --shadow) shadow=1 ;; *) echo "unknown option $a" >&2; exit 2 ;; esac; done
-name=$target; [ $prof = 1 ] && name=$name-prof; [ $prof3 = 1 ] && name=$name-prof3; [ $shadow = 1 ] && name=$name-shadow
+prof=0; prof3=0; shadow=0; mutate=0
+for a in "$@"; do case $a in --prof) prof=1 ;; --prof3) prof3=1 ;; --shadow) shadow=1 ;; --mutate=[1-9]) mutate=${a#--mutate=} ;; *) echo "unknown option $a" >&2; exit 2 ;; esac; done
+name=$target; [ $prof = 1 ] && name=$name-prof; [ $prof3 = 1 ] && name=$name-prof3; [ $shadow = 1 ] && name=$name-shadow; [ $mutate != 0 ] && name=$name-mut$mutate
 OUT=$R/out/$name; [ $ref = 1 ] && OUT=$R/out/$target/ref
 W=$R/work/$name; [ $ref = 1 ] && W=$R/work/ref-$name
 case $target in
@@ -39,6 +41,7 @@ if [ $ref = 0 ]; then
     [ $prof = 1 ] && flags+=(-DARMLET_PROFILE=ON)
     [ $prof3 = 1 ] && flags+=(-DARMLET_PROFILE=ON -DARMLET_PRSP_PROFILE=ON)
     [ $shadow = 1 ] && flags+=(-DARMLET_PRSP_SHADOW=ON)
+    [ $mutate != 0 ] && flags+=(-DARMLET_RDP_MUTATE=$mutate)
     cmake -S "$W/src" -B "$W/build" -G Ninja -DCMAKE_BUILD_TYPE=Release "${TC[@]}" -DM64P_API_INCLUDE_DIR="$API" "${flags[@]}" >/dev/null
     cmake --build "$W/build"
     cp "$W/build/mupen64plus-rsp-armlet.so" "$OUT/"

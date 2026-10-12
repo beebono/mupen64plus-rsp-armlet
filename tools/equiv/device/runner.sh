@@ -1,12 +1,16 @@
 #!/bin/sh
 # Sourced by the flavour scripts (rgdsplus.sh, rg35xxsp_functions.sh, ../desk.sh). Runs the lines of $X/runs.txt one after the other.
 #   runs.txt line:  TAG|BUILD|ROM|KIND|LAST      ROM: a file name in $ROMDIR, or @name for $X/roms/name
-#     BUILD ref (rsp-hle + parallel-rsp as RspFallback) | armlet | armlet-hle (armlet with ARMLET_GFX=hle)
+#     BUILD ref (rsp-hle + parallel-rsp as RspFallback) | armlet | armlet-hle (armlet with ARMLET_GFX=hle) | armlet-off (armlet with ARMLET_RDP_COALESCE=off;
+#           the other armlet builds use the config default, or ARMLET_RDP_COALESCE when the caller's environment has it (desk.sh))
 #     KIND  e2e  (RSP hash stream, screenshots at 6 frames up to LAST, AI audio dump; stops after frame LAST)
+#           (EQUIV_RDRAM=1 adds a hash of all RDRAM to the per-call RSPT_STATE stream, EQUIV_THREADS=<n> sets FOIR_THREADS, default 3)
 #           time (stops at the first RSP call after frame LAST's screenshot; the shim logs RSP ms and CPU ms there)
 # Needs: X (work dir: plug/ out/ cfg/ runs.txt), MUPEN (emulator command incl. core options), ROMDIR. Optional: VIDARGS, WRAP (a command
 # prefix, e.g. a memory-capped scope), GAP (seconds between runs), KILLALL=1 (a device with one user: also pkill every mupen64plus).
 # Plugins in $X/plug: mupen64plus-rdp-foir.so mupen64plus-rsp-armlet.so rsp-shim.so input-det.so audio-adump.so ref/{mupen64plus-rsp-hle,mupen64plus-rsp-parallel}.so
+
+COALESCE0=${ARMLET_RDP_COALESCE-__unset__}      # the caller's setting (desk.sh); unset on the devices
 
 equiv_run() {
     TAG=$1; BUILD=$2; ROM=$3; KIND=$4; LAST=$5
@@ -18,18 +22,23 @@ equiv_run() {
     case $BUILD in
     ref) export RSPT_TARGET=$P/ref/mupen64plus-rsp-hle.so
          RSPARGS="--set rsp-hle[DisplayListToGraphicsPlugin]=False --set rsp-hle[AudioListToAudioPlugin]=False --set rsp-hle[RspFallback]=$P/ref/mupen64plus-rsp-parallel.so" ;;
-    armlet|armlet-hle) export RSPT_TARGET=$P/mupen64plus-rsp-armlet.so ;;
+    armlet|armlet-hle|armlet-off) export RSPT_TARGET=$P/mupen64plus-rsp-armlet.so ;;
     *) echo "$TAG: unknown build $BUILD" >> "$X/out/session.info"; return ;;
     esac
-    unset ARMLET_GFX RSPT_HASH RSPT_MARK ADUMP_FILE
+    unset ARMLET_GFX RSPT_HASH RSPT_STATE RSPT_MARK ADUMP_FILE
     [ "$BUILD" = armlet-hle ] && export ARMLET_GFX=hle
-    export ARMLET_LOGFILE=$OUT/armlet.log FOIR_THREADS=3 FOIR_SHOT_DIR=$OUT FOIR_LOGFILE=$OUT/foir.log RSPT_LOG=$OUT/rspt
+    # the runs of one session share this shell: armlet-off must not leak into the next run
+    if [ "$BUILD" = armlet-off ]; then export ARMLET_RDP_COALESCE=off
+    elif [ "$COALESCE0" = __unset__ ]; then unset ARMLET_RDP_COALESCE
+    else export ARMLET_RDP_COALESCE=$COALESCE0; fi
+    export ARMLET_LOGFILE=$OUT/armlet.log FOIR_THREADS=${EQUIV_THREADS:-3} FOIR_SHOT_DIR=$OUT FOIR_LOGFILE=$OUT/foir.log RSPT_LOG=$OUT/rspt
     case $ROM in @*) ROMPATH=$X/roms/${ROM#@} ;; *) ROMPATH=$ROMDIR/$ROM ;; esac
     LASTF=$OUT/frame_$(printf %05d "$LAST").ppm
     if [ "$KIND" = e2e ]; then
         S=$((LAST / 6))
         export FOIR_SHOT_FRAMES=$S,$((S * 2)),$((S * 3)),$((S * 4)),$((S * 5)),$LAST
-        export RSPT_HASH=$OUT/rsp.hash ADUMP_FILE=$OUT/audio.raw
+        export RSPT_HASH=$OUT/rsp.hash RSPT_STATE=$OUT/rsp.state ADUMP_FILE=$OUT/audio.raw
+        RSPT_RDRAM=${EQUIV_RDRAM:-0}; export RSPT_RDRAM
         AUD=$P/audio-adump.so; TMO=$((LAST / 40 + 60))
     else
         export FOIR_SHOT_FRAMES=$LAST RSPT_MARK=$LASTF
@@ -61,6 +70,7 @@ equiv_run() {
         md5sum frame_*.ppm > shots.md5 2>/dev/null
         rm -f frame_*.ppm
         [ -f rsp.hash ] && { wc -l < rsp.hash > rsp.hash.lines; md5sum rsp.hash > rsp.hash.md5; }
+        [ -f rsp.state ] && md5sum rsp.state > rsp.state.md5
         [ -f audio.raw ] && wc -c < audio.raw > audio.bytes
     )
     echo "   $TAG: $(cat "$OUT/status") end temp $(cat /sys/class/thermal/thermal_zone0/temp 2>/dev/null) freq $(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq 2>/dev/null)" >> "$X/out/session.info"

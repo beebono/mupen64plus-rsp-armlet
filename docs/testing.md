@@ -138,6 +138,101 @@ batches. The cause is not known and was not investigated; candidates, untested: 
 parallel-rsp in two objects), or the nead audio HLE that MK64 runs every frame. On the A53 every delta is positive (+0.007 to +0.042 ms/frame, 0.2-1.3 %); on the A55 they
 are -0.013 to +0.033 ms/frame.
 
+## RDP list coalescing
+
+The coalescing of `ProcessRdpList` calls ([design.md](design.md#rdp-list-coalescing)) must change nothing but speed. It was tested like this; `RdpCoalesce` ON is the default (`auto` with foir),
+OFF is `ARMLET_RDP_COALESCE=off` (build `armlet-off` in the device runner). foir `devel` at 88d1722, the rg35xxsp-toolchain builds on both devices.
+
+**Equivalence gates, devices** (3700 frames, 6 screenshots, 3 worker threads; `off.1` and `off.2` agree with each other in every game, so the reference is deterministic; the `on` run's armlet log says "coalescing on"). In addition to the
+three gates of the table at the top, a fourth stream, `RSPT_STATE` (`rsp.state`), has one hash per `DoRspCycles` call of `SP_PC`, `SP_STATUS`, `SP_SEMAPHORE`, `MI_INTR` and `DPC_START` / `END` / `CURRENT` / `STATUS`
+as the core sees them when the call returns (that is where a late DP interrupt would show).
+
+| device | games | hash stream | state stream | screenshots | audio |
+|---|---|---|---|---|---|
+| rgdsplus | Banjo-Kazooie, DK64, GoldenEye, Glover, Mystical Ninja, Mario Kart 64, Mischief Makers, Ocarina of Time, Paper Mario, Star Fox 64, SM64, Pokemon Snap | 12 of 12 identical (3,386-7,738 calls) | 12 of 12 identical | 72 of 72 identical | 12 of 12 identical (5.4-11 MB) |
+| rg35xxsp | Banjo-Kazooie, DK64, Mario Kart 64, Ocarina of Time, Paper Mario, Star Fox 64, SM64, Pokemon Snap, Toy Story 2 | 9 of 9 identical | 9 of 9 identical | 54 of 54 identical | 9 of 9 identical |
+
+(Mischief Makers uses XBUS for every list, so nothing is coalesced there; it is in the set to cover the pass-through path.)
+
+**Desktop survey, all 63 ROMs of the two sets** (x86_64, foir `NEON=0` with `FOIR_THREADS=0`, 1500 frames, offscreen): OFF against ON, with the per-call state stream and a hash of **all of RDRAM** after every `DoRspCycles`
+(`RSPT_RDRAM=1`: foir's output, framebuffer and Z included), hash stream, six screenshots and audio, at the default threshold (4 KiB), at 1 KiB (an earlier default) and at the maximum of 1 MiB (the range
+then outlives many FIFO wraps and `DPC_START` writes, which exercises the triggers): **60 of 63 identical on every stream, at all three thresholds.**
+Three games, Blast Corps, Quake and Gauntlet Legends, have a baseline that is not deterministic in RDRAM on a loaded machine (OFF against OFF differs at the same calls, by as much as OFF against ON; hash stream, screenshots and
+audio are identical in all pairs); with RDRAM left out of the state stream (`RSPT_RDRAM=0`) OFF, OFF again and ON are identical for the three at 4 KiB and at 1 MiB. Six ROMs are not touched by the module at all (all their lists are passed through):
+Diddy Kong Racing, Jet Force Gemini, Indiana Jones and Worms Armageddon (no graphics-ucode banner), Mischief Makers and Excitebike 64 (XBUS); Glover and Wipeout 64 have a few XBUS lists. Callbacks per call of the
+video plugin at 4 KiB: 3 in the F3DEX2 games (Donkey Kong 64, Ocarina of Time, Paper Mario, Snap, which write 1 KB lists), 15-39 in Banjo-Kazooie, Mario Kart 64, Super Mario 64, GoldenEye, Star Fox 64, Mystical Ninja, up to 172-218 in Iggy's Reckin' Balls and Penny Racers. In the survey no flush was ever caused by
+an SP DMA write (`dma 0`), by an XBUS list arriving with something pending, by a `DPC_STATUS` write except in Pokemon Puzzle League (14), Space Station Silicon Valley (234) and Yoshi's Story (1949), or by the safety path (`other 0`, `task-end 0`).
+
+**Model-based test** (`tools/equiv/rdp_defer_fuzz.sh`): `rdp_defer.c` itself, driven through the fork's hooks by random streams of ucode events (chunks DMAed to a ring with `DPC_END`, ring wraps through `DPC_START`,
+DMA writes over the ring and elsewhere, DMEM writes, `DPC_STATUS` toggling XBUS, `DPC_END` backwards or unchanged, task boundaries; thresholds 8 bytes to 1 MiB) against a model of foir's `rdp_process_list` that runs every list at once.
+After every event the four registers must be equal and at the end of every task the stream of words the video plugin received must be identical. The module: 0 differences in 900 streams (23,463 tasks), and in 1000 streams of a second run.
+
+**Mutation check.** `scripts/build.sh native --mutate=N` builds the module with one safeguard dropped. Against SM64, Banjo-Kazooie and Ocarina of Time (desktop, 1200 frames, RDRAM stream on) and against the model test:
+
+| mutation | caught by the gates (hash, state, shots, audio) | caught by the model test (of 300 streams) |
+|---|---|---|
+| 1: no flush when the task ends | yes: SM64 hash stream differs from call 123, 5 of 6 screenshots differ, audio differs; Banjo-Kazooie from call 49; Ocarina of Time: 6 of 6 screenshots and audio (the hash stream does not see it) | 237 |
+| 5: `DPC_START` / `DPC_CURRENT` not advanced when a list is deferred | yes, as a hang: the emulator never finishes the run (no RSP hash stream at all in Banjo-Kazooie and SM64, 3 of 6 screenshots then a stall in Ocarina of Time, state stream differing from call 2) | 300 |
+| 2: no flush before a DMA write that overlaps the pending range | **no**: not even at a 1 MiB threshold, because in these games the ring never wraps over a pending range (every wrap goes through `DPC_START`, which flushes) | 82 |
+| 3: no flush at `DPC_START` / `DPC_STATUS` writes | **no**, same reason: the old range is still intact when the late flush happens, and the deferral's own safety path (`DPC_CURRENT` is not the end of the pending range) flushes at the next `DPC_END` | 220 |
+| 4: XBUS lists are deferred | **no**: Mischief Makers (every list XBUS) is identical even at 1 MiB, its DMEM ring is not reused before a `DPC_START` | 171 |
+
+So mutations 1 and 5 are caught by the equivalence gates; 2, 3 and 4 are safeguards that no game among the four the mutants were run on needs, and only the model test (which makes the ucode do exactly what they guard against) catches them.
+
+**Fork default build unchanged.** `ext/parallel-rsp` on branch `rdp-defer` against its parent commit 9972158, both built with the rg35xxsp toolchain and the fork's own CMake (the `ref` configuration, `PARALLEL_RSP_M64P_PLUGIN=ON`, no `PRSP_RDP_DEFER`): the `mupen64plus-rsp-parallel.so`
+md5 is identical (8263ac13...) and so is every object file (`find -name '*.o'`, md5 each).
+
+### Timing, ON against OFF
+
+Sessions of the method of the profiler (`tools/session/`, windows in VI frames as in [profiling.md](profiling.md): Banjo-Kazooie, SM64, DK64 and Ocarina of Time 1440-2160, Mario Kart 64 race 3000-3700, Pokemon Snap zoom shot with no input 1100-1340),
+clocks pinned (rgdsplus performance, rg35xxsp `cpu_perf.sh on`, restored afterwards), three runs of each, alternating `off`, `on` in a session (Mario Kart 64: `ref`, `off`, `on` in a rotating order over three sessions), threshold 4 KiB, foir with three workers.
+"RSP" is the time in `DoRspCycles` (the shim; it holds the video plugin's callback, as in all earlier tables), "emu thread" its CPU time, per VI frame. Callbacks per frame from the profiler build, one run each
+(`ARMLET_PROF=1`; its count is calls to foir's `ProcessRdpList`: without coalescing every `DPC_END` write, with it the calls that remain). rgdsplus:
+
+| scene | callbacks/frame OFF -> ON | RSP ms/frame OFF | RSP ms/frame ON | delta | emu thread ms/frame OFF | emu thread ms/frame ON | delta |
+|---|---|---|---|---|---|---|---|
+| Banjo-Kazooie | 1210 -> 14.0 | 6.989 +- 0.040 | 6.417 +- 0.047 | -0.572 (-8.2 %) | 11.482 +- 0.038 | 10.876 +- 0.022 | -0.606 (-5.3 %) |
+| Super Mario 64 | 573 -> 6.6 | 4.306 +- 0.020 | 4.057 +- 0.015 | -0.248 (-5.8 %) | 6.978 +- 0.024 | 6.760 +- 0.012 | -0.218 (-3.1 %) |
+| Mario Kart 64 race | 1400 -> 12.6 | 5.523 +- 0.070 | 5.126 +- 0.019 | -0.398 (-7.2 %) | 8.331 +- 0.053 | 7.914 +- 0.015 | -0.417 (-5.0 %) |
+| Donkey Kong 64 | 192 -> 16.7 | 6.722 +- 0.018 | 6.604 +- 0.026 | -0.118 (-1.8 %) | 11.901 +- 0.069 | 11.801 +- 0.039 | -0.100 (-0.8 %) |
+| Ocarina of Time | 91 -> 8.4 | 2.572 +- 0.019 | 2.491 +- 0.019 | -0.081 (-3.2 %) | 4.957 +- 0.008 | 4.823 +- 0.019 | -0.135 (-2.7 %) |
+| Pokemon Snap (zoom) | 392 -> 37.2 | 27.446 +- 0.043 | 27.353 +- 0.024 | -0.093 (-0.3 %) | 29.445 +- 0.080 | 29.420 +- 0.141 | -0.026 (-0.1 %) |
+
+rg35xxsp:
+
+| scene | callbacks/frame OFF -> ON | RSP ms/frame OFF | RSP ms/frame ON | delta | emu thread ms/frame OFF | emu thread ms/frame ON | delta |
+|---|---|---|---|---|---|---|---|
+| Banjo-Kazooie | 1210 -> 14.0 | 7.163 +- 0.069 | 6.949 +- 0.014 | -0.214 (-3.0 %) | 12.164 +- 0.048 | 11.935 +- 0.017 | -0.229 (-1.9 %) |
+| Super Mario 64 | 573 -> 6.6 | 4.687 +- 0.034 | 4.584 +- 0.036 | -0.104 (-2.2 %) | 7.794 +- 0.030 | 7.691 +- 0.036 | -0.103 (-1.3 %) |
+| Mario Kart 64 race | 1400 -> 12.6 | 5.922 +- 0.013 | 5.740 +- 0.039 | -0.182 (-3.1 %) | 9.113 +- 0.008 | 8.919 +- 0.037 | -0.194 (-2.1 %) |
+| Donkey Kong 64 | 192 -> 16.7 | 7.037 +- 0.059 | 7.019 +- 0.049 | -0.018 (-0.3 %) | 12.883 +- 0.045 | 12.857 +- 0.018 | -0.026 (-0.2 %) |
+| Ocarina of Time | 91 -> 8.4 | 3.008 +- 0.049 | 3.005 +- 0.063 | -0.004 (-0.1 %) | 5.600 +- 0.047 | 5.624 +- 0.071 | +0.024 (+0.4 %) |
+| Pokemon Snap (zoom) | 392 -> 37.2 | 27.770 +- 0.068 | 27.843 +- 0.020 | +0.072 (+0.3 %) | 31.768 +- 0.100 | 31.939 +- 0.076 | +0.171 (+0.5 %) |
+
+The saving is as modelled on the RK3566 for the games with many tiny lists (0.25-0.6 ms a frame) and about half that on the H700. Where the lists are already about 1 KB (the F3DEX2 games) there is little to merge, and in the Snap zoom shot the time is the video plugin's wait for its
+workers: no change beyond the noise (the H700's +0.07 / +0.17 ms is 1-2 sigma and not significant). The process CPU time (all threads) falls 0.1-2.7 ms per frame (Banjo-Kazooie 29.71 -> 27.02 ms on the RK3566), presumably because the video plugin's workers are woken less often (not investigated).
+
+Frame time, the Snap zoom shot, foir with `-DFOIR_FRAMELOG` (swap to swap, three runs each, windows as above; lists per frame is foir's own count of `ProcessRDPList` calls):
+
+| device | lists/frame OFF -> ON | p50 OFF / ON ms | p95 OFF / ON ms | p99 OFF / ON ms | frames > 33.3 ms OFF / ON |
+|---|---|---|---|---|---|
+| rgdsplus | 392 -> 37 | 31.17 / 31.11 | 35.33 / 35.90 | 39.63 / 38.75 | 10.7 % / 13.0 % |
+| rg35xxsp | 392 -> 37 | 32.42 / 32.47 | 36.51 / 36.68 | 40.02 / 40.82 | 20.2 % / 20.5 % |
+
+No difference beyond run-to-run spread (p50 +-0.1-0.2 ms, p95 +-0.3-0.8 ms; the RK3566 share over 33.3 ms moves 2.3 points on a spread of 1-1.4). Banjo-Kazooie is vsync-bound (p50 16.6 ms on the RK3566 and 16.8 ms on the H700 in both), tails within the spread (p99 38-42 ms, load hitches in both).
+
+**Threshold.** Banjo-Kazooie window, two runs each per device, RSP ms/frame: rgdsplus off 6.945, 256 B 6.696, 1 KiB 6.483, 4 KiB 6.368, 16 KiB 6.497; rg35xxsp off 7.170, 256 B 6.971, 1 KiB 6.908, 4 KiB 6.910, 16 KiB 7.058.
+Snap frame time on rgdsplus (2 runs, p50 / p95): off 31.16 / 36.62; 1 KiB 30.97 / 35.41; 4 KiB 31.34 / 35.63; 16 KiB 31.30 / 35.92: no difference. 4 KiB is the default: best on the RK3566, equal to 1 KiB on the H700, fewer calls than 1 KiB in the heavier lists, with no cost in frame time.
+
+**Mario Kart 64 race against `ref`** (rsp-hle + parallel-rsp as two modules, the pairing arMLEt replaces; three runs each, rotating order). The phase A gap (arMLEt about 1 % slower in a 1500-frame run from boot) did not show in this window:
+
+| device | RSP ms/frame ref | arMLEt OFF | arMLEt ON | OFF - ref | ON - ref | emu thread: OFF - ref / ON - ref |
+|---|---|---|---|---|---|---|
+| rgdsplus | 5.501 +- 0.005 | 5.523 +- 0.070 | 5.126 +- 0.019 | +0.023 (+0.4 %, inside the spread) | **-0.375 (-6.8 %)** | +0.010 / -0.407 ms |
+| rg35xxsp | 5.903 +- 0.026 | 5.922 +- 0.013 | 5.740 +- 0.039 | +0.019 (+0.3 %, inside the spread) | **-0.163 (-2.8 %)** | +0.029 / -0.165 ms |
+
+Coalescing does not explain the old 1 % (it is not there in this window with it off either); it makes arMLEt faster than the reference pairing in this game.
+
 ## Profiler checks (docs/profiling.md)
 
 The profiler and the `PRSP_HOOKS` hooks in the fork must not change what the module does. Checks, with the foir `devel` build at 88d1722:

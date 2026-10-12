@@ -12,7 +12,7 @@
 #define ARMLET_CONFIG_SECTION "Rsp-Armlet"
 
 m64p_error armlet_config_startup(m64p_dynlib_handle core);
-void armlet_config_load(struct armlet_config *cfg);   /* section values, then ARMLET_GFX / ARMLET_UCODES */
+void armlet_config_load(struct armlet_config *cfg);   /* section values, then the ARMLET_* environment overrides */
 void armlet_config_shutdown(void);
 
 #endif

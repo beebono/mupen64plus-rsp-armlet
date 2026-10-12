@@ -29,6 +29,11 @@ for v in "" -prof -prof3 -shadow; do
     f=$R/out/rg35xxsp$v/mupen64plus-rsp-armlet.so
     [ -f "$f" ] && sf "$f" $X/plug/armlet$v.so
 done
+if [ -f $R/out/rg35xxsp/ref/mupen64plus-rsp-hle.so ]; then
+    ssh "$DEV" "mkdir -p $X/plug/ref"
+    sf $R/out/rg35xxsp/ref/mupen64plus-rsp-hle.so $X/plug/ref/mupen64plus-rsp-hle.so
+    sf $R/out/rg35xxsp/ref/mupen64plus-rsp-parallel.so $X/plug/ref/mupen64plus-rsp-parallel.so
+fi
 for t in rsp-shim input-det; do sf $R/out/rg35xxsp/tools/$t.so $X/plug/$t.so; done
 for f in rgdsplus.sh rg35xxsp_session.sh rg35xxsp_functions.sh; do sf $R/tools/equiv/device/$f $X/$f; done
 sf $R/tools/session/runner.sh $X/runner.sh

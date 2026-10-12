@@ -20,6 +20,7 @@
 #include "gfx_ucode.h"
 #include "hle.h"
 #include "prsp_bridge.h"
+#include "rdp_defer.h"
 
 #define PLUGIN_VERSION 0x000100
 #define PLUGIN_API_VERSION 0x020000
@@ -94,6 +95,7 @@ EXPORT void CALL InitiateRSP(RSP_INFO info, unsigned int *cycle_count)
 
     c->prsp = info;
     ARMLET_PROF_INIT(c);
+    armlet_rdp_defer_init(c);           /* after the profiler: it wraps the video plugin's callback, the deferral wraps that */
     parallelRSPInitiateRSP(c->prsp, cycle_count);
 }
 
@@ -102,6 +104,7 @@ EXPORT void CALL RomClosed(void)
     l_ctx.hle.cached_ucodes.count = 0;
     l_ctx.cached_seen = 0;
     armlet_gfx_reset();
+    armlet_rdp_defer_reset();
     ARMLET_PROF_ROMCLOSED();
     parallelRSPRomClosed();
 }

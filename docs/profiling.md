@@ -399,8 +399,11 @@ until 1 KiB or the end of the task; the per-triangle work stays):
 
 That is a cheap win in exactly the three games named in the plan: 0.2-0.9 ms per frame (2-10 % of the emulation thread, 16-47 % of the callback time) for a few lines in front of the callback, with no
 microcode knowledge: delay `ProcessRdpList` until the list reaches 1 KiB, the task ends, or the ucode reads `DPC_CURRENT` / `DPC_STATUS`, the FIFO is nearly full, or it raises a sync. It has
-to keep the RDP's view of memory right (a texture load must reach the plugin before the triangle that uses it, which delaying within one task does) and has a risk the profile cannot rule out: foir
-processes lists asynchronously, but a ucode that polls `DPC_STATUS` for the end of the previous list would stall or time out. Not implemented and not measured.
+to keep the RDP's view of memory right (a texture load must reach the plugin before the triangle that uses it, which delaying within one task does).
+
+**Implemented since** ([design.md](design.md#rdp-list-coalescing), results in [testing.md](testing.md#rdp-list-coalescing)). The polling worry does not arise: foir's call is synchronous and leaves `DPC_START = DPC_CURRENT = DPC_END`,
+so arMLEt writes those registers itself when it defers a list and the ucode reads what it always read. The saving measured on the RK3566 is 0.4-0.6 ms of RSP time per frame in Banjo-Kazooie, Mario Kart 64 (race) and Super Mario 64 (0.25), at a threshold of 4 KiB; the model above
+(0.2-0.9 ms) was right for the RK3566 and about twice too high for the H700.
 
 
 ### The emulation thread in the Pokemon Snap zoom shot

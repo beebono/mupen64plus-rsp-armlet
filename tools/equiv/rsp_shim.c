@@ -2,6 +2,9 @@
  * Test-only RSP shim, after mupen64plus-rdp-foir's tools/prsp/rspt.c: loads the RSP plugin named by $RSPT_TARGET, forwards the
  * plugin API to it and
  *   RSPT_HASH=<file>  appends one line per DoRspCycles call: FNV-1 of DMEM + IMEM and the return value
+ *   RSPT_STATE=<file> appends one line per DoRspCycles call with a hash of what the core can see of the RSP and the RDP afterwards: SP_PC, SP_STATUS,
+ *                     SP_SEMAPHORE, MI_INTR, DPC_START / END / CURRENT / STATUS (and, with RSPT_RDRAM=1, all of RDRAM: use it with FOIR_THREADS=0, the
+ *                     workers of the video plugin write RDRAM asynchronously)
  *   RSPT_LOG=<file>   about once a second "<CLOCK_BOOTTIME s> <calls> <cumulative RSP ms>"
  *   RSPT_MARK=<file>[,<file>...]  at the first call after each file exists (a FOIR_SHOT screenshot, written on the emulation thread,
  *                     so the point is the same for every build): "MARK <calls> <RSP ms> <emu-thread CPU ms> <process CPU ms>" to RSPT_LOG,
@@ -22,7 +25,8 @@
 #include "m64p_types.h"
 
 static void *h;
-static FILE *lg, *hl;
+static FILE *lg, *hl, *sl;
+static int hash_rdram;
 static double cum_ms, last_log;
 static unsigned long calls;
 #define MAX_MARKS 16
@@ -41,6 +45,18 @@ static unsigned long long fnv(const unsigned char *d, unsigned n, unsigned long 
     unsigned i;
     for (i = 0; i < n; i++)
         x = (x ^ d[i]) * 0x100000001b3ull;   /* FNV-1a, like rspt.c */
+    return x;
+}
+
+static unsigned long long fnv64(const unsigned char *d, unsigned long n, unsigned long long x)
+{
+    unsigned long i;
+    for (i = 0; i + 8 <= n; i += 8) {
+        unsigned long long w;
+        memcpy(&w, d + i, 8);
+        x = (x ^ w) * 0x100000001b3ull;
+        x ^= x >> 29;
+    }
     return x;
 }
 
@@ -67,6 +83,9 @@ EXPORT m64p_error CALL PluginStartup(m64p_dynlib_handle ch, void *ctx, void (*cb
         lg = fopen(l, "w");
     if (hf)
         hl = fopen(hf, "w");
+    if (getenv("RSPT_STATE"))
+        sl = fopen(getenv("RSPT_STATE"), "w");
+    hash_rdram = getenv("RSPT_RDRAM") && *getenv("RSPT_RDRAM") == '1';
     if (getenv("RSPT_MARK")) {
         char *m = strdup(getenv("RSPT_MARK")), *save = NULL, *p;
         for (p = strtok_r(m, ",", &save); p && n_marks < MAX_MARKS; p = strtok_r(NULL, ",", &save))
@@ -80,6 +99,7 @@ EXPORT m64p_error CALL PluginShutdown(void)
     m64p_error e = p_stop();
     if (lg) { fclose(lg); lg = NULL; }
     if (hl) { fclose(hl); hl = NULL; }
+    if (sl) { fclose(sl); sl = NULL; }
     return e;
 }
 
@@ -107,6 +127,14 @@ EXPORT unsigned int CALL DoRspCycles(unsigned int c)
         x = fnv(rinfo.IMEM, 4096, x);
         x = (x ^ r) * 0x100000001b3ull;
         fprintf(hl, "%llx\n", x);
+    }
+    if (sl && rinfo.DMEM) {
+        unsigned v[9] = { *rinfo.SP_PC_REG, *rinfo.SP_STATUS_REG, *rinfo.SP_SEMAPHORE_REG, *rinfo.MI_INTR_REG, *rinfo.DPC_START_REG,
+                          *rinfo.DPC_END_REG, *rinfo.DPC_CURRENT_REG, *rinfo.DPC_STATUS_REG, r };
+        unsigned long long x = fnv((const unsigned char *)v, sizeof(v), 0xcbf29ce484222325ull);
+        if (hash_rdram)
+            x = fnv64(rinfo.RDRAM, 0x800000, x);
+        fprintf(sl, "%llx\n", x);
     }
     if (lg && b - last_log >= 1.0) {
         last_log = b;

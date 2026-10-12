@@ -3,11 +3,12 @@
 # Runs the lines of $X/runs.txt one after the other.
 #   runs.txt line:  TAG|ROM|SO|FRAMES|ENV
 #     ROM    a file name in $ROMDIR
-#     SO     armlet | armlet-prof | armlet-prof3 | armlet-shadow   (a plugin in $X/plug/<SO>.so, run behind rsp-shim.so)
+#     SO     armlet | armlet-prof | armlet-prof3 | armlet-shadow   (a plugin in $X/plug/<SO>.so, run behind rsp-shim.so),
+#            or ref (rsp-hle + parallel-rsp as its RspFallback, $X/plug/ref/, the pairing arMLEt replaces)
 #     FRAMES comma-separated VI frames: a screenshot (FOIR_SHOT) is taken at each; the profiler snapshots its counters and the shim logs a
 #            MARK line at each; the run ends at the last one (the window of a measurement is the difference of two marks)
 #     ENV    VAR=value pairs joined with '+', exported for the run (ARMLET_PROF=1, ARMLET_PROF_WALK=1, ...). Handled by this script:
-#            IDLE=1 (no pad input at all), HASH=1 (the shim's per-call RSP state hash stream, rsp.hash), JITDUMP=1 (parallel-rsp's code image, jit.dump), SHADOW=1 (for the --shadow build: its summary, shadow.txt), KEEPSHOTS=1 (keep the screenshots), TMO=<seconds> (the run's timeout), PERF=<seconds> (rgdsplus: perf record the process from the
+#            IDLE=1 (no pad input at all), HASH=1 (the shim's per-call RSP state hash stream, rsp.hash), JITDUMP=1 (parallel-rsp's code image, jit.dump), SHADOW=1 (for the --shadow build: its summary, shadow.txt), FRAMELOG=1 (foir built with -DFOIR_FRAMELOG: its per-frame record, framelog.bin; kept on a tmpfs during the run), KEEPSHOTS=1 (keep the screenshots), TMO=<seconds> (the run's timeout), PERF=<seconds> (rgdsplus: perf record the process from the
 #            first mark for that long; perf.data is turned into perf.script.gz: tid, ip, symbol, dso; the device's busybox has gzip, not xz)
 # Needs: X (work dir: plug/ out/ cfg/ runs.txt), MUPEN (emulator command incl. core options), ROMDIR. Optional: VIDARGS, WRAP (a command
 # prefix, e.g. a memory-capped scope), GAP (seconds between runs), KILLALL=1 (a device with one user: also pkill every mupen64plus).
@@ -19,8 +20,9 @@ session_run() {
     rm -rf "$OUT"; mkdir -p "$OUT"; echo "$FRAMES" > "$OUT/frames"
     rm -rf "$X/cfg" "$X/home/mupen64plus" "$X/home/.local"; mkdir -p "$X/cfg"
     unset ARMLET_GFX ARMLET_PROF ARMLET_PROF_OUT ARMLET_PROF_MARKS ARMLET_PROF_WALK ARMLET_PROF_TASKLOG ARMLET_PROF_PARSE ARMLET_PROF_CB \
+          ARMLET_RDP_COALESCE ARMLET_RDP_COALESCE_BYTES ARMLET_RDP_STATS FOIR_FRAMELOG RSPT_STATE \
           RSPT_HASH RSPT_MARK ADUMP_FILE INP_DET_IDLE PRSP_DUMP_JIT PRSP_NO_IMEM_SKIP PRSP_NO_DIV_INLINE PRSP_NO_VU_FAST
-    PERF= ; TMO= ; KEEPSHOTS=
+    PERF= ; TMO= ; KEEPSHOTS= ; FLOG=
     OLDIFS=$IFS; IFS='+'
     for kv in $ENVS; do
         case $kv in
@@ -31,11 +33,18 @@ session_run() {
         JITDUMP=1) export PRSP_DUMP_JIT=$OUT/jit.dump ;;
         SHADOW=1) export PRSP_SHADOW_OUT=$OUT/shadow.txt ;;
         KEEPSHOTS=1) KEEPSHOTS=1 ;;
+        FRAMELOG=1) FLOG=${TMPDIR:-/tmp}/armlet-framelog.$$; export FOIR_FRAMELOG=$FLOG ;;
         ?*=*) export "$kv" ;;
         esac
     done
     IFS=$OLDIFS
-    export RSPT_TARGET=$P/$SO.so
+    RSPARGS=
+    if [ "$SO" = ref ]; then
+        export RSPT_TARGET=$P/ref/mupen64plus-rsp-hle.so
+        RSPARGS="--set rsp-hle[DisplayListToGraphicsPlugin]=False --set rsp-hle[AudioListToAudioPlugin]=False --set rsp-hle[RspFallback]=$P/ref/mupen64plus-rsp-parallel.so"
+    else
+        export RSPT_TARGET=$P/$SO.so
+    fi
     export ARMLET_LOGFILE=$OUT/armlet.log FOIR_THREADS=3 FOIR_SHOT_DIR=$OUT FOIR_LOGFILE=$OUT/foir.log RSPT_LOG=$OUT/rspt
     export FOIR_SHOT_FRAMES=$FRAMES
     MARKS=; LASTF=; NMARKS=0
@@ -52,7 +61,7 @@ session_run() {
         echo "== $TAG $SO $ROM frames $FRAMES env '$ENVS' $(date +%T) temp $(cat /sys/class/thermal/thermal_zone0/temp 2>/dev/null) freq $(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq 2>/dev/null) gov $(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null) load $(cut -d' ' -f1 /proc/loadavg)"
     } >> "$X/out/session.info"
     # shellcheck disable=SC2086
-    $WRAP timeout -s KILL "$TMO" $MUPEN --configdir "$X/cfg" --plugindir "$P" --gfx "$P/mupen64plus-rdp-foir.so" --rsp "$P/rsp-shim.so" \
+    $WRAP timeout -s KILL "$TMO" $MUPEN --configdir "$X/cfg" --plugindir "$P" --gfx "$P/mupen64plus-rdp-foir.so" --rsp "$P/rsp-shim.so" $RSPARGS \
         --audio dummy --input "$P/input-det.so" --noosd --set "Core[RandomizeInterrupt]=False" --emumode 2 $VIDARGS "$ROMDIR/$ROM" > "$OUT/log" 2>&1 &
     MP=$!
     i=0; status=timeout; perf_done=
@@ -79,6 +88,7 @@ session_run() {
     wait $MP 2>/dev/null
     (
         cd "$OUT" || exit
+        [ -n "$FLOG" ] && [ -f "$FLOG" ] && mv "$FLOG" framelog.bin
         md5sum frame_*.ppm > shots.md5 2>/dev/null
         [ -n "$KEEPSHOTS" ] || rm -f frame_*.ppm
         if [ -f perf.data ]; then

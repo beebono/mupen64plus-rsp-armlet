@@ -13,6 +13,7 @@
 #include "armlet.h"
 #include "dispatch.h"
 #include "prsp_bridge.h"
+#include "rdp_defer.h"
 #include "hle_external.h"
 #include "ucodes.h"
 
@@ -66,8 +67,10 @@ int HleForwardTask(void *user_defined)
 {
     if (armlet_gfx_try_native(CTX(user_defined)))
         return 0;
+    armlet_rdp_defer_task_begin(CTX(user_defined));
     ARMLET_PROF_FWD_BEGIN();
     parallelRSPDoRspCycles(~0u);
+    armlet_rdp_defer_task_end();
     ARMLET_PROF_FWD_END();
     return 0;
 }

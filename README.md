@@ -7,6 +7,8 @@ module, with a place to put native replacements for the slow parts of the graphi
 - **Graphics tasks** (and any ucode rsp-hle does not know) run on [parallel-rsp](https://github.com/beebono/parallel-rsp)'s GNU Lightning JIT, as
   low-level emulation. They leave the RDP command stream in RDRAM and call the core's `ProcessRdpList` exactly as before, so a video plugin that
   wants LLE RSP output, such as [foir](../mupen64plus-rdp-foir), works unchanged.
+- **Exact coalescing of the video plugin's `ProcessRdpList` calls** (`src/rdp_defer.c`, [design](docs/design.md#rdp-list-coalescing)): a graphics ucode calls it hundreds of
+  times a frame, mostly for one command; arMLEt hands foir the same bytes in fewer, larger lists, with every register and interrupt the ucode and the core can see unchanged.
 - **A dispatch hook** in front of the JIT (`src/dispatch.c`, `src/gfx_ucode.c`) identifies the graphics ucode of every new task. This is where native
   handlers for a ucode will be plugged in; with no handler registered, nothing differs from the JIT path.
 
@@ -22,7 +24,7 @@ mupen64plus --gfx mupen64plus-rdp-foir.so --rsp mupen64plus-rsp-armlet.so --audi
 ```
 
 No other setting is needed. The config section `Rsp-Armlet` has `GfxMode` (`lle`, the default, or `hle`) and `GfxHleUcodes`; with `hle` a ucode
-that has a native handler would run natively, and none has yet.
+that has a native handler would run natively, and none has yet. `RdpCoalesce` (`auto`: on with foir) and `RdpCoalesceBytes` control the list coalescing ([docs/options.md](docs/options.md)).
 
 ## Building
 
@@ -43,7 +45,7 @@ builds the reference pairing that the equivalence tests compare against.
 
 | path | content |
 |---|---|
-| `src/` | the plugin: API entry (`plugin.c`), config (`config.c`), rsp-hle callbacks and the graphics hand-off (`hle_glue.c`), dispatch and ucode identification |
+| `src/` | the plugin: API entry (`plugin.c`), config (`config.c`), rsp-hle callbacks and the graphics hand-off (`hle_glue.c`), dispatch and ucode identification, the RDP list coalescing (`rdp_defer.c`) |
 | `ext/` | submodules: `parallel-rsp` (fork, `m64p-aarch64`), `mupen64plus-rsp-hle` (upstream, pinned) |
 | `cmake/` | source lists and the drift check against the submodules |
 | `src/prof/` | the profiler: per-task statistics, the JIT address map, per-site counts (`ARMLET_PROFILE` builds only) |

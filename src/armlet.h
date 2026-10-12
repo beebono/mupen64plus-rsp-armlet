@@ -18,11 +18,16 @@
 #define ARMLET_MAX_ALLOW 32
 
 enum { ARMLET_GFX_LLE, ARMLET_GFX_HLE };
+enum { ARMLET_COALESCE_OFF, ARMLET_COALESCE_ON, ARMLET_COALESCE_AUTO };
+#define ARMLET_COALESCE_BYTES_DEFAULT 4096
 
 struct armlet_config {
     int gfx_mode;                       /* ARMLET_GFX_* */
     unsigned n_allow;                   /* 0 = every ucode with a native handler */
     uint64_t allow[ARMLET_MAX_ALLOW];
+    int rdp_coalesce_mode;              /* ARMLET_COALESCE_*, as configured */
+    int rdp_coalesce;                   /* resolved at InitiateRSP: coalescing is active (auto: the video plugin is foir) */
+    unsigned rdp_coalesce_bytes;        /* flush threshold, bytes of pending RDP list */
 };
 
 struct armlet_ctx {

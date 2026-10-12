@@ -35,6 +35,12 @@ def compare(out, a, b):
     m = min(len(ha), len(hb))
     first = next((i for i in range(m) if ha[i] != hb[i]), None)
     res["hash"] = (len(ha), len(hb), m, "IDENTICAL" if first is None else "DIFFER@%d" % first)
+    pa, pb = os.path.join(da, "rsp.state"), os.path.join(db, "rsp.state")
+    if os.path.exists(pa) and os.path.exists(pb):
+        xa, xb = lines(pa), lines(pb)
+        m = min(len(xa), len(xb))
+        first = next((i for i in range(m) if xa[i] != xb[i]), None)
+        res["state"] = (len(xa), len(xb), m, "IDENTICAL" if first is None else "DIFFER@%d" % first)
     sa, sb = shots(da), shots(db)
     common = sorted(set(sa) & set(sb))
     bad = [n for n in common if sa[n] != sb[n]]
@@ -56,7 +62,7 @@ def compare(out, a, b):
         res["audio"] = (sza, szb, m, "IDENTICAL" if diff is None else "DIFFER@%d" % diff)
     else:
         res["audio"] = (0, 0, 0, "MISSING")
-    ok = res["hash"][3] == "IDENTICAL" and res["shots"][3] == 0 and res["shots"][2] > 0 and res["audio"][3] == "IDENTICAL"
+    ok = res.get("state", (0, 0, 0, "IDENTICAL"))[3] == "IDENTICAL" and res["hash"][3] == "IDENTICAL" and res["shots"][3] == 0 and res["shots"][2] > 0 and res["audio"][3] == "IDENTICAL"
     return ok, res
 
 
@@ -70,7 +76,8 @@ def pairs(out, args):
     for a, b in zip(args[::2], args[1::2]):
         ok, r = compare(out, a, b)
         allok &= ok
-        print("%-5s %s vs %s  hash(%d/%d common %d %s)  shots(%d/%d common %d bad %d)  audio(%d/%d common %d %s)  [%s | %s]" % (
+        st = ("  state(%d/%d common %d %s)" % r["state"]) if "state" in r else ""
+        print(("%-5s %s vs %s  hash(%d/%d common %d %s)" + st + "  shots(%d/%d common %d bad %d)  audio(%d/%d common %d %s)  [%s | %s]") % (
             ("PASS" if ok else "FAIL", a, b) + r["hash"] + r["shots"] + r["audio"] + (status(out, a), status(out, b))))
     return allok
 

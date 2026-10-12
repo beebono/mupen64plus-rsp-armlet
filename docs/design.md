@@ -20,8 +20,10 @@ core: DoRspCycles
     audio ABI1/2/3, nead, MusyX, JPEG, video, HVQM, cic x105        run as HLE inside rsp-hle's own code, set TASKDONE|BROKE|HALT
     graphics task (type 1), any unknown ucode, nead "mats"/"efz"    rsp-hle calls HleForwardTask()          <- hle_glue.c
       dispatch.c        armlet_gfx_try_native(ctx)                   GfxMode=hle only; false today
+      rdp_defer.c       armlet_rdp_defer_task_begin()                 is it a graphics ucode of a known family? then ProcessRdpList is deferred
       hle_glue.c        parallelRSPDoRspCycles(~0u)                  parallel-rsp's JIT runs the ucode
-                        (cp0.cpp: SP DMA, the core's ProcessRdpList callback, interrupts)
+                        (cp0.cpp: SP DMA, the ProcessRdpList callback = rdp_defer.c's, interrupts; the fork's flush hooks)
+      rdp_defer.c       armlet_rdp_defer_task_end()                   nothing may be pending
   plugin.c            armlet_log_new_handler()                      logs a ucode's HLE handler once per new cache entry
 ```
 
@@ -41,6 +43,59 @@ What is shared and what is separate compared with the two-module pairing:
 | second `InitiateRSP` in one process | the fallback is unloaded and loaded again (fresh JIT) | the JIT state of the first one stays (the core calls it once per run; a front-end that reuses the process would see a warm JIT) |
 | messages | rsp-hle's, unprefixed | rsp-hle's unchanged; arMLEt's own start with `arMLEt: ` |
 | config | `Rsp-HLE` (`RspFallback` ...) | `Rsp-Armlet`, see [options.md](options.md) |
+
+## RDP list coalescing
+
+A graphics ucode writes `DPC_END` after every chunk of RDP commands it has DMAed to its output buffer, and parallel-rsp calls the video plugin's
+`ProcessRdpList` for each write: 570-1400 calls a frame in Super Mario 64, Banjo-Kazooie and Mario Kart 64, most of them for one 8-byte command, each costing
+0.3-0.7 us of fixed work ([profiling.md](profiling.md#the-rdp-callback-cost-per-call)). `src/rdp_defer.c` replaces the callback in the `RSP_INFO` copy parallel-rsp gets with one
+that records the range and hands the video plugin the concatenation of several lists in one call. It is exact: the video plugin sees the same bytes
+in the same order, the ucode sees the same registers, and nothing that the rest of the machine can observe moves relative to it. Option: `RdpCoalesce`,
+threshold `RdpCoalesceBytes` ([options.md](options.md)).
+
+**What the video plugin does with a list** (foir, `rdp_process_list`): it reads the words from `DPC_CURRENT` to `DPC_END` out of RDRAM (out of DMEM when
+`DPC_STATUS.XBUS` is set), feeds them to the command parser (a command cut by the end of the list carries over to the next call), and then sets
+`DPC_START = DPC_CURRENT = DPC_END`. A list with `end <= current` is ignored, registers untouched. `DPC_CURRENT` is the previous `DPC_END` at every
+call (that is what the last call left), so successive lists are contiguous and their concatenation is one list; the parser is a byte stream, so
+where it is cut does not matter. This argument is about foir (`RdpCoalesce = auto` is on only when the module behind the core's callback is foir; `on` forces it).
+
+**The deferral** (`defer_cb`, called by `cp0.cpp` after it stored `DPC_END`): in a task of a known graphics family it computes what foir would compute
+(`end <= current`: ignore; XBUS: see below), appends `[current, end)` to one pending range `[ps, pe)` and writes `DPC_START = DPC_CURRENT = DPC_END` itself.
+The registers the ucode can read are therefore exactly what they are without deferral, at every instant: `MFC0` of `DPC_START`, `DPC_END`,
+`DPC_CURRENT` needs no hook, and `DPC_STATUS`, `DPC_CLOCK`, `DPC_BUFBUSY`, `DPC_PIPEBUSY` and `DPC_TMEM` are not touched by foir. Running the pending range
+(`run_pending`) sets `DPC_CURRENT = ps`, `DPC_END = pe`, calls the video plugin, and restores the three registers to what they were (equal to what foir leaves
+unless the ucode has moved on, which it cannot, see the triggers).
+
+| trigger | action | why it is needed |
+|---|---|---|
+| `DPC_END` write, range >= `RdpCoalesceBytes` | run the range | bounds the delay; the video plugin's worker threads keep getting work while the ucode runs |
+| `DPC_START` write (`cp0.cpp`, `PRSP_RDP_FLUSH_START`) | run the range before the write | a new buffer (FIFO wrap) resets current and end; the pending range was submitted with the old ones |
+| `DPC_STATUS` write (`PRSP_RDP_FLUSH_STATUS`) | run the range before the write | it can change XBUS (where the list is read from) and FREEZE / FLUSH |
+| `DPC_END` write while `XBUS` is set | run the range, then this list at once | the list is in DMEM, which the ucode overwrites; XBUS lists are never deferred (Mischief Makers uses them for every list; Glover for some) |
+| SP DMA write into RDRAM that overlaps the range (`prsp_rdp_defer_dma_write`, every row, wrapping rows count as overlapping) | run the range before the copy | the ucode overwrites command memory that is still pending (the FIFO is a ring) |
+| the run loop of the task ends (`parallelRSPDoRspCycles`, `PRSP_RDP_FLUSH_RUN_END`) | run the range before the interrupts are checked and `SP_PC` is stored | halt, break, yield, `SET_INTR`, a poll timeout: the task is over for the core, which then looks at `MI_INTR` (the DP interrupt of a `SYNC_FULL`) and at the frame |
+| `armlet_rdp_defer_task_end` | run the range if any | belt and braces after the fork's hook; counted separately, zero in all runs |
+| `DPC_END` write with `end <= current` | nothing | foir ignores it too |
+
+What needs no trigger, and why:
+
+- **Reads of `DPC_START` / `DPC_END` / `DPC_CURRENT` / `DPC_STATUS`** (polling for the RDP to drain, buffer-full handling): the registers hold what foir would have left, and
+  foir never changes `DPC_STATUS`. A ucode that waits for the RDP to finish sees it finished at once, as without deferral (foir's call is synchronous).
+- **`SYNC_FULL` and the DP interrupt**: foir raises `MI_INTR_DP` and calls `CheckInterrupts` while it parses the list that holds the sync. `CheckInterrupts` is a no-op in
+  the core's RSP and graphics `INFO`; the core looks at `MI_INTR_DP` after `DoRspCycles` returns (`do_SP_Task`), and `MI_INTR_SP` is only raised by the core after that. Nothing reads
+  `MI_INTR` in between (the RSP cannot), so running the sync at the end of the run loop instead of in the middle changes nothing the core can see. The deferred range always runs
+  before the run loop's own `CheckInterrupts` call and before `DoRspCycles` returns.
+- **`RomClosed`, state saves**: a state is saved by the core between tasks, and nothing is pending between tasks. `RomClosed` forgets a (never present) range.
+- **The order of the RDP's work against the ucode's other effects**: the RDP reads and writes RDRAM (textures, the frame buffer, Z); the RSP's DMA reads and writes touch RDRAM too. A deferred
+  list sees RDRAM as it is at the flush, so the argument needs that no RSP DMA changes anything the pending lists read or write, and that no RSP DMA read sees what pending lists
+  would have written. The DMA-write case that is certain, the output buffer itself, is the overlap trigger. For the rest the module relies on what the ucodes do: it defers only in tasks whose
+  ucode text carries an `F3D` / `F3DEX` / `F3DEX2` family banner (`gfx_ucode.c`; Diddy Kong Racing, Jet Force Gemini, Indiana Jones, Worms and other ucodes without one are passed through). Those ucodes
+  write RDRAM only for the output buffer, the yield area and a few small blocks (Banjo-Kazooie and Banjo-Tooie write 0x48 to 0x1b0 bytes at low addresses, a few times per task), and read
+  display lists, vertices and matrices, not what the RDP rendered. This is an assumption about the ucode, not something the module checks. What backs it: in the survey of
+  [testing.md](testing.md) (63 ROMs, `RdpCoalesceBytes` at the default and at its maximum of 1 MiB) all of RDRAM, hashed after every `DoRspCycles`, is identical with and without coalescing (three games whose RDRAM is not deterministic even without it show no difference in everything else).
+
+The fork changes are behind `PRSP_RDP_DEFER` (`ext/parallel-rsp/prsp_rdp_defer.h`, branch `rdp-defer`): four call sites in `rsp/cp0.cpp` and `parallel.cpp`, empty macros when the
+define is absent, so the default fork build is byte-identical ([testing.md](testing.md)). The module defines the two hook functions.
 
 ## Profiler
 

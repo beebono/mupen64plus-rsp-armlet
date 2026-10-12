@@ -25,6 +25,8 @@
 #define CFG_VERSION "Version"
 #define CFG_GFX_MODE "GfxMode"
 #define CFG_GFX_UCODES "GfxHleUcodes"
+#define CFG_RDP_COALESCE "RdpCoalesce"
+#define CFG_RDP_COALESCE_BYTES "RdpCoalesceBytes"
 
 #define SPLIT(x) (((x) >> 16) & 0xffff), (((x) >> 8) & 0xff), ((x) & 0xff)
 
@@ -34,7 +36,9 @@ static ptr_ConfigSetParameter ConfigSetParameter;
 static ptr_ConfigGetParameter ConfigGetParameter;
 static ptr_ConfigSetDefaultFloat ConfigSetDefaultFloat;
 static ptr_ConfigSetDefaultString ConfigSetDefaultString;
+static ptr_ConfigSetDefaultInt ConfigSetDefaultInt;
 static ptr_ConfigGetParamString ConfigGetParamString;
+static ptr_ConfigGetParamInt ConfigGetParamInt;
 
 static m64p_handle l_section;
 
@@ -63,8 +67,10 @@ m64p_error armlet_config_startup(m64p_dynlib_handle core)
     ConfigSetDefaultFloat = (ptr_ConfigSetDefaultFloat)dlsym(core, "ConfigSetDefaultFloat");
     ConfigSetDefaultString = (ptr_ConfigSetDefaultString)dlsym(core, "ConfigSetDefaultString");
     ConfigGetParamString = (ptr_ConfigGetParamString)dlsym(core, "ConfigGetParamString");
+    ConfigSetDefaultInt = (ptr_ConfigSetDefaultInt)dlsym(core, "ConfigSetDefaultInt");
+    ConfigGetParamInt = (ptr_ConfigGetParamInt)dlsym(core, "ConfigGetParamInt");
     if (!ConfigOpenSection || !ConfigDeleteSection || !ConfigSetParameter || !ConfigGetParameter ||
-        !ConfigSetDefaultFloat || !ConfigSetDefaultString || !ConfigGetParamString)
+        !ConfigSetDefaultFloat || !ConfigSetDefaultString || !ConfigGetParamString || !ConfigSetDefaultInt || !ConfigGetParamInt)
         return M64ERR_INCOMPATIBLE;
 
     if (ConfigOpenSection(ARMLET_CONFIG_SECTION, &l_section) != M64ERR_SUCCESS) {
@@ -92,6 +98,10 @@ m64p_error armlet_config_startup(m64p_dynlib_handle core)
         "hle = tasks whose microcode has a native handler run natively (none yet), the rest run as lle");
     ConfigSetDefaultString(l_section, CFG_GFX_UCODES, "",
         "Comma-separated 64-bit ucode ids (hex, as logged) allowed to run natively in GfxMode=hle; empty = all with a handler");
+    ConfigSetDefaultString(l_section, CFG_RDP_COALESCE, "auto",
+        "Coalesce the video plugin's ProcessRdpList calls of graphics ucode (exact, see docs): auto = on when the video plugin is foir, on, off");
+    ConfigSetDefaultInt(l_section, CFG_RDP_COALESCE_BYTES, ARMLET_COALESCE_BYTES_DEFAULT,
+        "Bytes of pending RDP command list at which a coalesced list is handed to the video plugin");
     return M64ERR_SUCCESS;
 }
 
@@ -123,10 +133,16 @@ void armlet_config_load(struct armlet_config *cfg)
 {
     const char *mode = l_section ? ConfigGetParamString(l_section, CFG_GFX_MODE) : "lle";
     const char *ucodes = l_section ? ConfigGetParamString(l_section, CFG_GFX_UCODES) : "";
+    const char *coalesce = l_section ? ConfigGetParamString(l_section, CFG_RDP_COALESCE) : "auto";
+    int bytes = l_section ? ConfigGetParamInt(l_section, CFG_RDP_COALESCE_BYTES) : ARMLET_COALESCE_BYTES_DEFAULT;
     const char *env;
 
     if ((env = getenv("ARMLET_GFX")) && *env)
         mode = env;
+    if ((env = getenv("ARMLET_RDP_COALESCE")) && *env)
+        coalesce = env;
+    if ((env = getenv("ARMLET_RDP_COALESCE_BYTES")) && *env)
+        bytes = atoi(env);
     if ((env = getenv("ARMLET_UCODES")))
         ucodes = env;
 
@@ -136,4 +152,17 @@ void armlet_config_load(struct armlet_config *cfg)
     else if (mode && strcasecmp(mode, "lle"))
         armlet_log(M64MSG_WARNING, "unknown GfxMode '%s' (lle or hle); using lle", mode);
     parse_ucodes(cfg, ucodes ? ucodes : "");
+
+    cfg->rdp_coalesce_mode = ARMLET_COALESCE_AUTO;
+    if (coalesce && (!strcasecmp(coalesce, "off") || !strcmp(coalesce, "0") || !strcasecmp(coalesce, "false")))
+        cfg->rdp_coalesce_mode = ARMLET_COALESCE_OFF;
+    else if (coalesce && (!strcasecmp(coalesce, "on") || !strcmp(coalesce, "1") || !strcasecmp(coalesce, "true")))
+        cfg->rdp_coalesce_mode = ARMLET_COALESCE_ON;
+    else if (coalesce && strcasecmp(coalesce, "auto"))
+        armlet_log(M64MSG_WARNING, "unknown RdpCoalesce '%s' (auto, on or off); using auto", coalesce);
+    if (bytes < 8 || bytes > 0x100000) {
+        armlet_log(M64MSG_WARNING, "RdpCoalesceBytes %d out of range (8 to 1048576); using %d", bytes, ARMLET_COALESCE_BYTES_DEFAULT);
+        bytes = ARMLET_COALESCE_BYTES_DEFAULT;
+    }
+    cfg->rdp_coalesce_bytes = (unsigned)bytes;
 }
