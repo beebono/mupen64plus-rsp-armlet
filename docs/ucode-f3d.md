@@ -1,7 +1,7 @@
 # Fast3D (F3D) RSP microcode: semantics for the task-level native path
 
 Status: written for the F3D front-end of the task-level native graphics path (`src/hle/f3d.c`, per-build tables). Reference microcode: **Fast3D 2.0D, Super Mario 64 build, ucode id 94c7cfdd2c872523**
-(FNV-1a-64 of the text as `gfx_ucode.c` logs it). Section 10 gives the other builds (Pilotwings 64, Wave Race 64, the 2.0H builds) as parameter tables and the semantic differences.
+(FNV-1a-64 of the text as `gfx_ucode.c` logs it). Section 10 gives the other builds (Pilotwings 64, Wave Race 64, the 2.0H builds Mischief Makers and Tetrisphere; the F3DEX / F3DLX images that were first taken for "2.0H family B" are not F3D, see the note at the start of section 10) as parameter tables and the semantic differences.
 
 Every statement is tagged where the tag matters: **[verified]** = confirmed by running the real microcode on the fork's JIT (random differential tests against a C model, or the traces of 11), **[read]** =
 from the disassembly only. Where a reference implementation exists it is named: `src/native/f3d_vtx.c`, `f3d_tri.c`, `f3d_vu.h` (op-for-op routines, JIT-exact, local reference only) and the models cited in the
@@ -1517,6 +1517,11 @@ State after the clip (observed at 0xa8, [verified]):
 
 This section has the command-layer differences (10.1) and then, for G_VTX / G_TRI1, the parameter tables, the semantic differences and the groups of builds (10.2 to 10.9).
 
+**Correction (family B is not F3D).** The images called "family B" in the first version of this section (`gl` Glover `208a567e`, `ss` SpaceStation `047252e8`, `wo` Wipeout `19bd8c82`) are not Fast3D 2.0H. The banner strings in their data segments
+read `RSP Gfx ucode F3DEX 1.21` (Glover, the same microcode as Banjo-Kazooie), `F3DEX 1.23` (SpaceStation, Toy Story 2's) and `F3DLX 1.21` (Wipeout). The `RSP SW Version: 2.0H, 02-12-97` string found near them in the ROMs belongs to the
+Sprite2D microcode that the same games also carry (Glover `9d0d289f`). Their command layer (TRI2, MODIFYVTX, BRANCH_Z, G_VTX with 32 slots through a pointer table, the 16-byte G_MOVEMEM, the different G_MTX / G_DL rules) is F3DEX's, not F3D's, and is
+specified with the F3DEX 1.x functions, not here. The facts in this section about `gl`, `ss` and `wo` (the "B" columns, 10.5.4, 10.5.5) stay as observations of those images; they are not a description of an F3D build. Only `mm` and `tt` are 2.0H.
+
 Scope: only the vertex command (G_VTX), the triangle command (G_TRI1, including its cull/clip decision and the RDP triangle bytes) and what they
 read. Command-layer differences (MTX, MOVEMEM, DL stack, ...) are listed only where they change how VTX/TRI1 are fed or where their output goes.
 "SM64" below means the reference semantics of sections 1 to 9.
@@ -1526,7 +1531,7 @@ model of the difference was applied to the SM64 output and matched the other bui
 
 ### 10.1 Differences between builds (command layer only)
 
-| item | SM64 (94c7...) | Pilotwings 64 (3e9b...) | Wave Race 64 (fb48...) | Glover (9d0d..., "2.0H, 02-12-97") |
+| item | SM64 (94c7...) | Pilotwings 64 (3e9b...) | Wave Race 64 (fb48...) | Glover Sprite2D (9d0d..., "2.0H, 02-12-97" string, but Sprite2D) |
 |---|---|---|---|---|
 | version string | 2.0D 04-01-96 | same | same | 2.0H, but this dump is the Sprite2D variant (no MTX/VTX/TRI1) |
 | IMEM base of overlays | 0x768 | 0x788 (main text 0x20 bytes longer: clip code partly resident) | 0x7c8 | n/a |
@@ -1558,8 +1563,7 @@ GL: [read] only; the GL dump is the Sprite2D microcode (op 0x06 DL handler at 0x
 
 #### 10.2.1 Builds (nine F3D images)
 
-The Glover dump `9d0d289ffc583535` is the Sprite2D variant (no MTX/VTX/TRI1, as 10.1 says). Glover's ROM also holds a real F3D 2.0H
-image; all 2.0H ROMs of the sets contain their microcode uncompressed, so the images were cut from the ROMs (z64, big endian):
+The Glover dump `9d0d289ffc583535` is the Sprite2D variant (no MTX/VTX/TRI1, as 10.1 says). Glover's ROM also holds a second microcode, which is F3DEX 1.21 and not F3D (see the correction at the start of this section); all ROMs of the sets contain their microcode uncompressed, so the images were cut from the ROMs (z64, big endian):
 text = 16 KiB from the first word (`j X; addi sp,zero,0x110`), data = 0x800 bytes whose DMEM[4..0x2f] describe the load: D32[4] = ((len-1)<<16)|0x1080
 (text[0..len) -> IMEM 0x80), D32[8]/[12] ov0 (text offset, ((len-1)<<16)|0x1000), then ov1..ov3 as (offset, ((len-1)<<16)|imem). The cut images of
 SM64, PW and WR reproduce the profiler dumps (IMEM identical outside the overlay window).
@@ -1572,11 +1576,11 @@ SM64, PW and WR reproduce the profiler dumps (IMEM identical outside the overlay
 | wr | Wave Race 64, 2.0D 04-01-96 (id fb48..) | Wave Race 64 - Kawasaki Jet Ski.z64 0x8cb80 / 0xa8b10 | WR | |
 | mm | Mischief Makers, 2.0H 02-12-97 | Mischief Makers.z64 0xbb6b0 / 0xef610 | A | XBUS (DMEM) RDP transport |
 | tt | Tetrisphere, 2.0H 02-12-97 | Tetrisphere.z64 0xb8780 / 0xcc920 | A | |
-| gl | Glover (its F3D image), 2.0H 02-12-97 | Glover.z64 0xbd710 / 0xf3640 | B | |
-| ss | SpaceStation Silicon Valley, 2.0H | SpaceStation Silicon Valley.z64 0x2a8f0 / 0x38e30 | B | code = gl with other addresses |
-| wo | Wipeout 64, 2.0H | Wipeout 64.z64 0x6550 / 0x88bd0 | B+ | custom additions, see 4.5 |
+| gl | Glover, **F3DEX 1.21** (not F3D) | Glover.z64 0xbd710 / 0xf3640 | B (F3DEX) | |
+| ss | SpaceStation Silicon Valley, **F3DEX 1.23** (not F3D) | SpaceStation Silicon Valley.z64 0x2a8f0 / 0x38e30 | B (F3DEX) | code = gl with other addresses |
+| wo | Wipeout 64, **F3DLX 1.21** (not F3D) | Wipeout 64.z64 0x6550 / 0x88bd0 | B+ (F3DLX) | custom additions, see 4.5 |
 
-Families: A = SM64 layout (buffers 0x6a0/0x7e0/0x9e0, 16 vertex slots at 0x420); WR = same code body, buffers moved by +0x280; B = 2.0H re-layout
+Families: A = SM64 layout (buffers 0x6a0/0x7e0/0x9e0, 16 vertex slots at 0x420); WR = same code body, buffers moved by +0x280; B = F3DEX / F3DLX re-layout (not an F3D build)
 (buffers 0x9a0/0xae0/0xce0, 32 vertex slots at 0x4a0 addressed through a pointer table). Cut images: `w3/h20/<label>.{text,data,imem,dmem}`
 (`mkpseudo.py`; labels there: sm64v pwv pwb wrv mm2h tt2h gl2h ss2h wo2h), disassemblies `w3/h20/dis-<label>/`.
 
@@ -1622,7 +1626,7 @@ plane flag masks 0xa8..0xb2 (0001 0002 0100 0200 4000 0040), vertex record layou
 | command buffer (k1 start), 320 bytes | 0x6a0 | 0x920 | 0x9a0 |
 | geometry/vertex DMA buffer (s6) | 0x7e0 | 0xa60 | 0xae0 |
 | RDP output buffer start (s7) | 0x9e0 | 0xc60 | 0xce0 |
-| vertex buffer, stride 40 | 0x420, 16 slots | 0x420, 16 slots | 0x4a0, 32 slots; slot pointer = D16[0x31e + 2*slot] (0x4a0 + 40*slot) |
+| vertex buffer, stride 40 | 0x420, 16 slots | 0x420, **32 slots** (the buffer runs up to its command buffer at 0x920; G_VTX n up to 32, found in the games' data; the first version said 16) | 0x4a0, 32 slots; slot pointer = D16[0x31e + 2*slot] (0x4a0 + 40*slot) (F3DEX) |
 | viewport (vscale s16[4], vtrans s16[4]) | 0x320 | 0x320 | 0x380 |
 | modelview (int rows, frac at +0x20) / projection / MP | 0x360 / 0x3a0 / 0x3e0 | same | 0x3e0 / 0x420 / 0x460 |
 | fog vector (fm, fo, max 0x00ff, 0) | 0x330 | 0x330 | 0x390 |
@@ -1705,7 +1709,7 @@ Code of 0x568..0x724 and 0x988..0xfd4 is instruction-identical to sm64 (only the
 differ). The only observable change feeding them: persp-norm is set by G_MOVEWORD index 0x0e (op 0xb4 is RDPHALF). [verified 3000 scenes each, 0 differences,
 persp varied through the right command]. mm additionally uses the XBUS transport and a room check before each triangle (4.4).
 
-#### 10.5.4 gl, ss, wo (2.0H, family B): common differences
+#### 10.5.4 gl, ss, wo (F3DEX 1.21 / 1.23, F3DLX 1.21; family B, not F3D): common differences
 
 These three share the following; gl and ss are the same code (4 blocks of address differences), results identical to each other on all scenes.
 1. Addressing/layout as in 1.1..1.3: 32 vertex slots via the pointer table, other command encodings, relocated buffers, 10-bit DMA length. The G_VTX
@@ -1715,12 +1719,12 @@ These three share the following; gl and ss are the same code (4 blocks of addres
    read. This is sm64 with flag = 0 always. [verified: gl == sm64(flag 0) on flat scenes with random flag bytes, 800 scenes; sm64(flag 1) differs in 319]
 3. Vertex sort tie rule (the only change in the order/parity). Let A,B,C be the three pointers in command order, y_A,y_B,y_C their y.
    sm64: repeat { if y_A < y_B swap(A,B), flip ^= 1; if y_B < y_C { swap(B,C), flip ^= 1, restart } else stop }  -> non-increasing y (the register `at` ends with the largest y;
-   only the comparison direction matters here, 8.2 names the roles H/M/L), a stable sort. 2.0H: idx = 4*[y_B<y_C] + 2*[y_A<y_B] + [y_C<y_A]; (first, second, third; negate) from the tables (A=0,B=2,C=4 as byte offsets):
+   only the comparison direction matters here, 8.2 names the roles H/M/L), a stable sort. F3DEX: idx = 4*[y_B<y_C] + 2*[y_A<y_B] + [y_C<y_A]; (first, second, third; negate) from the tables (A=0,B=2,C=4 as byte offsets):
 
         idx 0: A B C 0 | 1: A B C 0 | 2: B C A 0 | 3: B A C 1 | 4: C A B 0 | 5: A C B 1 | 6: C B A 1 | 7 impossible
 
-   Identical to sm64 for every y triple except y_A == y_C != y_B: if y_A = y_C < y_B sm64 gives (B,A,C) with flip 1, 2.0H gives (B,C,A) with flip 0;
-   if y_A = y_C > y_B sm64 gives (A,C,B) flip 1, 2.0H (C,A,B) flip 0 (enumerated over y in {0,1,2}^3: exactly those 6 triples differ). The flip flag is
+   Identical to sm64 for every y triple except y_A == y_C != y_B: if y_A = y_C < y_B sm64 gives (B,A,C) with flip 1, F3DEX gives (B,C,A) with flip 0;
+   if y_A = y_C > y_B sm64 gives (A,C,B) flip 1, F3DEX (C,A,B) flip 0 (enumerated over y in {0,1,2}^3: exactly those 6 triples differ). The flip flag is
    the area negation (and with it the RDP flip bit and the edge roles), the order changes which vertex is H/M/L and so XL/XM and the attribute bases.
    [verified: 79 of 79 unclipped scenes with such a triangle differ, 0 differences in 3000 scenes once those are skipped; scenes whose clip output has no
    tied y (YL==YM or YM==YH) are identical in 2078 z-clipping scenes and 323 more clip scenes, so the clip code itself is unchanged]
@@ -1798,7 +1802,7 @@ Minimum parameter set per build for a generic native path: the rows of 10.3.1/1.
   buffer-full is unverified. Likewise FIFO wrap per build (only sm64's is in 4.2).
 - 2.0H builds with n > 16 per call (only the slot shift 16 was tested), more than 7 lights, G_MW_POINTS vertex writes, direct MP loads through MOVEMEM matrix indices
   in family B, G_CULLDL in family B.
-- Which of the two Pilotwings images is used by which task; the second and third data segments of SSSV (0x36eb0, 0x37e70 with 2.0H strings) are other
+- Which of the two Pilotwings images is used by which task; the second and third data segments of SSSV (0x36eb0, 0x37e70 with 2.0H strings; SSSV's F3D-looking banner is F3DEX 1.23) are other
   microcodes (not analysed). The Sprite2D variant is outside this document.
 - The clip-plane vector (0,0,0,1) of pw is verified only through its effect (136/600 differences), not through an independent model of the clipper.
 - wr's quad op (0xb5) and its use of the TRI1 core ([read]); the G_VTX `ret` slot and the yield save areas (not VTX/TRI1).
@@ -1853,9 +1857,9 @@ LI always also contains the OSTask header fields the boot code and the microcode
 | wr fb483893 (2.0D) | 253 | 0x000-0xd10, 0xde0-0xf1e, 0xf20-0xf6e | 0xad0-0xae8, 0xaf0-0xaf8, 0xb40-0xb58, 0xba6-0xba8, 0xbae-0xbb0, 0xbe0-0xbe8, 0xbf0-0xc18 |
 | mm 4212d63f (2.0H family A) | 400 | 0x000-0x8ec, 0x8f0-0x926, 0x928-0x92e, 0x9e0-0xe20 | 0x830-0x838, 0x8f0-0x8f8, 0x926-0x928, 0x92e-0x930 |
 | tt 88fa3c0a (2.0H family A) | 400 | as sm64 | 0x8f0-0x8f8, 0x926-0x928, 0x92e-0x930 |
-| 208a567e (Glover F3D, 2.0H family B) | 335 | 0x000-0x950, 0x9a0-0xcc0, 0xce0-0xd80, 0xde0-0xf1e (and the OSTask words 0xfc4-0xfc8) | 0xcc0-0xcc8, 0xcd0-0xcd8 |
-| 047252e8 (SpaceStation, family B, the F3D part) | 166 | 0x000-0xd90, 0xde0-0xf1e, 0xfc4-0xfc8 | 0xb60-0xb98, 0xc26-0xc30, 0xc80-0xc98, 0xcf0-0xcf8 |
-| 19bd8c82 (Wipeout 64) | 334 | 0x000-0x800, 0x9a0-0xb28, 0xce0-0xce8, 0xfc4-0xfc8 | none |
+| 208a567e (Glover, F3DEX 1.21; family B, not F3D) | 335 | 0x000-0x950, 0x9a0-0xcc0, 0xce0-0xd80, 0xde0-0xf1e (and the OSTask words 0xfc4-0xfc8) | 0xcc0-0xcc8, 0xcd0-0xcd8 |
+| 047252e8 (SpaceStation, F3DEX 1.23; family B, not F3D) | 166 | 0x000-0xd90, 0xde0-0xf1e, 0xfc4-0xfc8 | 0xb60-0xb98, 0xc26-0xc30, 0xc80-0xc98, 0xcf0-0xcf8 |
+| 19bd8c82 (Wipeout 64, F3DLX 1.21) | 334 | 0x000-0x800, 0x9a0-0xb28, 0xce0-0xce8, 0xfc4-0xfc8 | none |
 | tasks of other microcode that ended at pc 0x1cc (047252e8 x234, 968dec0e x66, 9d0d289f x65) | 365 | 0x000-0x828 (Sprite2D) or 0x000-0x800 and 0x9a0-0xaf8 | none |
 
 (The "also OSTask" writes of the family B / Wipeout / SpaceStation builds are `0xfc4` flag words written by those microcodes at their end; the 2.0D builds and the family A 2.0H builds never write 0xfc0 and up.)
