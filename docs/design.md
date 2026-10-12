@@ -251,7 +251,7 @@ therefore does not have to imitate the microcode's internal structure (its RDP o
 
 **The run.** `armlet_hle_run` saves the RSP state (`prsp_native_save`), zeroes the status-poll counters (the JIT does at the start of a task), switches the fork's sandbox on (SP DMA writes
 to RDRAM keep their old bytes, the RDP is not run) and calls the family. The family works on the real DMEM / IMEM / RDRAM and the SP / DPC registers through `hle_dma_read`,
-`hle_dma_write`, `hle_mtc0`, `hle_poll_status` (the fork's own DMA and register code, so the registers, IMEM dirty bits and events come out as the JIT's). The DMA writes and the DPC
+`hle_dma_read`, `hle_dma_write`, `hle_mtc0`, `hle_poll_status` (the fork's own DMA and register code, so the registers, IMEM dirty bits and events come out as the JIT's; when nothing records events, a one-row DMA between DMEM and RDRAM takes a short path with the same bytes, log and register values, and `hle_rdram_write` is the same write for a front-end that has its data in host words), and the sandbox keeps its own undo arena for those writes instead of the fork's allocation per DMA row. The DMA writes and the DPC
 register writes are logged. When the family returns `HLE_OK` the task is complete; `HLE_DECLINE` (`hle_decline(task, "why")`) gives the whole task to the JIT: the state is loaded back and
 the RDRAM restored, so nothing is split. At the commit the sandbox is switched off (RDRAM back to its state at the task start), then the log is replayed in order through
 `prsp_rdp_defer_dma_write` / `prsp_native_mtc0`, which is exactly the call sequence of a JIT run, so the video plugin and the RDRAM end identical. `SP_PC`, `SP_STATUS` (BROKE | HALT, the
@@ -265,19 +265,29 @@ Kong 64 task on the x86 desktop; on the A55 about 80 ns per interpreted instruct
 stretches between them was dropped in favour of whole-task native front-ends (see below); the hook code is not part of the tree.
 
 **What verify compares** (`ARMLET_HLE_VERIFY=1` or `jit`: the oracle is the JIT; `=interp`: the oracle is the interpreter, and the JIT then runs the task for real; and the offline harness): the
-native run in the sandbox, then the state is put back and the oracle runs the task; then, native against oracle: all of DMEM (except the ucode's declared dead ranges) and IMEM, the SP / DPC registers,
-MI_INTR (without the DP interrupt bit, which the RDP raises when it processes a full sync), the pc, `SP_STATUS_TIMEOUT`, the IMEM-changed bits (the oracle's must be a subset of the native run's),
-the RDRAM written by SP DMA (the bytes of every range either side wrote, except the chunks of the RDP output buffer: those are compared as the stream), the sequence of recorded SP register writes
-(DMA reads and writes with the hash of the bytes, status, semaphore, DPC_START / END / STATUS), and **the bytes of the RDP lists as one stream** (FNV-1a-64 and length of all list bytes in order,
-with the second word of NO_OP and the sync commands zeroed: the RDP ignores it and the microcode leaves stale scratch there). Not compared: list boundaries, because they are unobservable to foir
-(coalescing already relies on it; a family that submits fewer, larger lists names the event kinds to skip in `ev_ignore`); the scalar and vector registers, the accumulator, flags and divide unit
-(`ARMLET_HLE_POISON=1` fills them with a pattern after a native task so that a wrong claim shows up in the equivalence runs); the status-poll counters (the JIT zeroes them at every task start).
+native run in the sandbox, then the state is put back and the oracle runs the task; then native against oracle. Two modes, the same for every family (nothing is set per ucode):
+
+- **External effects (the default; the measure is the result, not what happens in between).** All of DMEM except the ucode's declared dead ranges, IMEM, the SP / DPC registers, MI_INTR (without the DP
+  interrupt bit, which the RDP raises when it processes a full sync), the pc, `SP_STATUS_TIMEOUT`, the RDRAM the task wrote by SP DMA (the bytes of every range either side wrote, except the RDP output
+  ring: below), and **the bytes of the RDP lists as one stream** (FNV-1a-64 and length of all list bytes in order, parsed across list boundaries like foir's parser so that a command split over lists normalises
+  like a whole one, with the second word of NO_OP and the sync commands zeroed: the RDP ignores it and the microcode leaves stale scratch there; a ucode whose lists contain commands the default sizing gets
+  wrong sets `hle_ucode.rdp_cmd_size`). Not compared: the order and number of the intermediate SP register writes, the DMA chunking, the poll counts, the IMEM dirty bits, list boundaries (unobservable to foir;
+  coalescing already relies on it), the scalar and vector registers, the accumulator, flags and divide unit (`ARMLET_HLE_POISON=1` fills them with a pattern after a native task so that a wrong claim shows up
+  in the equivalence runs), the status-poll counters (the JIT zeroes them at every task start).
+- **Exact events (`ARMLET_HLE_EXACT=1`).** The above plus the sequence of recorded SP register writes (DMA reads and writes with the hash of the bytes, status, semaphore, DPC_START / END / STATUS) and the
+  IMEM dirty bits (the oracle's must be a subset). A front-end that claims to do what the microcode does, DMA for DMA, can be held to it: it checks `hle_exact()` and then does every DMA and every IMEM load
+  the microcode does.
+
+**The RDP output ring is a mask in RDRAM.** The ucode's OSTask names the ring (`hle_ucode.ring_off`: the DMEM address of the two words, start and end; 0xfe8 on F3DEX2). The RDP lists are written there and
+taken by the video plugin; nothing reads the ring afterwards, and what a native run leaves in it differs from the JIT's in the stale second words of the sync commands (the stream compare zeroes them) and in
+whatever scratch a chunk starts or ends in. The compare skips the DMA chunks inside the ring (their bytes are compared through the stream); `ARMLET_DMEM_POISON=ring` overwrites the whole ring with a pseudo-random pattern after
+every graphics task (the lists have been taken by then) as the proof, like the poison of a DMEM mask.
 
 **DMEM masks.** A build may declare DMEM ranges dead at the end of a task (`hle_dead_range`: scratch the next task overwrites before reading, or never reads). A mask is data in the build's table, cites
 how it was established, is applied identically by the verify compare, the poison probe and the `tools/equiv` hash (`armlet_hle_print_masks` feeds the shim), is validated by the equivalence runs
 of all the target games on both devices, and never covers RDP lists, the output FIFO state, the DL stack or anything the RDP or a later task reads. **The evidence is per family**: the F3D family
 leaves DMEM dead except the OSTask header (Fleet C's poison runs), F3DEX 1.x does not reload DMEM 0x800-0xfbf between tasks; each family's mask needs its own proof.
-The probe is `ARMLET_DMEM_POISON=<lo>-<hi>[,...] | mask | all` (`hle_task.c`): at the end of every graphics task, whether the JIT or the task-level path ran it, those DMEM bytes are overwritten with a
+The probe is `ARMLET_DMEM_POISON=<lo>-<hi> | mask | all | ring` (a comma separated list of any of them; `hle_task.c`): at the end of every graphics task, whether the JIT or the task-level path ran it, those DMEM bytes are overwritten with a
 pseudo-random pattern (a different one each time); `mask` is the build's dead ranges, `all` is [0, 0xfc0). A range is dead when a run with it poisoned gives the events, the RDP stream, the
 pictures and the audio of the unpoisoned run (docs/testing.md).
 
@@ -285,8 +295,8 @@ pictures and the audio of the unpoisoned run (docs/testing.md).
 the recorded events and the JIT's RDP stream) for tasks the JIT runs; `armlet-native-replay file.snap...` runs the family on them and compares with the recorded JIT result
 (`--bench N` times the front-end and the JIT; `HLE_POKE=addr=val,...` sets DMEM bytes first). Snapshots are ROM-derived: keep them in `test-output/`.
 
-**Environment.** `ARMLET_HLE_VERIFY` (`1`, `jit`, `interp`), `ARMLET_HLE_INTERP`, `ARMLET_HLE_STATS` (counts, decline reasons, time), `ARMLET_HLE_POISON`, `ARMLET_DMEM_POISON`, `ARMLET_HLE_ABORT`,
-`ARMLET_HLE_QUIET`, `HLE_RSP_DEBUG=<n>` (the first n interpreted instructions), `HLE_RSP_TRACE` (every interpreted instruction with the vector register it wrote), `HLE_RSP_WATCH=<addr>` (every change of
+**Environment.** `ARMLET_HLE_VERIFY` (`1`, `jit`, `interp`), `ARMLET_HLE_EXACT` (the exact-events compare), `ARMLET_HLE_INTERP`, `ARMLET_HLE_STATS` (counts, decline reasons, time), `ARMLET_HLE_POISON`, `ARMLET_DMEM_POISON`, `ARMLET_HLE_ABORT`,
+`ARMLET_HLE_QUIET`, `HLE_DUMP_STREAM=<file>` (the native side's RDP stream), `HLE_DMEM_ALL` (list every differing DMEM byte), `HLE_RSP_DEBUG=<n>` (the first n interpreted instructions), `HLE_RSP_TRACE` (every interpreted instruction with the vector register it wrote), `HLE_RSP_WATCH=<addr>` (every change of
 a DMEM byte, with the pc), `HLE_RSP_PROFILE` (executions per pc, `PROF pc count` lines on stderr at the end of every task).
 
 ## Native handler contract (superseded)

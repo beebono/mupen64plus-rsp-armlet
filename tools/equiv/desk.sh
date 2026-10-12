@@ -7,6 +7,7 @@ set -e
 R=$(cd "$(dirname "$0")/../.." && pwd)
 : "${CORE_DIR:?}" "${CONSOLE:?}" "${FOIR_SO:?}"
 X=${X:-$R/test-output/equiv/desk}; N=${NATIVE_OUT:-$R/out/native}
+"$R/tools/equiv/stamp.sh" check "$N/tools" || exit 1
 mkdir -p "$X/plug/ref" "$X/out" "$X/cfg" "$X/home/cache"
 ln -sf "${ARMLET_SO:-$N/mupen64plus-rsp-armlet.so}" "$X/plug/mupen64plus-rsp-armlet.so"
 ln -sf "$N/ref/mupen64plus-rsp-hle.so" "$N/ref/mupen64plus-rsp-parallel.so" "$X/plug/ref/"

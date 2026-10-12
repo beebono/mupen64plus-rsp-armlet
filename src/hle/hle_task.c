@@ -25,7 +25,7 @@ struct evbuf {
 #define POISON_MAX 16
 static struct {
     int init, capture, gfx;
-    int poison_mask; unsigned n_poison;           /* ARMLET_DMEM_POISON */
+    int poison_mask, poison_ring; unsigned n_poison;           /* ARMLET_DMEM_POISON */
     uint16_t poison_lo[POISON_MAX], poison_hi[POISON_MAX];
     uint32_t poison_seed;
     uint64_t cur_id;
@@ -57,23 +57,27 @@ static void ev_cb(const PrspNativeEvent *e)
  * the events, the RDP stream, the pictures and the audio of the unpoisoned run unchanged (docs/design.md, "DMEM masks"). */
 static void poison_parse(const char *e)
 {
-    if (!strcmp(e, "mask")) {
-        H.poison_mask = 1;
-        return;
-    }
-    if (!strcmp(e, "all")) {
-        H.poison_lo[0] = 0;
-        H.poison_hi[0] = 0xfc0;
-        H.n_poison = 1;
-        return;
-    }
-    while (*e && H.n_poison < POISON_MAX) {
+    while (*e) {
         unsigned lo, hi;
-        int n;
-        if (sscanf(e, "%x-%x%n", &lo, &hi, &n) != 2 || hi <= lo || hi > 0x1000)
-            break;
-        H.poison_lo[H.n_poison] = (uint16_t)lo;
-        H.poison_hi[H.n_poison++] = (uint16_t)hi;
+        int n = 0;
+        if (!strncmp(e, "mask", 4)) {
+            H.poison_mask = 1;
+            n = 4;
+        } else if (!strncmp(e, "ring", 4)) {
+            H.poison_ring = 1;
+            n = 4;
+        } else if (!strncmp(e, "all", 3)) {
+            if (H.n_poison < POISON_MAX) {
+                H.poison_lo[H.n_poison] = 0;
+                H.poison_hi[H.n_poison++] = 0xfc0;
+            }
+            n = 3;
+        } else {
+            if (sscanf(e, "%x-%x%n", &lo, &hi, &n) != 2 || hi <= lo || hi > 0x1000 || H.n_poison >= POISON_MAX)
+                break;
+            H.poison_lo[H.n_poison] = (uint16_t)lo;
+            H.poison_hi[H.n_poison++] = (uint16_t)hi;
+        }
         e += n;
         if (*e == ',')
             e++;
@@ -94,8 +98,17 @@ static void poison_range(unsigned lo, unsigned hi)
 void armlet_hle_poison(const struct hle_ucode *uc)
 {
     unsigned i;
-    if (!H.n_poison && !H.poison_mask)
+    if (!H.n_poison && !H.poison_mask && !H.poison_ring)
         return;
+    if (H.poison_ring && uc && uc->ring_off) {      /* the RDP output ring in RDRAM: the RDP has taken the lists; nothing may read the bytes any more */
+        uint32_t lo = ((const uint32_t *)H.v.dmem)[uc->ring_off >> 2] & 0x7ffff8, hi = ((const uint32_t *)H.v.dmem)[(uc->ring_off >> 2) + 1] & 0x7ffff8, a;
+        for (a = lo; a < hi && a < 0x800000; a++) {
+            H.poison_seed ^= H.poison_seed << 13;
+            H.poison_seed ^= H.poison_seed >> 17;
+            H.poison_seed ^= H.poison_seed << 5;
+            ((uint8_t *)H.v.rdram)[a ^ 3] = (uint8_t)(H.poison_seed >> 11);
+        }
+    }
     for (i = 0; i < H.n_poison; i++)
         poison_range(H.poison_lo[i], H.poison_hi[i]);
     if (H.poison_mask && uc)
@@ -162,7 +175,7 @@ bool armlet_hle_task_begin(struct armlet_ctx *c)
         H.pc0 = *c->rsp.SP_PC_REG & 0xfff;
         prsp_native_save(H.s0);
         H.ev.n = 0;
-        hle_stream_reset(&H.st);
+        hle_stream_reset(&H.st, armlet_hle_find(u->id));
         armlet_event_listener = ev_cb;
         prsp_native_record(1);
         H.recording = 1;

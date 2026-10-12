@@ -10,6 +10,7 @@ X=${X:-$R/test-output/session/desk}
 mkdir -p "$X/plug" "$X/out" "$X/cfg" "$X/home/cache"
 ln -sf "$R/out/native/mupen64plus-rsp-armlet.so" "$X/plug/armlet.so"
 for v in prof prof3; do [ -f "$R/out/native-$v/mupen64plus-rsp-armlet.so" ] && ln -sf "$R/out/native-$v/mupen64plus-rsp-armlet.so" "$X/plug/armlet-$v.so"; done
+"$R/tools/equiv/stamp.sh" check "$R/out/native/tools" || exit 1
 ln -sf "$R/out/native/tools/rsp-shim.so" "$R/out/native/tools/input-det.so" "$X/plug/"
 ln -sf "$FOIR_SO" "$X/plug/mupen64plus-rdp-foir.so"
 printf '%s\n' "$@" > "$X/runs.txt"

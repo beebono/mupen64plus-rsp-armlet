@@ -32,12 +32,13 @@ There is nothing to set for the rest of the pairing: `hle_gfx` and `hle_aud` are
 | `ARMLET_NATIVE_POISON=1` | `on` mode: after a routine, fill the registers it declares dead with a pattern (shows a wrong live-out claim downstream) |
 | `ARMLET_NATIVE_CAPTURE=<dir>` | verify: write routine-entry snapshot files (`<routine>-ok-<call>.snap`, `-mismatch-`) for the offline harness; `ARMLET_NATIVE_CAPTURE_EVERY=n` (default 16) one entry in n, `ARMLET_NATIVE_CAPTURE_MAX=n` (default 32) per routine. ROM-derived: keep in `test-output/` |
 | `ARMLET_HLE_VERIFY=1\|jit\|interp` | `GfxMode=hle`: each task-level run is also run by the oracle (the JIT, or the interpreter with `interp`) and the end states, events and RDP streams compared ([design.md](design.md#task-level-native-path)); the JIT's result stands. Mismatches go to the log |
+| `ARMLET_HLE_EXACT=1` | `GfxMode=hle`: the exact-events mode: verify also compares the sequence of recorded SP register writes and the IMEM dirty bits, and a front-end that supports it does every SP DMA and IMEM load the microcode does (default: external effects only; [design.md](design.md#task-level-native-path)) |
 | `ARMLET_HLE_INTERP=1` | `GfxMode=hle`: run the tasks on the interpreter instead of a family's native front-end |
 | `ARMLET_HLE_STATS=1` | the task-level path: tasks, native runs and time, declines and their reasons, verify counts (every 64 graphics tasks) |
 | `ARMLET_HLE_POISON=1` | after a task-level run, fill the scalar and vector registers, accumulator and flags with a pattern |
 | `ARMLET_HLE_ABORT=1`, `ARMLET_HLE_QUIET=1` | verify: `abort()` at the first mismatch; or do not log the mismatches |
 | `ARMLET_HLE_CAPTURE=<dir>` | write snapshot files of the graphics task starts the JIT runs (`hle.task-<ucode>-<n>.snap`) for `armlet-native-replay`; `ARMLET_HLE_CAPTURE_EVERY=n` (16), `_MAX=n` (16). ROM-derived: keep in `test-output/` |
-| `ARMLET_DMEM_POISON=<lo>-<hi>[,...]\|mask\|all` | at the end of every graphics task (whoever ran it) overwrite those DMEM bytes with a pseudo-random pattern: a probe for dead-DMEM ranges; `mask` = the dead ranges of the ucode's table, `all` = `[0, 0xfc0)` |
+| `ARMLET_DMEM_POISON=<lo>-<hi>\|mask\|all\|ring[,...]` | at the end of every graphics task (whoever ran it) overwrite those DMEM bytes with a pseudo-random pattern: a probe for dead-DMEM ranges; `mask` = the dead ranges of the ucode's table, `all` = `[0, 0xfc0)`, `ring` = the RDP output ring in RDRAM (the bounds from the OSTask, `hle_ucode.ring_off`) |
 | `ARMLET_RDP_COALESCE=auto\|on\|off` | overrides `RdpCoalesce` (`0`/`1` also work) |
 | `ARMLET_RDP_COALESCE_BYTES=<n>` | overrides `RdpCoalesceBytes` |
 | `ARMLET_RDP_STATS=1` | diagnostic: every 256 graphics tasks the coalescing counters (callbacks, deferred, direct, calls to the video plugin and why each flush happened) go to the log |

@@ -90,8 +90,10 @@ struct hle_ucode {
     uint8_t vtx_variant;            /* the vertex record layout / vertex code */
     uint8_t tri_variant;            /* the triangle setup code */
     uint8_t clip_variant;           /* the clip-flag computation and the clipping code */
-    uint32_t ev_ignore;             /* bit k: the recorded SP register writes of kind PRSP_EV_* k are not compared in verify (a family whose chunking of the RDP output
-                                       differs from the microcode's lists them here; the concatenated RDP stream and the final registers are always compared) */
+    unsigned (*rdp_cmd_size)(unsigned first_byte);   /* the size in bytes of the RDP command that starts with this byte, when the ucode's lists have commands the default sizing gets wrong (a triangle whose shade
+                                       block is not announced by its command byte: Wave Race); NULL: hle_rdp_cmd_size (hle_internal.h) */
+    uint16_t ring_off;              /* DMEM address of the two words that bound the RDP output ring in RDRAM (start, end) at the start of a task (the OSTask output buffer: 0xfe8 on F3DEX2), or 0.
+                                       The ring is treated like a DMEM mask: its contents are not compared (the RDP stream is), because nothing reads them (ARMLET_DMEM_POISON=ring) */
     const void *fam_data;           /* the family's per-build constants (its own struct: PCs, cull bits, constants), or NULL */
     const struct hle_dead_range *dead;  /* DMEM masks, or NULL */
     unsigned n_dead;
@@ -118,15 +120,17 @@ struct hle_task {
     int log;                        /* nonzero: RDRAM writes and RDP register writes are logged for the commit (the task-level run; not the step routine) */
 };
 
-/* DMEM accessors (big-endian view) */
+/* DMEM accessors (big-endian view). DMEM and RDRAM are arrays of 32-bit words that are also accessed as halfwords and bytes: through types that may alias. */
+typedef uint16_t __attribute__((may_alias)) hle_u16a;
+typedef uint32_t __attribute__((may_alias)) hle_u32a;
 static inline uint8_t hle_dm8(const struct hle_task *t, unsigned a) { return ((const uint8_t *)t->dmem)[(a & 0xfff) ^ 3]; }
-static inline uint16_t hle_dm16(const struct hle_task *t, unsigned a) { return ((const uint16_t *)t->dmem)[((a & 0xfff) ^ 2) >> 1]; }
+static inline uint16_t hle_dm16(const struct hle_task *t, unsigned a) { return ((const hle_u16a *)t->dmem)[((a & 0xfff) ^ 2) >> 1]; }
 static inline uint32_t hle_dm32(const struct hle_task *t, unsigned a) { return t->dmem[(a & 0xfff) >> 2]; }
 static inline void hle_st8(struct hle_task *t, unsigned a, uint8_t v) { ((uint8_t *)t->dmem)[(a & 0xfff) ^ 3] = v; }
-static inline void hle_st16(struct hle_task *t, unsigned a, uint16_t v) { ((uint16_t *)t->dmem)[((a & 0xfff) ^ 2) >> 1] = v; }
+static inline void hle_st16(struct hle_task *t, unsigned a, uint16_t v) { ((hle_u16a *)t->dmem)[((a & 0xfff) ^ 2) >> 1] = v; }
 static inline void hle_st32(struct hle_task *t, unsigned a, uint32_t v) { t->dmem[(a & 0xfff) >> 2] = v; }
 /* RDRAM accessors (big-endian view, byte address) */
-static inline uint32_t hle_rd32(const struct hle_task *t, uint32_t a) { return *(const uint32_t *)(t->rdram + (a & 0x7ffffc)); }
+static inline uint32_t hle_rd32(const struct hle_task *t, uint32_t a) { return *(const hle_u32a *)(t->rdram + (a & 0x7ffffc)); }
 
 /* ---- shared library: the pieces every family uses (src/hle/hle_core.c; the arithmetic is in hle_fx.h) ---------------------------------------------------------------- */
 /* A family gives up on the task: the framework restores everything and the JIT runs it. `why` is a static string (statistics count the reasons). Returns HLE_DECLINE. */
@@ -135,6 +139,9 @@ int hle_decline(struct hle_task *t, const char *why);
  * value (bytes - 1 | rows << 12 | skip << 20). Reads from RDRAM into DMEM / IMEM (mem_addr bit 12), writes DMEM to RDRAM. */
 void hle_dma_read(struct hle_task *t, unsigned mem_addr, unsigned dram_addr, uint32_t len);
 void hle_dma_write(struct hle_task *t, unsigned mem_addr, unsigned dram_addr, uint32_t len);
+/* A write of RDRAM that stands for an SP DMA write (nbytes a multiple of 8, dram 8-aligned) without going through the fork's DMA: the same effect for the commit (the log), the sandbox and
+ * the verify, at a fraction of the cost. words = the bytes as the host words of DMEM / RDRAM hold them. */
+void hle_rdram_write(struct hle_task *t, uint32_t dram, const uint32_t *words, uint32_t nbytes);
 /* MTC0 to an SP / DPC register as the microcode does it. A write to DPC_END hands the list [DPC_CURRENT, end) to the RDP: buffered until the task commits, then
  * replayed in order with the DMA writes through the coalescing path (so the video plugin sees exactly what it sees after a JIT run). DPC_START and DPC_STATUS
  * writes are replayed too. Returns nonzero when the write ended the run (the SP halted). */
@@ -143,6 +150,9 @@ int hle_mtc0(struct hle_task *t, unsigned rd, uint32_t value);
 int hle_poll_status(struct hle_task *t, unsigned rt, uint32_t *value);
 /* The end of the task as the BREAK instruction makes it (SP_STATUS BROKE | HALT, MI_INTR when INTR_BREAK is set); end_pc is the pc the RSP is left at. */
 void hle_break(struct hle_task *t, unsigned end_pc);
+
+/* nonzero in the exact-events mode (ARMLET_HLE_EXACT=1): a front-end then does every SP DMA and every IMEM load the microcode does, in its order, instead of only what the external effects need */
+int hle_exact(void);
 
 /* ---- the RSP interpreter (hle_rsp.cpp) ------------------------------------------------------------------------------------------------------------------------------ */
 /* The microcode's own code, run by an interpreter on the real DMEM / IMEM and the JIT's register file (the vector unit through the fork's per-instruction helpers), with

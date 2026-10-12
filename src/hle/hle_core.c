@@ -82,7 +82,7 @@ struct evbuf {
 #define MAX_REASONS 48
 
 static struct {
-    int init, verify, interp, poison, stats, abort_on_mismatch, quiet;   /* verify: 0 off, 1 the JIT is the oracle, 2 the interpreter */
+    int init, verify, interp, poison, stats, abort_on_mismatch, quiet, exact;   /* verify: 0 off, 1 the JIT is the oracle, 2 the interpreter */
     PrspNativeView v;
     PrspNativeSnap *s0, *sn, *sj;
     struct rec *recs;
@@ -132,6 +132,58 @@ static struct rec *rec_new(void)
 }
 
 /* ---- the SP DMA row geometry (as rsp_dma_read / rsp_dma_write in the fork's rsp/cp0.cpp) --------------------------------------------------------------------------- */
+int hle_exact(void) { return K.exact; }
+
+/* hle_rdram_write: the RDRAM writes of a front-end that does not go through the fork's DMA (its sandbox cannot see them) keep their own undo log */
+static struct undo {
+    uint32_t addr, n;
+    size_t off;
+} *g_undo;
+static size_t g_n_undo, g_cap_undo, g_n_uarena, g_cap_uarena;
+static uint8_t *g_uarena;
+
+static void undo_apply(void)
+{
+    size_t i;
+    for (i = g_n_undo; i-- > 0;)
+        memcpy((uint8_t *)K.v.rdram + g_undo[i].addr, g_uarena + g_undo[i].off, g_undo[i].n);
+    g_n_undo = g_n_uarena = 0;
+}
+/* the sandbox off: the fork's undo log, then ours */
+static void sandbox_off(void)
+{
+    prsp_native_sandbox(0);
+    undo_apply();
+}
+
+void hle_rdram_write(struct hle_task *t, uint32_t dram, const uint32_t *words, uint32_t nbytes)
+{
+    struct undo *u;
+    struct rec *r;
+    size_t off;
+    dram &= 0x7ffff8;
+    g_undo = grow(g_undo, &g_cap_undo, g_n_undo + 1, sizeof(*g_undo));
+    g_uarena = grow(g_uarena, &g_cap_uarena, g_n_uarena + nbytes, 1);
+    u = &g_undo[g_n_undo++];
+    u->addr = dram;
+    u->n = nbytes;
+    u->off = g_n_uarena;
+    memcpy(g_uarena + g_n_uarena, t->rdram + dram, nbytes);
+    g_n_uarena += nbytes;
+    memcpy(t->rdram + dram, words, nbytes);
+    r = rec_new();
+    r->kind = R_DMA_WR;
+    r->a = dram;
+    r->b = nbytes;
+    r->c = 0;
+    r->d = 0;
+    off = K.n_arena;
+    K.arena = (uint8_t *)grow(K.arena, &K.cap_arena, off + nbytes, 1);
+    r->off = off;
+    memcpy(K.arena + off, words, nbytes);
+    K.n_arena = off + nbytes;
+}
+
 int hle_decline(struct hle_task *t, const char *why)
 {
     (void)t;
@@ -140,8 +192,24 @@ int hle_decline(struct hle_task *t, const char *why)
     return HLE_DECLINE;
 }
 
+/* An SP DMA of one row to or from DMEM without the fork's register-write chain when nothing records events (verify, capture): the same bytes, the same sandbox and log, the same register values
+ * afterwards (rsp_dma_read / rsp_dma_write in the fork's rsp/cp0.cpp: DMA_CACHE = mem + length, DMA_DRAM = dram + length + skip, the length register 0xff8). The write is the expensive one: the
+ * fork's sandbox allocates an undo record per row; hle_rdram_write keeps one arena. Rows that wrap, straddle or leave RDRAM take the fork's path. */
 void hle_dma_read(struct hle_task *t, unsigned mem_addr, unsigned dram_addr, uint32_t len)
 {
+    if (!armlet_event_listener && !(len >> 12) && !(mem_addr & 0x1000)) {
+        uint32_t length = ((len & 0xfff) + 1 + 7) & ~7u, skip = (len >> 20) & 0xfff;
+        uint32_t cache = (mem_addr & 0x1fff) & ~3u, dram = (dram_addr & 0xffffff) & ~7u;
+        if ((cache & 0xfff) + length > 0x1000)
+            length = 0x1000 - (cache & 0xfff);
+        if (length && (dram & 0x7ffffc) + length <= 0x800000) {
+            memcpy(t->dmem + (cache >> 2), t->rdram + (dram & 0x7ffffc), length);
+            *t->cr[0] = cache + length;
+            *t->cr[1] = dram + length + skip;
+            *t->cr[2] = 0xff8;
+            return;
+        }
+    }
     hle_mtc0(t, 0, mem_addr);
     hle_mtc0(t, 1, dram_addr);
     hle_mtc0(t, 2, len);
@@ -149,6 +217,19 @@ void hle_dma_read(struct hle_task *t, unsigned mem_addr, unsigned dram_addr, uin
 
 void hle_dma_write(struct hle_task *t, unsigned mem_addr, unsigned dram_addr, uint32_t len)
 {
+    if (!armlet_event_listener && t->log && !(len >> 12) && !(mem_addr & 0x1000)) {
+        uint32_t length = ((len & 0xfff) + 1 + 7) & ~7u, skip = (len >> 20) & 0xfff;
+        uint32_t cache = (mem_addr & 0x1fff) & ~3u, dram = (dram_addr & 0xffffff) & ~7u;
+        if ((cache & 0xfff) + length > 0x1000)
+            length = 0x1000 - (cache & 0xfff);
+        if (length && (dram & 0x7ffffc) + length <= 0x800000) {
+            hle_rdram_write(t, dram & 0x7ffffc, &t->dmem[cache >> 2], length);
+            *t->cr[0] = cache + length;
+            *t->cr[1] = dram + length + skip;
+            *t->cr[3] = 0xff8;
+            return;
+        }
+    }
     hle_mtc0(t, 0, mem_addr);
     hle_mtc0(t, 1, dram_addr);
     hle_mtc0(t, 3, len);
@@ -174,10 +255,14 @@ static void log_dma_write(struct hle_task *t, uint32_t len, uint32_t cache, uint
     K.arena = (uint8_t *)grow(K.arena, &K.cap_arena, off + (size_t)length * (count + 1), 1);
     r->off = off;
     for (i = 0, d = dram; i <= count; i++, d += length + skip) {
-        uint32_t j;
-        for (j = 0; j < length; j += 4) {
-            memcpy(K.arena + off, t->rdram + ((d + j) & 0x7ffffc), 4);
-            off += 4;
+        uint32_t a = d & 0x7ffffc;
+        if (a + length <= 0x800000) {
+            memcpy(K.arena + off, t->rdram + a, length);
+            off += length;
+        } else {
+            uint32_t j;
+            for (j = 0; j < length; j += 4, off += 4)
+                memcpy(K.arena + off, t->rdram + ((d + j) & 0x7ffffc), 4);
         }
     }
     K.n_arena = off;
@@ -252,10 +337,10 @@ static void ev_cb(const PrspNativeEvent *e)
 }
 
 
-static void side_reset(int i)
+static void side_reset(int i, const struct hle_ucode *uc)
 {
     K.ev[i].n = 0;
-    hle_stream_reset(&K.st[i]);
+    hle_stream_reset(&K.st[i], uc);
 }
 
 /* ---- the comparison (verify) ---------------------------------------------------------------------------------------------------------------------------------------- */
@@ -289,22 +374,34 @@ static int dead_dmem(const struct hle_ucode *u, unsigned byte)
     return 0;
 }
 
-/* The final state of the native run (a) against the JIT's (b). Compared: DMEM (except the ucode's dead ranges, hle_dead_range), IMEM, the SP and DPC registers,
- * MI_INTR, the pc, SP_STATUS_TIMEOUT, "IMEM changed by DMA" bits (the JIT's must be a subset: a native run may leave a block marked that the JIT's run loop already
- * handled), the RDRAM the task wrote by DMA (the bytes of every range either side wrote), the recorded SP register writes in order (except the kinds the ucode lists
- * in ev_ignore), and the concatenated bytes of the RDP lists (not their boundaries). NOT compared: the scalar and vector registers, the accumulator, the flags and
- * the divide unit (the next task loads them before use; ARMLET_HLE_POISON=1 fills them after a native task to prove it), the status-poll counters (the JIT zeroes
- * them at the start of every task). */
+static uint32_t l_ring_lo, l_ring_hi;          /* the output ring of the task being verified */
+static int in_ring(const struct hle_ucode *u, uint32_t dram, uint32_t span, unsigned count)
+{
+    uint32_t end = dram + span * (count + 1);
+    return u->ring_off && l_ring_hi > l_ring_lo && dram >= l_ring_lo && end <= l_ring_hi;
+}
+
+/* The final state of the native run (a) against the JIT's (b) (docs/design.md, "What verify compares"). The standard mode compares the EXTERNAL EFFECTS: DMEM (except the ucode's dead
+ * ranges, hle_dead_range), IMEM, the SP and DPC registers, MI_INTR, the pc, SP_STATUS_TIMEOUT, the RDRAM the task wrote by DMA (the bytes of every range either side wrote, except the RDP
+ * output ring, hle_ucode.ring_off), and the concatenated bytes of the RDP lists (not their boundaries). The order and number of the intermediate SP register writes, the DMA chunking, the
+ * poll counts and the IMEM dirty bits are NOT compared. The exact-events mode (ARMLET_HLE_EXACT=1) adds the recorded SP register writes in order and the dirty bits, for a front-end that
+ * claims to do what the microcode does, DMA for DMA. NOT compared in either: the scalar and vector registers, the accumulator, the flags and the divide unit (the next task loads them
+ * before use; ARMLET_HLE_POISON=1 fills them after a native task to prove it), the status-poll counters (the JIT zeroes them at the start of every task). */
 static void compare_tasks(struct report *r, const struct hle_ucode *u, const PrspNativeSnap *a, const PrspNativeSnap *b, int with_ram)
 {
     unsigned i, nd = 0;
     const uint8_t *da = (const uint8_t *)a->dmem, *db = (const uint8_t *)b->dmem;
     const struct evbuf *ea = &K.ev[0], *eb = &K.ev[1];
 
+    l_ring_lo = l_ring_hi = 0;
+    if (u->ring_off) {
+        l_ring_lo = b->dmem[u->ring_off >> 2] & 0x7ffff8;
+        l_ring_hi = b->dmem[(u->ring_off >> 2) + 1] & 0x7ffff8;
+    }
     for (i = 0; i < 4096; i++) {
         unsigned addr = i ^ 3;
         if (da[i] != db[i] && !dead_dmem(u, addr)) {
-            if (nd++ < 24)
+            if (nd++ < (getenv("HLE_DMEM_ALL") ? 100000u : 24u))
                 rep(r, "  DMEM[%03x]: native %02x, JIT %02x\n", addr, da[i], db[i]);
         }
     }
@@ -322,9 +419,16 @@ static void compare_tasks(struct report *r, const struct hle_ucode *u, const Prs
         rep(r, "  pc: native %03x, JIT %03x\n", a->pc, b->pc);
     if (a->sp_status_timeout != b->sp_status_timeout)
         rep(r, "  SP_STATUS_TIMEOUT: native %d, JIT %d\n", a->sp_status_timeout, b->sp_status_timeout);
-    if (b->dirty_blocks & ~a->dirty_blocks)
+    if (K.exact && (b->dirty_blocks & ~a->dirty_blocks))
         rep(r, "  IMEM dirty blocks: native %08x, JIT %08x (the JIT's must be a subset)\n", a->dirty_blocks, b->dirty_blocks);
 
+    if (getenv("HLE_DUMP_STREAM")) {         /* development: the native side's stream, to compare with the interpreter's (ARMLET_HLE_INTERP=1) run */
+        FILE *fp = fopen(getenv("HLE_DUMP_STREAM"), "wb");
+        if (fp) {
+            fwrite(K.st[0].bytes, 1, K.st[0].len < K.st[0].cap ? K.st[0].len : K.st[0].cap, fp);
+            fclose(fp);
+        }
+    }
     /* the RDP lists, as one byte stream */
     if (K.st[0].len != K.st[1].len || K.st[0].hash != K.st[1].hash) {
         uint64_t k, n = K.st[0].len < K.st[1].len ? K.st[0].len : K.st[1].len;
@@ -339,15 +443,11 @@ static void compare_tasks(struct report *r, const struct hle_ucode *u, const Prs
             }
     }
 
-    /* the recorded SP register writes (DMA reads and writes, status, DPC): the DMA writes carry the hash of the bytes written */
-    {
+    /* the recorded SP register writes (DMA reads and writes, status, DPC): the DMA writes carry the hash of the bytes written (exact-events mode only) */
+    if (K.exact) {
         size_t ia = 0, ib = 0, k = 0;
         PrspNativeEvent ea_cmp, eb_cmp;
         for (;;) {
-            while (ia < ea->n && (u->ev_ignore >> ea->v[ia].kind & 1))
-                ia++;
-            while (ib < eb->n && (u->ev_ignore >> eb->v[ib].kind & 1))
-                ib++;
             if (ia >= ea->n || ib >= eb->n)
                 break;
             {   /* a DMA write from a dead range (the RDP buffers): the bytes it carries are compared through the RDP stream, not by this hash */
@@ -397,7 +497,7 @@ static void compare_tasks(struct report *r, const struct hle_ucode *u, const Prs
                 /* A chunk of the RDP output buffer (a DMA write from dead DMEM) is not compared byte for byte: the second words of NO_OP and the sync commands in it are stale scratch that the RDP ignores,
                  * a chunk can start in the middle of a command, and the ring is overwritten by later chunks. The list the RDP takes from the chunks (read from RDRAM when its end is announced) is compared
                  * as a stream, with those words zeroed (hle_stream_add); the events compare where and how much was written. */
-                if (dead_dmem(u, e->v[k].a & 0xfff))
+                if (in_ring(u, dram, length + skip, count) || (!u->ring_off && dead_dmem(u, e->v[k].a & 0xfff)))
                     continue;
                 for (row = 0, d = dram; row <= count; row++, d += length + skip) {
                     uint32_t j;
@@ -448,9 +548,14 @@ static void replay(struct armlet_ctx *c)
 #ifdef ARMLET_RDP_DEFER
             prsp_rdp_defer_dma_write(r->a, r->b, r->c, r->d);
 #endif
-            for (row = 0; row <= r->d; row++, d += r->b + r->c)
-                for (j = 0; j < r->b; j += 4, off += 4)
-                    memcpy((uint8_t *)K.v.rdram + ((d + j) & 0x7ffffc), K.arena + off, 4);
+            for (row = 0; row <= r->d; row++, d += r->b + r->c) {
+                if ((d & 0x7ffffc) + r->b <= 0x800000) {
+                    memcpy((uint8_t *)K.v.rdram + (d & 0x7ffffc), K.arena + off, r->b);
+                    off += r->b;
+                } else
+                    for (j = 0; j < r->b; j += 4, off += 4)
+                        memcpy((uint8_t *)K.v.rdram + ((d + j) & 0x7ffffc), K.arena + off, 4);
+            }
         } else {
             if (r->rd == 9)
                 *K.v.cr[10] = r->b;     /* DPC_CURRENT as it was when the microcode wrote DPC_END */
@@ -508,6 +613,7 @@ static void init_once(void)
     K.stats = (e = getenv("ARMLET_HLE_STATS")) && *e && *e != '0';
     K.abort_on_mismatch = (e = getenv("ARMLET_HLE_ABORT")) && *e && *e != '0';
     K.quiet = (e = getenv("ARMLET_HLE_QUIET")) && *e && *e != '0';
+    K.exact = (e = getenv("ARMLET_HLE_EXACT")) && *e && *e != '0';
     armlet_log(M64MSG_INFO, "hle: task-level native graphics path%s%s%s", K.verify == 1 ? ", verified against the JIT" : K.verify == 2 ? ", verified against the interpreter" : "",
                K.interp ? ", on the interpreter" : "", K.poison ? ", poisoning the vector state" : "");
 }
@@ -538,12 +644,13 @@ static int native_run(struct armlet_ctx *c, const struct hle_ucode *uc, int reco
     t.start_pc = c ? (*c->rsp.SP_PC_REG & 0xfff) : *K.v.pc;
     t.log = 1;
     K.n_recs = K.n_arena = 0;
+    g_n_undo = g_n_uarena = 0;
     K.why = NULL;
     K.broke = 0;
     prsp_native_save(K.s0);
     memset(K.v.mfc0_count, 0, 32 * sizeof(short));        /* the JIT does this at the start of every task */
     if (record) {
-        side_reset(0);
+        side_reset(0, uc);
         K.cur_ev = 0;
         armlet_event_listener = ev_cb;
         prsp_native_record(1);
@@ -555,7 +662,7 @@ static int native_run(struct armlet_ctx *c, const struct hle_ucode *uc, int reco
         rc = HLE_DECLINE;
     }
     if (rc != HLE_OK) {
-        prsp_native_sandbox(0);
+        sandbox_off();
         if (record) {
             prsp_native_record(0);
             armlet_event_listener = NULL;
@@ -605,10 +712,10 @@ int armlet_hle_run(struct armlet_ctx *c, const struct armlet_ucode_id *u)
         if (!K.ram_n)
             abort();
         memcpy(K.ram_n, K.v.rdram, 0x800000);
-        prsp_native_sandbox(0);
+        sandbox_off();
         prsp_native_load(K.s0);
         prsp_native_resync();
-        side_reset(1);
+        side_reset(1, uc);
         K.cur_ev = 1;
         if (K.verify == 2) {
             /* the oracle is the interpreter: it runs the task in the sandbox (the RDRAM it leaves is compared), then the state goes back and the JIT runs the task for real, unrecorded */
@@ -642,7 +749,7 @@ int armlet_hle_run(struct armlet_ctx *c, const struct armlet_ucode_id *u)
         if (irc == HLE_OK)
             compare_tasks(&r, uc, sn, sj, 1);
         if (K.verify == 2) {
-            prsp_native_sandbox(0);
+            sandbox_off();
             prsp_native_load(K.s0);
             prsp_native_resync();
             jit_run(c);
@@ -666,7 +773,7 @@ int armlet_hle_run(struct armlet_ctx *c, const struct armlet_ucode_id *u)
     }
 
     /* commit: the RDRAM goes back to the start of the task and the log is replayed in order through the calls the JIT's run makes */
-    prsp_native_sandbox(0);
+    sandbox_off();
     armlet_rdp_defer_task_begin(c);
     replay(c);
     armlet_rdp_defer_task_end();
@@ -675,6 +782,53 @@ int armlet_hle_run(struct armlet_ctx *c, const struct armlet_ucode_id *u)
     K.ticks += now_ns() - t0;
     armlet_hle_poison(uc);
     return 1;
+}
+
+/* ns per `sync` (a DPC_END write and a DMA write of `bytes` from DMEM to the ring) as a front-end issues it, in the sandbox, with the events recorded or not (--dmabench of the offline harness) */
+double armlet_hle_dmabench(const struct hle_ucode *uc, const PrspNativeSnap *before, unsigned iters, unsigned bytes, int record)
+{
+    struct hle_task t;
+    unsigned i;
+    uint64_t t0;
+    init_once();
+    K.verify = 0;
+    prsp_native_load(before);
+    memset(&t, 0, sizeof(t));
+    t.dmem = K.v.dmem;
+    t.imem = K.v.imem;
+    t.rdram = (uint8_t *)K.v.rdram;
+    t.cr = K.v.cr;
+    t.irq = K.v.irq;
+    t.uc = uc;
+    t.log = 1;
+    K.n_recs = K.n_arena = 0;
+    g_n_undo = g_n_uarena = 0;
+    if (record) {
+        side_reset(0, uc);
+        K.cur_ev = 0;
+        armlet_event_listener = ev_cb;
+        prsp_native_record(1);
+    }
+    prsp_native_sandbox(1);
+    t0 = now_ns();
+    for (i = 0; i < iters; i++) {
+        uint32_t cur = 0x100000 + (i & 63) * 0x400;
+        if (!(i & 255)) {
+            K.n_recs = K.n_arena = 0;
+            sandbox_off();
+            prsp_native_sandbox(1);
+        }
+        *K.v.cr[10] = *K.v.cr[8] = *K.v.cr[9] = cur;
+        hle_mtc0(&t, 9, cur);
+        hle_dma_write(&t, 0xba8, cur, bytes - 1);
+    }
+    t0 = now_ns() - t0;
+    sandbox_off();
+    if (record) {
+        prsp_native_record(0);
+        armlet_event_listener = NULL;
+    }
+    return (double)t0 / iters;
 }
 
 /* ns per run of the front-end from `before`, state loaded each time (the load is not timed) */
@@ -691,10 +845,27 @@ double armlet_hle_bench(const struct hle_ucode *uc, const PrspNativeSnap *before
         t0 = now_ns();
         if (native_run(NULL, uc, 0, 0) != HLE_OK)
             return -1.0;
-        prsp_native_sandbox(0);
+        sandbox_off();
         total += now_ns() - t0;
     }
     return (double)total / iters;
+}
+
+/* a digest of the commit log (records and the bytes of the DMA writes) */
+static uint64_t log_digest(void)
+{
+    uint64_t h = 0xcbf29ce484222325ull;
+    size_t i;
+    for (i = 0; i < K.n_recs; i++) {
+        const struct rec *r = &K.recs[i];
+        uint32_t v[7] = { r->kind, r->rd, r->a, r->b, r->c, r->d, 0 };
+        unsigned k;
+        for (k = 0; k < 7; k++)
+            h = (h ^ v[k]) * 0x100000001b3ull;
+    }
+    for (i = 0; i < K.n_arena; i++)
+        h = (h ^ K.arena[i]) * 0x100000001b3ull;
+    return h;
 }
 
 int armlet_hle_harness(const struct hle_ucode *uc, const PrspNativeSnap *before, const PrspNativeSnap *after, const PrspNativeEvent *ev, size_t n_ev, char *out,
@@ -721,10 +892,26 @@ int armlet_hle_harness(const struct hle_ucode *uc, const PrspNativeSnap *before,
         return -1;
     }
     prsp_native_save(K.sn);
-    prsp_native_sandbox(0);
+    sandbox_off();
     prsp_native_record(0);
     armlet_event_listener = NULL;
-    side_reset(1);
+    {   /* the same run again with nothing recording (the fast DMA paths of hle_dma_read / hle_dma_write): the same end state and the same commit log */
+        uint64_t d0 = log_digest();
+        PrspNativeSnap *sj = K.sj;
+        prsp_native_load(before);
+        if (native_run(NULL, uc, 0, 0) != HLE_OK) {
+            r.count++;
+            rep(&r, "  the run without recording declined: %s\n", K.why ? K.why : "?");
+        } else {
+            prsp_native_save(sj);
+            sandbox_off();
+            if (memcmp(sj->dmem, K.sn->dmem, sizeof(sj->dmem)) || memcmp(sj->imem, K.sn->imem, sizeof(sj->imem)) || memcmp(sj->cr, K.sn->cr, sizeof(sj->cr)) || sj->irq != K.sn->irq || sj->pc != K.sn->pc)
+                rep(&r, "  the run without recording ends in another state (DMEM / IMEM / registers)\n");
+            if (log_digest() != d0)
+                rep(&r, "  the run without recording leaves another commit log\n");
+        }
+    }
+    side_reset(1, uc);
     K.ev[1].n = 0;
     for (i = 0; i < n_ev; i++) {
         if (ev[i].kind == HLE_EV_STREAM) {

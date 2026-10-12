@@ -1,7 +1,7 @@
 /*
  * arMLEt - tools/native/replay.c: offline harness for native routines
  *
- *   armlet-native-replay [--bench N] [--quiet] file.snap...
+ *   armlet-native-replay [--bench N] [--dmabench BYTES] [--quiet] file.snap...
  *
  * Replays routine-entry snapshots (ARMLET_NATIVE_CAPTURE=<dir> on a verify or capture run writes them): each one is loaded into a private
  * RSP (the fork's JIT, with a private RDRAM that holds only the rows the routine's DMA reads read), and the routine is run natively in the
@@ -52,6 +52,10 @@ static struct {
     RSP_INFO info;
 } W;
 
+/* the video plugin takes the list at once (as the host core does): without it the microcode's flush waits for the RDP forever on a JIT run (--bench) */
+static void rdp_taken(void) { W.regs[10] = W.regs[9]; W.regs[8] = W.regs[9]; W.regs[11] &= ~0x400u; }
+
+
 static void world_init(void)
 {
     RSP_INFO *i = &W.info;
@@ -84,10 +88,12 @@ static void world_init(void)
     i->CheckInterrupts = nop;
     i->ProcessDlistList = nop;
     i->ProcessAlistList = nop;
-    i->ProcessRdpList = nop;
+    i->ProcessRdpList = rdp_taken;
     i->ShowCFB = nop;
     parallelRSPInitiateRSP(*i, &cycles);
 }
+
+static unsigned dmab, dmab_bytes = 1024;      /* --dmabench BYTES: time a sync (DPC_END + a DMA write) */
 
 static int replay(const char *path, unsigned bench)
 {
@@ -168,6 +174,9 @@ static int replay(const char *path, unsigned bench)
         printf("%s: %s -> %s (%.1f us)\n", path, uc->name, nd ? "MISMATCH native vs JIT" : "native == JIT", res.native_us);
         if (nd)
             printf("%s", buf);
+        if (dmab && !nd) {
+            printf("  sync (DPC_END + a DMA write of %u bytes to the ring): %.0f ns with the events recorded, %.0f ns not recording\n", dmab_bytes, armlet_hle_dmabench(uc, &before, 20000, dmab_bytes, 1), armlet_hle_dmabench(uc, &before, 20000, dmab_bytes, 0));
+        }
         if (bench && !nd) {
             double nn, jn = 0;
             uint8_t *ram0 = malloc(0x800000);       /* the JIT's runs write the RDRAM (lists, and in some games over the display list): every run starts from the same bytes */
@@ -366,7 +375,10 @@ int main(int argc, char **argv)
     for (a = 1; a < argc; a++) {
         if (!strcmp(argv[a], "--bench") && a + 1 < argc)
             bench = (unsigned)atoi(argv[++a]);
-        else if (!strcmp(argv[a], "--dep2test"))
+        else if (!strcmp(argv[a], "--dmabench") && a + 1 < argc) {
+            dmab = 1;
+            dmab_bytes = (unsigned)atoi(argv[++a]);
+        } else if (!strcmp(argv[a], "--dep2test"))
             d2 = 1;
         else if (!strcmp(argv[a], "--hookbench") && a + 1 < argc)
             hb = (unsigned)atoi(argv[++a]);

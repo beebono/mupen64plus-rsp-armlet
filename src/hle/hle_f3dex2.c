@@ -33,7 +33,7 @@ static int f3dex2_run(struct hle_task *t, const struct hle_ucode *u)
 
 static const struct hle_family l_fam = { .name = "f3dex2", .run = f3dex2_run };
 
-#define DEAD .dead = l_dead_out, .n_dead = sizeof(l_dead_out) / sizeof(l_dead_out[0])
+#define DEAD .ring_off = 0xfe8, .dead = l_dead_out, .n_dead = sizeof(l_dead_out) / sizeof(l_dead_out[0])
 HLE_UCODE(l_dk64) = { .id = 0x48c7e653a6adcda8ull, .name = "F3DEX 2.07 (Donkey Kong 64)", .fam = &l_fam, .flags = HLE_F_NEAR_CLIP, DEAD };
 HLE_UCODE(l_snap) = { .id = 0xd576cfcfed9d9c18ull, .name = "F3DEX.NoN 2.08H (Pokemon Snap)", .fam = &l_fam, DEAD };
 HLE_UCODE(l_pm) = { .id = 0xc734403d56034719ull, .name = "F3DEX 2.08 (Paper Mario)", .fam = &l_fam, .flags = HLE_F_NEAR_CLIP, DEAD };

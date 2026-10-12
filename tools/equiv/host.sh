@@ -13,6 +13,7 @@ DEV=$1; LABEL=$2; shift 2
 FLAVOUR=${EQUIV_FLAVOUR:-$DEV}; WAIT=${EQUIV_WAIT:-300}; LOCKDIR=${EQUIV_LOCKDIR:-/tmp/n64-plugins-locks}
 FOIR=${EQUIV_FOIR:-$R/../toolchains/rg35xxsp/out/mupen64plus-rdp-foir.so}
 RG35=${RG35_TOOLCHAIN:-$R/../toolchains/rg35xxsp}
+"$R/tools/equiv/stamp.sh" check "$R/out/rg35xxsp/tools" || exit 1
 L=$R/test-output/equiv/$DEV; mkdir -p "$L" "$LOCKDIR"
 export R DEV LABEL EQUIV_X FLAVOUR WAIT FOIR RG35 L PIN EQUIV_ROMS
 export RUNS; RUNS=$(printf '%s\n' "$@")

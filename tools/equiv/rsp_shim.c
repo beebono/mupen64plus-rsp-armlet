@@ -150,6 +150,24 @@ EXPORT unsigned int CALL DoRspCycles(unsigned int c)
 
     cum_ms += (b - a) * 1e3;
     calls++;
+    if (getenv("RSPT_DUMP") && rinfo.DMEM) {       /* development: RSPT_DUMP=<prefix> RSPT_DUMP_CALLS=<first>-<last>: DMEM and IMEM after those calls (1-based) */
+        unsigned lo = 0, hi = 0;
+        if (getenv("RSPT_DUMP_CALLS"))
+            sscanf(getenv("RSPT_DUMP_CALLS"), "%u-%u", &lo, &hi);
+        if (calls >= lo && calls <= hi) {
+            char nm[512];
+            FILE *f;
+            snprintf(nm, sizeof(nm), "%s.%lu.bin", getenv("RSPT_DUMP"), calls);
+            f = fopen(nm, "wb");
+            if (f) {
+                fwrite(rinfo.DMEM, 1, 4096, f);
+                fwrite(rinfo.IMEM, 1, 4096, f);
+                if (getenv("RSPT_DUMP_RDRAM"))
+                    fwrite(rinfo.RDRAM, 1, 0x800000, f);
+                fclose(f);
+            }
+        }
+    }
     if (hl && rinfo.DMEM) {
         unsigned char dm[4096];
         const unsigned char *dmem = rinfo.DMEM;

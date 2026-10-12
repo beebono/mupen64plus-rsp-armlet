@@ -23,12 +23,17 @@ struct hle_stream {
     uint64_t hash, len;
     uint8_t *bytes;
     size_t cap;
+    unsigned (*size)(unsigned first_byte);      /* the ucode's own sizing of a command, or NULL */
+    uint32_t cmd_pos, cmd_end, ignore_from;     /* the command being parsed, carried over from one list to the next (a command split over lists normalises as one) */
 };
 
-static inline void hle_stream_reset(struct hle_stream *s)
+static inline void hle_stream_reset(struct hle_stream *s, const struct hle_ucode *uc)
 {
+    s->size = uc ? uc->rdp_cmd_size : NULL;
     s->hash = 0xcbf29ce484222325ull;
     s->len = 0;
+    s->cmd_pos = s->cmd_end = 0;
+    s->ignore_from = ~0u;
 }
 
 /* The size in bytes of the RDP command that starts with `op` (the low 6 bits of its first byte): triangles 32 + 64 shade + 64 texture + 16 z, texture rectangles 16 (the RSP
@@ -48,19 +53,20 @@ static inline int hle_rdp_w1_ignored(unsigned op) { return op == 0x00 || (op >= 
 /* the list [cur, end) as a CMD_END event reports it (status bit 0 = XBUS: the bytes are in DMEM); dmem / rdram are the host word images */
 static inline void hle_stream_add(struct hle_stream *s, const PrspNativeEvent *e, const uint32_t *dmem, const uint32_t *rdram)
 {
-    uint32_t a, o = 0, cmd_end = 0;
-    unsigned ignore_from = 0;
+    uint32_t a;
     if (e->kind != PRSP_EV_CMD_END || e->b <= e->a || e->b - e->a > (1u << 20))
         return;
-    for (a = e->a; a < e->b; a++, o++) {
+    for (a = e->a; a < e->b; a++) {
         uint8_t byte = e->c & 1 ? ((const uint8_t *)dmem)[(a & 0xfff) ^ 3] : ((const uint8_t *)rdram)[(a & 0x7fffff) ^ 3];
-        if (o == cmd_end) {                     /* a command starts */
+        if (s->cmd_pos == s->cmd_end) {         /* a command starts */
             unsigned op = byte & 0x3f;
-            cmd_end = o + hle_rdp_cmd_size(op);
-            ignore_from = hle_rdp_w1_ignored(op) ? o + 4 : ~0u;
+            s->cmd_pos = 0;
+            s->cmd_end = s->size ? s->size(byte) : hle_rdp_cmd_size(op);
+            s->ignore_from = hle_rdp_w1_ignored(op) ? 4 : ~0u;
         }
-        if (o >= ignore_from && o < ignore_from + 4)
+        if (s->cmd_pos >= s->ignore_from && s->cmd_pos < s->ignore_from + 4)
             byte = 0;
+        s->cmd_pos++;
         s->hash = (s->hash ^ byte) * 0x100000001b3ull;
         if (s->len < HLE_STREAM_KEEP) {
             if (s->len >= s->cap) {
@@ -87,6 +93,7 @@ struct hle_harness_result {
 int armlet_hle_harness(const struct hle_ucode *uc, const PrspNativeSnap *before, const PrspNativeSnap *after, const PrspNativeEvent *ev, size_t n_ev, char *out,
                        size_t outsz, struct hle_harness_result *res);
 
+double armlet_hle_dmabench(const struct hle_ucode *uc, const PrspNativeSnap *before, unsigned iters, unsigned bytes, int record);
 double armlet_hle_bench(const struct hle_ucode *uc, const PrspNativeSnap *before, unsigned iters);   /* ns per front-end run, or -1 when it declines */
 
 #include <stdio.h>

@@ -306,6 +306,20 @@ pairing (rsp-hle + parallel-rsp), `tools/equiv` hash stream, state stream, 6 scr
 | `tools/hle/build_prim_test.sh` (hle_fx.h against the VU instruction sequences, 200 000 trials x 8 lanes per primitive) | 0 failures; with `HLE_FX_MUTATE=1..7` (a deliberate error in function n) 2 264 697, 703 830, 735, 7 698, 21, 772 760 and 255 517 failures |
 | default fork build unchanged: the 20 object files of `build_m64p_plugin.sh` (x86_64), fork HEAD against the tree with the framework's two fork changes | 19 identical; `rsp_disasm.cpp.o` differs (below); the `native_enter` shortcut is inside `PRSP_NATIVE` |
 
+**Framework changes of the second round** (external-effects compare, the output ring as a mask, cross-list stream parsing, the cheaper log, the staleness check). Evidence:
+
+| check | result |
+|---|---|
+| the index of this change set exported to a scratch directory (`git checkout-index`, the submodules copied) builds (`scripts/build.sh native --tools`, `native`) and replays 25 captured tasks of each of the four games (the family runs on the interpreter) | 100 of 100 equal, in the default mode and with `ARMLET_HLE_EXACT=1`; the captured tasks of another family are reported as "no task-level handler in this build" |
+| desktop equivalence, 4 games x 700 frames, the exported module with `ARMLET_HLE_VERIFY=interp` | PASS for all four (hash, state, screenshots, audio), 255 / 447 / 703 / 575 tasks compared, 0 differences |
+| `armlet-native-replay --dmabench BYTES` (the cost of one sync: a DPC_END write and a DMA write of BYTES to the ring, in the sandbox), x86 desktop, 1024 bytes | events recorded (verify, capture): 1067 -> 946 ns; not recording: 208 -> 70 ns |
+| the same on rgdsplus (A55), 344 / 1024 bytes | recording: 3.3 / 7.9 -> 2.8 / 7.0 us; not recording: 1.28 / 2.91 -> 0.56 / 1.95 us |
+| the same on rg35xxsp (A53) | recording: 3.2 / 7.9 -> 2.9 / 6.7 us; not recording: 1.38 / 2.73 -> 0.53 / 0.96 us |
+| the harness runs every task a second time with nothing recording (the short DMA paths) and compares the end state and the commit log | a deliberate error in the short path (the wrong source words) is reported on every task with a DMA write |
+
+Where the sync time went: the fork's sandbox allocated a `std::vector` for the old bytes of every DMA row, the commit log copied the written bytes one word at a time, and the commit replay copied them back one word at a time; with events recorded (verify, capture) the fork also hashes every DMA write and every list, which is the 7 us per KB and stays. The log is built when a task runs
+natively (the commit needs it); nothing is hashed or formatted per DMA / per list unless `ARMLET_HLE_VERIFY` or `ARMLET_HLE_CAPTURE` is on.
+
 **Fork changes.** `rsp_disasm.cpp`: SB / SH / SW with `rt == 0` were printed as `nop` (the emulation was never affected, only the disassembly: `sw $0, 473($0)` is a real store); `rsp_jit.cpp`: `native_enter`
 continues with the block at the new pc if there is one (the cost of a hooked call that returns to compiled code fell from 183 ns to 46 ns).
 

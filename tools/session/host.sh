@@ -15,6 +15,7 @@ DEV=$1; LABEL=$2; shift 2
 FLAVOUR=${SESSION_FLAVOUR:-$DEV}; WAIT=${SESSION_WAIT:-300}; LOCKDIR=${SESSION_LOCKDIR:-/tmp/n64-plugins-locks}
 FOIR=${SESSION_FOIR:-$R/../toolchains/rg35xxsp/out/mupen64plus-rdp-foir.so}
 RG35=${RG35_TOOLCHAIN:-$R/../toolchains/rg35xxsp}
+"$R/tools/equiv/stamp.sh" check "$R/out/rg35xxsp/tools" || exit 1
 L=$R/test-output/session/$DEV; mkdir -p "$L" "$LOCKDIR"
 export R DEV LABEL SESSION_X FLAVOUR WAIT FOIR RG35 L PIN
 export RUNS; RUNS=$(printf '%s\n' "$@")
