@@ -19,7 +19,7 @@ RG35=${RG35_TOOLCHAIN:-$R/../toolchains/rg35xxsp}
 ref=0; [ "$1" = ref ] && { ref=1; shift; }
 target=$1; shift || true
 prof=0; prof3=0; shadow=0; mutate=0; tools=0; nmut=0
-for a in "$@"; do case $a in --prof) prof=1 ;; --prof3) prof3=1 ;; --shadow) shadow=1 ;; --mutate=[1-9]) mutate=${a#--mutate=} ;; --tools) tools=1 ;; --nmut=[1-9]) nmut=${a#--nmut=} ;; *) echo "unknown option $a" >&2; exit 2 ;; esac; done
+for a in "$@"; do case $a in --prof) prof=1 ;; --prof3) prof3=1 ;; --shadow) shadow=1 ;; --mutate=[1-9]) mutate=${a#--mutate=} ;; --tools) tools=1 ;; --nmut=[0-9]|--nmut=10) nmut=${a#--nmut=} ;; *) echo "unknown option $a" >&2; exit 2 ;; esac; done
 name=$target; [ $prof = 1 ] && name=$name-prof; [ $prof3 = 1 ] && name=$name-prof3; [ $shadow = 1 ] && name=$name-shadow; [ $mutate != 0 ] && name=$name-mut$mutate; [ $tools = 1 ] && name=$name-tools; [ $nmut != 0 ] && name=$name-nmut$nmut
 OUT=$R/out/$name; [ $ref = 1 ] && OUT=$R/out/$target/ref
 W=$R/work/$name; [ $ref = 1 ] && W=$R/work/ref-$name
@@ -48,7 +48,7 @@ if [ $ref = 0 ]; then
     cmake -S "$W/src" -B "$W/build" -G Ninja -DCMAKE_BUILD_TYPE=Release "${TC[@]}" -DM64P_API_INCLUDE_DIR="$API" "${flags[@]}" >/dev/null
     cmake --build "$W/build"
     cp "$W/build/mupen64plus-rsp-armlet.so" "$OUT/"
-    [ $tools = 1 ] && cp "$W/build/armlet-native-replay" "$OUT/"
+    [ $tools = 1 ] && cp "$W/build/armlet-native-replay" "$W/build/armlet-native-trace" "$OUT/"
     libs=(mupen64plus-rsp-armlet.so)
 else
     cmake -S "$W/src/ext/parallel-rsp" -B "$W/prsp" -G Ninja -DCMAKE_BUILD_TYPE=Release "${TC[@]}" \

@@ -101,6 +101,26 @@ uint64_t armlet_native_imem_hash(const uint32_t *imem, unsigned lo, unsigned hi)
     return h;
 }
 
+uint64_t armlet_native_routine_hash(const struct armlet_routine *r, const uint32_t *imem)
+{
+    uint64_t h = 0xcbf29ce484222325ull;
+    unsigned i, k;
+    if (!r->n_hash_ranges) {
+        if (r->dep2_hi > r->dep2_lo) {
+            for (i = r->dep_lo >> 2; i < (unsigned)(r->dep_hi >> 2) && i < 1024; i++)
+                h = (h ^ imem[i]) * 0x100000001b3ull;
+            for (i = r->dep2_lo >> 2; i < (unsigned)(r->dep2_hi >> 2) && i < 1024; i++)
+                h = (h ^ imem[i]) * 0x100000001b3ull;
+            return h;
+        }
+        return armlet_native_imem_hash(imem, r->dep_lo, r->dep_hi);
+    }
+    for (k = 0; k < r->n_hash_ranges; k++)
+        for (i = r->hash_ranges[2 * k] >> 2; i < (unsigned)(r->hash_ranges[2 * k + 1] >> 2) && i < 1024; i++)
+            h = (h ^ imem[i]) * 0x100000001b3ull;
+    return h;
+}
+
 static void registry_build(void)
 {
     const struct armlet_routine *const *p;
@@ -255,11 +275,13 @@ static int host_lookup(void *user, unsigned pc, const uint32_t *imem, PrspNative
         unsigned i;
         if (r->entry_pc != pc)
             continue;
-        h = armlet_native_imem_hash(imem, r->dep_lo, r->dep_hi);
+        h = armlet_native_routine_hash(r, imem);
         if (h == r->imem_hash) {
             m->cookie = G.active[a];
             m->dep_lo = r->dep_lo;
             m->dep_hi = r->dep_hi;
+            m->dep2_lo = r->dep2_lo;
+            m->dep2_hi = r->dep2_hi;
             return 1;
         }
         for (i = 0; i < G.n_seen; i++)
@@ -311,30 +333,37 @@ static void compare_snaps(struct report *r, const PrspNativeSnap *a, const PrspN
     for (i = 1; i < 32; i++)
         if (a->sr[i] != b->sr[i] && !(rt->dead_sr >> i & 1))
             rep(r, "  sr[%u]: native %08x, JIT %08x\n", i, a->sr[i], b->sr[i]);
-    for (i = 0; i < 32; i++)
-        if (memcmp(a->vr[i], b->vr[i], 16) && !(rt->dead_vr >> i & 1)) {
+    for (i = 0; i < 32; i++) {
+        unsigned live = (rt->dead_vr >> i & 1) ? 0 : (~rt->dead_vr_lanes[i] & 0xff), diff = 0;
+        for (k = 0; k < 8; k++)
+            if ((live >> k & 1) && a->vr[i][k] != b->vr[i][k])
+                diff = 1;
+        if (diff) {
             vec_str(x, a->vr[i]);
             vec_str(y, b->vr[i]);
             rep(r, "  vr[%u]:\n    native %s\n    JIT    %s\n", i, x, y);
         }
-    if (!rt->dead_acc)
-        for (i = 0; i < 3; i++)
-            if (memcmp(a->acc + 8 * i, b->acc + 8 * i, 16)) {
-                vec_str(x, a->acc + 8 * i);
-                vec_str(y, b->acc + 8 * i);
-                rep(r, "  acc %s:\n    native %s\n    JIT    %s\n", i == 0 ? "HI" : i == 1 ? "MD" : "LO", x, y);
-            }
-    if (!rt->dead_flags)
-        for (i = 0; i < 3; i++)
-            if (memcmp(a->flags[i], b->flags[i], 32)) {
-                uint16_t fa = 0, fb = 0;
-                for (k = 0; k < 8; k++) {
-                    fa |= (a->flags[i][8 + k] ? 1 : 0) << k | (a->flags[i][k] ? 1 : 0) << (8 + k);
-                    fb |= (b->flags[i][8 + k] ? 1 : 0) << k | (b->flags[i][k] ? 1 : 0) << (8 + k);
-                }
-                rep(r, "  %s: native %04x, JIT %04x (lanes %s)\n", i == 0 ? "VCO" : i == 1 ? "VCC" : "VCE", fa, fb,
-                    fa == fb ? "differ although the bit masks agree" : "differ");
-            }
+    }
+    for (i = 0; i < 3; i++) {
+        unsigned live = rt->dead_acc ? 0 : (~rt->dead_acc_lanes[i] & 0xff), diff = 0;
+        for (k = 0; k < 8; k++)
+            if ((live >> k & 1) && a->acc[8 * i + k] != b->acc[8 * i + k])
+                diff = 1;
+        if (diff) {
+            vec_str(x, a->acc + 8 * i);
+            vec_str(y, b->acc + 8 * i);
+            rep(r, "  acc %s:\n    native %s\n    JIT    %s\n", i == 0 ? "HI" : i == 1 ? "MD" : "LO", x, y);
+        }
+    }
+    for (i = 0; i < 3; i++) {
+        uint16_t fa = 0, fb = 0, live = rt->dead_flags ? 0 : (uint16_t)~rt->dead_flag_lanes[i];
+        for (k = 0; k < 8; k++) {
+            fa |= (a->flags[i][8 + k] ? 1 : 0) << k | (a->flags[i][k] ? 1 : 0) << (8 + k);
+            fb |= (b->flags[i][8 + k] ? 1 : 0) << k | (b->flags[i][k] ? 1 : 0) << (8 + k);
+        }
+        if ((fa ^ fb) & live)
+            rep(r, "  %s: native %04x, JIT %04x\n", i == 0 ? "VCO" : i == 1 ? "VCC" : "VCE", fa, fb);
+    }
     if (!rt->dead_div && (a->div_out != b->div_out || a->div_in != b->div_in || a->dp_flag != b->dp_flag))
         rep(r, "  divide unit: native out %04x in %04x dp %d, JIT out %04x in %04x dp %d\n", (uint16_t)a->div_out, (uint16_t)a->div_in,
             a->dp_flag, (uint16_t)b->div_out, (uint16_t)b->div_in, b->dp_flag);
@@ -471,26 +500,79 @@ static int snapfile_write(const struct armlet_routine *rt, unsigned pc, unsigned
     return 0;
 }
 
-static void poison(const struct armlet_routine *r)
+/* Fills registers with a pattern that changes from call to call: `dead` registers after a routine (ARMLET_NATIVE_POISON), or the registers of
+ * ARMLET_NATIVE_PROBE, to find out which ones the rest of a run reads (a register whose poisoning changes nothing downstream is dead). */
+struct dead_set {
+    uint32_t sr;
+    uint8_t vr[32];         /* lane masks, 0xff for a whole register */
+    uint8_t acc[3];
+    uint16_t flags[3];
+    int div;
+};
+
+static void poison_regs(const struct dead_set *d)
 {
     unsigned i, k;
+    uint32_t x = (uint32_t)(G.call_no * 2654435761u) | 1;
     for (i = 1; i < 32; i++)
-        if (r->dead_sr >> i & 1)
-            G.view.sr[i] = 0xdead0000u | i;
+        if (d->sr >> i & 1) {
+            x ^= x << 13; x ^= x >> 17; x ^= x << 5;
+            G.view.sr[i] = x;
+        }
     for (i = 0; i < 32; i++)
-        if (r->dead_vr >> i & 1)
-            for (k = 0; k < 8; k++)
-                G.view.vr[i][k] = (uint16_t)(0xbad0 + i);
-    if (r->dead_acc)
-        memset(G.view.acc, 0xa5, 48);
-    if (r->dead_flags)
-        for (i = 0; i < 3; i++)
-            memset(G.view.flags[i], 0x5a, 32);
-    if (r->dead_div) {
-        *G.view.div_out = 0x5a5a;
-        *G.view.div_in = 0x5a5a;
-        *G.view.dp_flag = 1;
+        for (k = 0; k < 8; k++)
+            if (d->vr[i] >> k & 1) {
+                x ^= x << 13; x ^= x >> 17; x ^= x << 5;
+                G.view.vr[i][k] = (uint16_t)x;
+            }
+    for (i = 0; i < 3; i++)
+        for (k = 0; k < 8; k++)
+            if (d->acc[i] >> k & 1) {
+                x ^= x << 13; x ^= x >> 17; x ^= x << 5;
+                G.view.acc[8 * i + k] = (uint16_t)x;
+            }
+    for (i = 0; i < 3; i++)
+        for (k = 0; k < 16; k++)
+            if (d->flags[i] >> k & 1) {
+                /* flag bit k is lane 8 + k for k < 8, lane k - 8 above */
+                unsigned lane = k < 8 ? 8 + k : k - 8;
+                x ^= x << 13; x ^= x >> 17; x ^= x << 5;
+                if (i == 2 && lane < 8)
+                    G.view.flags[i][lane] = 0;
+                else
+                    G.view.flags[i][lane] = (x & 1) ? 0xffff : 0;
+            }
+    if (d->div) {
+        *G.view.div_out = (int16_t)x;
+        *G.view.div_in = (int16_t)(x >> 8);
+        *G.view.dp_flag = (x >> 3) & 1;
     }
+}
+
+static int probe_any(void)
+{
+    unsigned i;
+    for (i = 0; i < 32; i++)
+        if (G.set.probe_vr_lanes[i])
+            return 1;
+    return (G.set.probe_sr | G.set.probe_vr | G.set.probe_acc | G.set.probe_flags | G.set.probe_div | G.set.probe_flag_lanes[0] | G.set.probe_flag_lanes[1] | G.set.probe_flag_lanes[2]) != 0;
+}
+
+/* the routine's dead state, with ARMLET_NATIVE_PROBE added */
+static void poison(const struct armlet_routine *r)
+{
+    struct dead_set d;
+    unsigned i;
+    memset(&d, 0, sizeof(d));
+    d.sr = r->dead_sr | G.set.probe_sr;
+    for (i = 0; i < 32; i++)
+        d.vr[i] = ((r->dead_vr | G.set.probe_vr) >> i & 1) ? 0xff : (uint8_t)(r->dead_vr_lanes[i] | G.set.probe_vr_lanes[i]);
+    for (i = 0; i < 3; i++) {
+        d.acc[i] = (r->dead_acc || G.set.probe_acc) ? 0xff : r->dead_acc_lanes[i];
+        d.flags[i] = (r->dead_flags || (G.set.probe_flags >> i & 1)) ? 0xffff : (uint16_t)(r->dead_flag_lanes[i] | G.set.probe_flag_lanes[i]);
+    }
+    d.div = r->dead_div || G.set.probe_div;
+    poison_regs(&d);
 }
 
 /* The JIT run of a routine that returned a wrong exit pc may never get there (it runs the ucode on, and a ucode waiting for the CPU spins). Nothing can
@@ -639,6 +721,47 @@ static int enter_verify(unsigned idx, unsigned pc, unsigned *next_pc, int *mode)
     return PRSP_NATIVE_DONE;
 }
 
+/* A routine without `run` is an oracle-only routine: the JIT runs from the entry to exit_pcs[0] as it always did; the framework only captures the entry
+ * (snapshot files) and applies ARMLET_NATIVE_PROBE. It is how snapshots of a routine are taken before it exists natively, and how its live-out is probed. */
+static int enter_oracle(unsigned idx, unsigned pc, unsigned *next_pc, int *mode)
+{
+    const struct armlet_routine *rt = G.reg[idx];
+    struct armlet_native_stats *st = &G.stats[idx];
+    unsigned exit_pc = rt->exit_pcs[0];
+    int orc;
+    uint64_t t0 = 0;
+    int do_capture = G.set.capture_dir && (st->calls % G.set.capture_every) == 0 && G.captured[idx] < G.set.capture_max;
+
+    if (do_capture)
+        prsp_native_save(G.s0);
+    G.ev_jit.n = 0;
+    G.cur_ev = &G.ev_jit;
+    prsp_native_record(do_capture);
+    if (G.set.stats)
+        t0 = now_ticks();
+    wd_arm(rt, pc, (int)exit_pc);
+    orc = prsp_native_oracle(pc, exit_pc);
+    wd_disarm();
+    if (G.set.stats)
+        st->oracle_ticks += now_ticks() - t0;
+    prsp_native_record(0);
+    G.cur_ev = NULL;
+    st->calls++;
+    *next_pc = *G.view.pc;
+    *mode = orc > 0 ? orc : PRSP_NATIVE_MODE_CONTINUE;
+    if (orc != 0)
+        return PRSP_NATIVE_DONE;
+    if (do_capture) {
+        G.captured[idx]++;
+        rows_collect(&G.rows, &G.ev_jit);
+        prsp_native_save(G.sj);
+        snapfile_write(rt, pc, exit_pc, G.s0, &G.rows, G.sj, &G.ev_jit, "ok");
+    }
+    if (probe_any())
+        poison(rt);
+    return PRSP_NATIVE_DONE;
+}
+
 static int enter_native(unsigned idx, unsigned pc, unsigned *next_pc, int *mode)
 {
     const struct armlet_routine *rt = G.reg[idx];
@@ -659,7 +782,7 @@ static int enter_native(unsigned idx, unsigned pc, unsigned *next_pc, int *mode)
     }
     st->calls++;
     st->units += env.units;
-    if (G.set.poison)
+    if (G.set.poison || probe_any())
         poison(rt);
     *next_pc = (unsigned)npc & 0xffc;
     *mode = env.mode;
@@ -670,6 +793,8 @@ int armlet_native_call(unsigned idx, unsigned *next_pc, int *mode)
 {
     unsigned pc = G.reg[idx]->entry_pc;
     G.call_no++;
+    if (!G.reg[idx]->run)
+        return enter_oracle(idx, pc, next_pc, mode);
     return G.set.mode == ARMLET_NATIVE_VERIFY ? enter_verify(idx, pc, next_pc, mode) : enter_native(idx, pc, next_pc, mode);
 }
 
@@ -746,6 +871,32 @@ void armlet_native_settings_load(struct armlet_native_settings *s, const struct 
     s->capture_every = (e = getenv("ARMLET_NATIVE_CAPTURE_EVERY")) && *e ? (unsigned)atoi(e) : 16;
     if (!s->capture_every)
         s->capture_every = 1;
+    if ((e = getenv("ARMLET_NATIVE_PROBE")) && *e) {         /* "sr=0xmask,vr=0xmask,acc,flags,div" */
+        char buf[128], *tok, *save = NULL;
+        snprintf(buf, sizeof(buf), "%s", e);
+        for (tok = strtok_r(buf, ",", &save); tok; tok = strtok_r(NULL, ",", &save)) {
+            if (!strncmp(tok, "sr=", 3))
+                s->probe_sr = (uint32_t)strtoul(tok + 3, NULL, 0);
+            else if (!strncmp(tok, "vr=", 3))
+                s->probe_vr = (uint32_t)strtoul(tok + 3, NULL, 0);
+            else if (!strncmp(tok, "vl", 2) && strchr(tok, '='))        /* vl<reg>=<lane mask> */
+                s->probe_vr_lanes[strtoul(tok + 2, NULL, 10) & 31] |= (uint8_t)strtoul(strchr(tok, '=') + 1, NULL, 0);
+            else if (!strncmp(tok, "fl", 2) && strchr(tok, '='))        /* fl<0..2>=<flag bit mask> (VCO, VCC, VCE) */
+                s->probe_flag_lanes[strtoul(tok + 2, NULL, 10) % 3] |= (uint16_t)strtoul(strchr(tok, '=') + 1, NULL, 0);
+            else if (!strcmp(tok, "acc"))
+                s->probe_acc = 1;
+            else if (!strcmp(tok, "flags"))
+                s->probe_flags |= 7;
+            else if (!strcmp(tok, "vco"))
+                s->probe_flags |= 1;
+            else if (!strcmp(tok, "vcc"))
+                s->probe_flags |= 2;
+            else if (!strcmp(tok, "vce"))
+                s->probe_flags |= 4;
+            else if (!strcmp(tok, "div"))
+                s->probe_div = 1;
+        }
+    }
     s->watchdog_ms = (e = getenv("ARMLET_NATIVE_WATCHDOG_MS")) && *e ? (unsigned)atoi(e) : 0;
 }
 

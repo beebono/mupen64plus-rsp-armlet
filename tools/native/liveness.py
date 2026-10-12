@@ -241,7 +241,8 @@ def observed_edges(path):
     return out
 
 
-def liveness(img, observed=None):
+def liveness(img, observed=None, observed_only=False, unobserved=None):
+    unobserved = unobserved if unobserved is not None else []
     """returns live_in[node] for nodes ('i', idx) and ('s', idx_of_branch)"""
     n = 1024
     tgt = img.targets()
@@ -273,7 +274,12 @@ def liveness(img, observed=None):
                 succ[sn] = [("i", (arg >> 2) & 1023)]
             else:
                 obs = observed.get(i * 4) if observed else None
-                succ[sn] = [("i", (x >> 2) & 1023) for x in (sorted(obs) if obs else tgt)]
+                if observed is not None and observed_only and not obs:
+                    unobserved.append(i * 4)
+                    obs = set()
+                    succ[sn] = []
+                else:
+                    succ[sn] = [("i", (x >> 2) & 1023) for x in (sorted(obs) if obs else tgt)]
             # a branch in a delay slot is "impossible"; the slot copy ignores its own branch semantics (conservative: it reads its regs)
             if skind in ("br", "brl", "j", "jal", "jr", "jalr", "break"):
                 succ[sn] = succ[sn]
@@ -297,7 +303,7 @@ def liveness(img, observed=None):
                 if p not in inq:
                     work.append(p)
                     inq.add(p)
-    return live, tgt
+    return live, tgt, (succ, uses, defs)
 
 
 def callers(img, entry):
@@ -329,11 +335,14 @@ def main():
     ap.add_argument("--exits", default="")
     ap.add_argument("--callers", help="entry pc: list the candidate return addresses and use them as the exits (with --exits: both)")
     ap.add_argument("--observed", help="PROFDIR:KEY, see above")
+    ap.add_argument("--observed-only", action="store_true", help="a register jump that the profiler never saw executing has no successors (reported): liveness over what real runs did")
+    ap.add_argument("--why", help="item (v5, r12, ACC, VCO ...): print a path from the first exit pc to a read of it that no write precedes")
     ap.add_argument("--json", action="store_true")
     a = ap.parse_args()
     img = Image(open(a.imem, "rb").read(), open(a.dmem, "rb").read())
     obs = observed_edges(a.observed) if a.observed else None
-    live, tgt = liveness(img, obs)
+    unobs = []
+    live, tgt, graph = liveness(img, obs, a.observed_only, unobs)
     exits = [int(x, 0) & 0xFFC for x in a.exits.split(",") if x]
     if a.callers:
         c = callers(img, int(a.callers, 0))
@@ -342,6 +351,37 @@ def main():
     exits = sorted(set(exits))
     if not exits:
         ap.error("no exit pcs")
+    if a.why:
+        succ, uses, defs = graph
+        start = ("i", exits[0] >> 2)
+        prev = {start: None}
+        queue = [start]
+        found = None
+        while queue and not found:
+            nxt = []
+            for k in queue:
+                if a.why in uses[k]:
+                    found = k
+                    break
+                if a.why in defs[k]:
+                    continue
+                for t in succ[k]:
+                    if t not in prev:
+                        prev[t] = k
+                        nxt.append(t)
+            queue = nxt
+        if not found:
+            print("%s is not live at 0x%03x" % (a.why, exits[0]))
+        else:
+            path = []
+            k = found
+            while k is not None:
+                path.append(k)
+                k = prev[k]
+            path.reverse()
+            print("%s read at 0x%03x, reached from 0x%03x through:" % (a.why, (found[1] * 4 + (4 if found[0] == "s" else 0)) & 0xfff, exits[0]))
+            print(" ".join("%s%03x" % ("" if n[0] == "i" else "d", n[1] * 4 + (4 if n[0] == "s" else 0)) for n in path))
+        return
     union = set()
     per = {}
     for e in exits:
@@ -357,7 +397,7 @@ def main():
     if a.json:
         print(json.dumps(res, indent=1))
         return
-    print("%d candidate targets for indirect jumps" % len(tgt))
+    print("%d candidate targets for indirect jumps%s" % (len(tgt), "; register jumps never observed (no successors): " + " ".join("0x%03x" % x for x in unobs) if unobs else ""))
     for e in exits:
         print("exit 0x%03x: live-in: %s" % (e, fmt_items(per[e])))
     print("union:      %s" % fmt_items(union))

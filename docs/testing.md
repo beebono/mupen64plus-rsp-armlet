@@ -277,3 +277,15 @@ eight builds. What reports it, in the order of the first line of the report:
 | 8 a vector register changed | the vector register comparison | `vr[17]` with the lanes of both |
 
 All eight are caught in every snapshot where they apply (7: the snapshots whose call is a DMA write).
+
+### Framework additions after the first commit
+
+| check | result |
+|---|---|
+| default fork build still unchanged (every object file and the `.so` of the plugin target against the base commit, native / aarch64 / rg35xxsp) | identical md5, with the second dependency range and the invalidation change in the tree |
+| `armlet-native-replay --dep2test`: a routine with two IMEM dependency ranges (`dep2_lo/hi`) | a changed word between the ranges leaves it in place, a changed word of either range drops it |
+| lane masks: `tools/native/mutcheck.sh` mutations 9 and 10 (`dead_vr_lanes[17] = 0x08`, a change of lane 3 / of lane 4 of v17) | 9 is not reported (the lane is declared dead), 10 is reported in 32 of 32 snapshots; mutations 1-8 caught as before (re-run after the watchdog and the `fflush` fix) |
+| POISON and probing, DK64, 400 frames, oracle-only `cap.f3dex2.vtx` followed by `ARMLET_NATIVE_PROBE`: `vl20=0xf` (lanes 0-3 of v20), `vl1=1` (lane 0 of v1), `vl30=0x80`, `fl0=0x2` | identical to the reference for v20; diverges for v1, v30 and VCO bit 1 (those are live): a wrong claim is caught by the hash stream |
+| 600-frame DK64 equivalence, `GfxNative=verify` and `on` + `ARMLET_NATIVE_POISON=1` with `test.dma` | RSP hash stream, state stream, 6 screenshots and audio identical to the reference |
+| the framework alone (no F3DEX2 routine files) builds with `-DARMLET_NATIVE_TOOLS=ON` and passes the replay of 15 `test.dma` snapshots | all equal |
+| `armlet-native-replay --hookbench` (desktop x86_64): a loop calling a two-instruction subroutine, with and without the hook | the hook adds about 5 ns per call (aarch64 devices: measured with the F3DEX2 routines) |

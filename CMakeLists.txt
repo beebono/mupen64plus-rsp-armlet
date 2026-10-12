@@ -54,13 +54,14 @@ set(armlet_c
 
 if(ARMLET_NATIVE)
     file(GLOB armlet_native_c CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/native/*.c")
+    file(GLOB armlet_native_cpp CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/native/*.cpp")
     list(APPEND armlet_c ${armlet_native_c})
 endif()
 
-set(armlet_cpp)
+set(armlet_cpp ${armlet_native_cpp})
 if(ARMLET_PROFILE)
     list(APPEND armlet_c src/prof/prof_glue.c)
-    set(armlet_cpp src/prof/prof.cpp src/prof/rdp.cpp src/prof/walker.cpp src/prof/tasklog.cpp src/prof/map.cpp src/prof/counts.cpp src/prof/ucode.cpp)
+    list(APPEND armlet_cpp src/prof/prof.cpp src/prof/rdp.cpp src/prof/walker.cpp src/prof/tasklog.cpp src/prof/map.cpp src/prof/counts.cpp src/prof/ucode.cpp)
 endif()
 
 add_library(mupen64plus-rsp-armlet MODULE ${armlet_c} ${armlet_cpp} ${hle_c} ${prsp_cpp} ${prsp_extra_cpp})
@@ -126,7 +127,7 @@ endif()
 # Offline harness for native routines (tools/native/replay.c): the same sources, linked as a program
 option(ARMLET_NATIVE_TOOLS "build the offline native-routine harness armlet-native-replay (needs ARMLET_NATIVE)" OFF)
 if(ARMLET_NATIVE_TOOLS AND ARMLET_NATIVE)
-    add_executable(armlet-native-replay tools/native/replay.c src/gfx_ucode.c src/log.c ${armlet_native_c} ${prsp_cpp} ${prsp_extra_cpp})
+    add_executable(armlet-native-replay tools/native/replay.c src/gfx_ucode.c src/log.c ${armlet_native_c} ${armlet_native_cpp} ${prsp_cpp} ${prsp_extra_cpp})
     set_target_properties(armlet-native-replay PROPERTIES LINKER_LANGUAGE CXX)
     target_include_directories(armlet-native-replay PRIVATE
         "${M64P_API_INCLUDE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/src"
@@ -136,6 +137,14 @@ if(ARMLET_NATIVE_TOOLS AND ARMLET_NATIVE)
     target_compile_options(armlet-native-replay PRIVATE
         "$<$<COMPILE_LANGUAGE:CXX>:-Wall;-Wno-missing-field-initializers;-Wno-empty-body;-ffast-math;-Wno-unused-parameter;-Wno-parentheses>" "$<$<COMPILE_LANGUAGE:C>:-Wall>")
     target_link_libraries(armlet-native-replay PRIVATE lightning-m64p dl m)
+
+    # instruction-level tracer of a snapshot (tools/native/trace.cpp), C++ only
+    add_executable(armlet-native-trace tools/native/trace.cpp ${prsp_cpp} ${prsp_extra_cpp})
+    set_target_properties(armlet-native-trace PROPERTIES LINKER_LANGUAGE CXX)
+    target_include_directories(armlet-native-trace PRIVATE "${M64P_API_INCLUDE_DIR}" "${ARMLET_PRSP_DIR}" "${ARMLET_PRSP_DIR}/arch/simd/rsp")
+    target_compile_definitions(armlet-native-trace PRIVATE PRSP_NATIVE PARALLEL_INTEGRATION M64P_PLUGIN_API PARALLEL_RSP_LIGHTNING)
+    target_compile_options(armlet-native-trace PRIVATE -Wall -Wno-missing-field-initializers -Wno-empty-body -ffast-math -Wno-unused-parameter -Wno-parentheses)
+    target_link_libraries(armlet-native-trace PRIVATE lightning-m64p dl m)
 endif()
 
 # Only the six plugin API symbols leave the module; Lightning's _emit_* and everything else stay private.

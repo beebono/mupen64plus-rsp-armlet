@@ -28,6 +28,7 @@ There is nothing to set for the rest of the pairing: `hle_gfx` and `hle_aud` are
 | `ARMLET_NATIVE_ABORT=1` | verify: `abort()` at the first mismatch (after the report) |
 | `ARMLET_NATIVE_STATS=1` | per routine, every 128 graphics tasks: calls, declines, units (vertices / triangles) and the native time per call and per unit; in verify also the JIT's time for the same stretch |
 | `ARMLET_NATIVE_WATCHDOG_MS=n` | verify: the process ends (exit 3, message `WATCHDOG`) when the JIT run of a routine has not arrived at the routine's exit pc after n ms (default 3000): a wrong exit pc lets the JIT run on, and it cannot be stopped otherwise |
+| `ARMLET_NATIVE_PROBE=<list>` | poison, after an oracle-only or native routine, state that the rest of the run might read, to find out whether it does: `sr=<mask>`, `vr=<mask>`, `vl<n>=<lane mask>`, `acc`, `vco`, `vcc`, `vce`, `fl<0..2>=<flag bit mask>`, `div` (comma-separated); see design.md |
 | `ARMLET_NATIVE_POISON=1` | `on` mode: after a routine, fill the registers it declares dead with a pattern (shows a wrong live-out claim downstream) |
 | `ARMLET_NATIVE_CAPTURE=<dir>` | verify: write routine-entry snapshot files (`<routine>-ok-<call>.snap`, `-mismatch-`) for the offline harness; `ARMLET_NATIVE_CAPTURE_EVERY=n` (default 16) one entry in n, `ARMLET_NATIVE_CAPTURE_MAX=n` (default 32) per routine. ROM-derived: keep in `test-output/` |
 | `ARMLET_RDP_COALESCE=auto\|on\|off` | overrides `RdpCoalesce` (`0`/`1` also work) |

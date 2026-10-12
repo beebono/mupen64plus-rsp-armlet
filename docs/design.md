@@ -117,7 +117,8 @@ through `get_jit_block`. The hook lives on that miss path, so a block that has n
 - The match is keyed on **content**. The stub sits in `blocks[]` like any region, so SP DMA that changes the code removes it (the existing 256-byte-block
   invalidation), and `invalidate_code()` also removes a stub when a changed block overlaps `[dep_lo, dep_hi)` of its match (what the host's decision depended
   on, beyond the region the JIT would compile). The next entry looks up again. The host decides on (ucode id, entry pc, FNV-1a-64 of IMEM
-  `[dep_lo, dep_hi)`): `struct armlet_routine`.
+  `[dep_lo, dep_hi)` followed by `[dep2_lo, dep2_hi)`, or of `hash_ranges` when the code is spread over more places): `struct armlet_routine`. A match carries two ranges; a changed
+  block that overlaps neither (the overlay window between them) leaves the stub alone.
 - The *oracle*: `prsp_native_oracle(entry, stop)` runs the JIT's own code from an entry until it is about to execute `stop`, nested inside the host's `enter`
   (`enter_frame` is re-entrant: it is the C-callable entry of the thunks). Stubs decline meanwhile; the entry pc runs the JIT region, `stop` has a one-instruction
   block that returns `MODE_NATIVE_STOP`. A `CHECK_FLAGS` return (SP DMA into IMEM that changed code) is handled as `run_rsp_task` does: invalidate and go on,
@@ -147,9 +148,22 @@ file under `src/native/` and touches nothing shared.
 | the status-poll counters (`MFC0` of SP_STATUS), `SP_STATUS_TIMEOUT`, the interrupt flag, IMEM dirty bits (if neither side did IMEM DMA) | equal |
 | the exit pc, no delay slot pending | equal |
 
-A routine may declare live-out masks (`dead_sr`, `dead_vr`, `dead_acc`, `dead_flags`, `dead_div`): state the code at the routine's exits overwrites before reading it, so that
-the native routine need not compute it. Verify excludes exactly these; `ARMLET_NATIVE_POISON=1` overwrites them with a pattern after the routine, so that a wrong
-claim shows up downstream (RSP hash stream, screenshots). The default, and the goal, is full equality.
+A routine may declare live-out masks (`dead_sr`, `dead_vr`, `dead_acc`, `dead_flags`, `dead_div`, and the lane-granular `dead_vr_lanes[n]` / `dead_flag_lanes[k]` /
+`dead_acc_lanes[k]`): state that the microcode after the routine's exits never reads (or overwrites before reading), so that the native routine need not compute it. Verify
+excludes exactly these; `ARMLET_NATIVE_POISON=1` overwrites them (only the dead lanes) with a pattern after the routine, so that a wrong claim shows up downstream. The
+default, and the goal, is full equality.
+
+**How a mask is established, and what is not enough.** A static liveness listing (`tools/native/liveness.py`) cannot establish a mask: an indirect jump has more targets
+than any run shows, and partial writes (a load of 8 bytes) make nearly every register look live. A mask that passed verify (which only compares what is not masked) and a
+static check has failed the RSP hash-stream equivalence in practice (a first F3D claim diverged at the 580th task). The rule: a claim is **probed**, then **validated**.
+Probing: an oracle-only routine (`run = NULL`, below) with `ARMLET_NATIVE_PROBE="sr=0x..,vr=0x..,vl<n>=<lane mask>,acc,vco,vcc,vce,fl<k>=<bit mask>,div"` runs the JIT as always and
+poisons the named state after the stretch; the claim holds for a run if the RSP hash stream, state stream, screenshots and audio of `tools/equiv` stay identical to the
+reference (`ARMLET_NATIVE_POISON=1` does the same for the declared masks of a native routine). Validated: the masks of a routine are kept only if the POISON runs of all the
+games the routine targets, and the verify runs on devices, are identical; and the routine's file says how they were established and over which runs.
+
+**Oracle-only routines** (`run = NULL`): the framework runs the JIT from the entry to `exit_pcs[0]` and does nothing else but what the environment asks: snapshots
+(`ARMLET_NATIVE_CAPTURE`), probing (`ARMLET_NATIVE_PROBE`). They are how entry snapshots of a routine are taken before it exists natively, and how its live-out is found.
+Their names start with `cap.` and they are selected only when named.
 
 **Verify mode** (`GfxNative=verify`, for tests): at every entry the framework saves the state, runs the routine in the sandbox with recording on, puts the
 state and RDRAM back, runs the JIT's code to the routine's exit with recording on (this is the run that stands: the machine always continues from the JIT's

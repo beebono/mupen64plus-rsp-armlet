@@ -25,6 +25,7 @@
  *  3 DMEM: a word of DMEM is changed                    4 a wrong DMA length register (one byte short)
  *  5 the wrong exit pc (ra + 4)                         6 a missing SP register write (SP_DRAM_ADDR)
  *  7 the DMA write rows go to the wrong RDRAM address   8 a vector register is changed
+ *  9, 10  lane masks: the routine claims lane 3 of v17 dead (dead_vr_lanes); 9 changes that lane (verify must not report it), 10 changes lane 4 (it must)
  */
 #ifndef ARMLET_NATIVE_MUTATE
 #define ARMLET_NATIVE_MUTATE 0
@@ -51,15 +52,53 @@ static int test_dma(struct armlet_env *e)
         e->rsp.dmem[0x7f0 >> 2] ^= 0x100;
     if (ARMLET_NATIVE_MUTATE == 8)
         e->rsp.vr[17][3] ^= 0x10;
+    if (ARMLET_NATIVE_MUTATE == 9)
+        e->rsp.vr[17][3] ^= 0x10;
+    if (ARMLET_NATIVE_MUTATE == 10)
+        e->rsp.vr[17][4] ^= 0x10;
     e->units++;
     return (int)((sr[R_RA] + (ARMLET_NATIVE_MUTATE == 5 ? 4 : 0)) & 0xffc);
 }
 
+#if ARMLET_NATIVE_MUTATE == 9 || ARMLET_NATIVE_MUTATE == 10
+#define TEST_LANES .dead_vr_lanes = { [17] = 0x08 },
+#else
+#define TEST_LANES
+#endif
+
 #define TEST_DMA(var, id) \
     ARMLET_ROUTINE(var) = { .name = "test.dma", .ucode = id, .entry_pc = 0xfd8, .dep_lo = 0xfd8, .dep_hi = 0x1000, \
-                            .imem_hash = 0x2a7e21705a2bcf3bull, .run = test_dma }
+                            .imem_hash = 0x2a7e21705a2bcf3bull, TEST_LANES .run = test_dma }
 
 TEST_DMA(l_dk64, 0x48c7e653a6adcda8ull);
 TEST_DMA(l_snap, 0xd576cfcfed9d9c18ull);
 TEST_DMA(l_pm, 0xc734403d56034719ull);
 TEST_DMA(l_oot, 0x0d3f849c8dd309c4ull);
+
+/* "test.hook": the routine of replay's --hookbench, a synthetic program in which a loop calls a two-instruction subroutine (`jr ra`) at IMEM 0x100. Measures what a
+ * call of a native routine costs, from the JIT block that calls it to the one it returns to. */
+static int test_hook(struct armlet_env *e)
+{
+    e->units++;
+    return (int)(e->rsp.sr[R_RA] & 0xffc);
+}
+
+ARMLET_ROUTINE(l_hook) = { .name = "test.hook", .ucode = 0x0123456789abcdefull, .entry_pc = 0x100, .dep_lo = 0x100, .dep_hi = 0x108,
+                           .imem_hash = 0xc84dc27f29a28935ull, .run = test_hook };
+
+/* "test.dep2": replay's --dep2test; the same subroutine at 0x100 with a second dependency range [0x400, 0x408): a change of IMEM between the ranges must not drop it */
+static unsigned l_dep2_calls;
+
+static int test_dep2(struct armlet_env *e)
+{
+    l_dep2_calls++;
+    return (int)(e->rsp.sr[R_RA] & 0xffc);
+}
+
+unsigned armlet_test_dep2_calls(void)
+{
+    return l_dep2_calls;
+}
+
+ARMLET_ROUTINE(l_dep2) = { .name = "test.dep2", .ucode = 0x0123456789abcdf0ull, .entry_pc = 0x100, .dep_lo = 0x100, .dep_hi = 0x108, .dep2_lo = 0x400, .dep2_hi = 0x408,
+                           .imem_hash = 0xeb33598ddd1bf87dull, .run = test_dep2 };

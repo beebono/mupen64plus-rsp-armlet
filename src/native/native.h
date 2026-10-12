@@ -70,18 +70,32 @@ struct armlet_routine {
     uint64_t ucode;                     /* ucode id the routine belongs to */
     unsigned entry_pc;
     unsigned dep_lo, dep_hi;            /* IMEM byte range [lo, hi) hashed; must contain the whole stretch the routine replaces */
+    unsigned dep2_lo, dep2_hi;          /* optional second range (0 = none), hashed after the first; the routine is dropped when a changed IMEM block overlaps either
+                                           range, not the gap between them (overlay windows): imem_hash covers [dep_lo,dep_hi) then [dep2_lo,dep2_hi) */
     uint64_t imem_hash;                 /* armlet_native_imem_hash(imem, dep_lo, dep_hi); the dev log prints candidates with their hash */
     const uint16_t *exit_pcs;           /* every static pc the stretch can exit at (also region split points); dynamic exits (jr) need not be
                                            listed, but the JIT's run is stopped at the pc the routine returns, so it must be where the microcode
                                            first arrives. Terminated by n_exit_pcs. */
     unsigned n_exit_pcs;
-    armlet_routine_fn run;
+    const uint16_t *hash_ranges;        /* optional: pairs lo, hi (bytes) hashed in order instead of dep_lo..dep_hi when the code the routine replaces is not one block
+                                           of IMEM (n_hash_ranges pairs); dep_lo / dep_hi must still be the hull */
+    unsigned n_hash_ranges;
+    armlet_routine_fn run;              /* NULL: an oracle-only routine (the JIT runs the stretch to exit_pcs[0]; the framework captures and probes, see native.c) */
     /* Live-out masks: what the routine may leave different from the microcode because the code at its exit pcs overwrites it before reading it
      * (justify with tools/native/liveness.py; verify excludes exactly these; ARMLET_NATIVE_POISON=1 fills them with a pattern after the
-     * routine so that a wrong claim shows up downstream). All zero = full state equality (the default and the goal). */
+     * routine so that a wrong claim shows up downstream). All zero = full state equality (the default and the goal).
+     * A mask is a claim about every use of the state after the routine, and a static listing cannot establish it (an indirect jump has more targets than any run
+     * shows). Establish it by probing (ARMLET_NATIVE_PROBE on a run of the game, one register or lane at a time) and keep it only if POISON runs and the tools/equiv
+     * hash-stream gates of several games stay identical; say in the routine's file how it was established. */
     uint32_t dead_sr;                   /* bit n: sr[n] */
     uint32_t dead_vr;                   /* bit n: vr[n] */
     unsigned dead_acc : 1, dead_flags : 1, dead_div : 1;
+    /* Lane-granular masks, for state that is only partly live: bit i of dead_vr_lanes[n] says that lane (element) i of vn is dead, bit b of dead_flag_lanes[k] that
+     * bit b of VCO / VCC / VCE (k = 0, 1, 2; the numbering CFC2 returns) is dead, bit i of dead_acc_lanes[k] that lane i of the accumulator's HI / MD / LO (k = 0, 1, 2) is.
+     * The whole-register forms above are the shortcut for all lanes. */
+    uint8_t dead_vr_lanes[32];
+    uint16_t dead_flag_lanes[3];
+    uint8_t dead_acc_lanes[3];
 };
 
 /* Registration: a table entry in section "armlet_routines" (no other file needs to know about it). */
@@ -112,6 +126,8 @@ void armlet_dma_read(struct armlet_env *e, unsigned mem_addr, unsigned dram_addr
 void armlet_dma_write(struct armlet_env *e, unsigned mem_addr, unsigned dram_addr, uint32_t len);
 
 uint64_t armlet_native_imem_hash(const uint32_t *imem, unsigned lo, unsigned hi);
+/* the hash a routine's entry is matched with: over hash_ranges if it has them, else dep_lo..dep_hi */
+uint64_t armlet_native_routine_hash(const struct armlet_routine *r, const uint32_t *imem);
 
 /* ---- framework (native.c) ------------------------------------------------------------------------------------------------------------ */
 struct armlet_ctx;

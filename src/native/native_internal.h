@@ -24,6 +24,10 @@ struct armlet_native_settings {
     int abort_on_mismatch, stats, poison, quiet;
     const char *capture_dir;
     unsigned capture_max, capture_every;
+    uint32_t probe_sr, probe_vr;                /* ARMLET_NATIVE_PROBE: registers poisoned after a routine, to find what the rest of a run reads */
+    int probe_acc, probe_flags, probe_div;
+    uint8_t probe_vr_lanes[32];                 /* vl<n>=<lane mask> */
+    uint16_t probe_flag_lanes[3];               /* fl<k>=<flag bit mask> */
     unsigned watchdog_ms;                       /* verify: abort when the JIT run of a routine takes longer (default 3000) */
 };
 
