@@ -243,7 +243,7 @@ by the JIT; the JIT stays the reference and the fallback. Nothing of this runs i
 found by the ucode id): the layout offsets, flags, the variants within the family (`vtx_variant`, `tri_variant`, `clip_variant`), the family's own constants (`fam_data`), and the DMEM ranges
 that are dead at the end of a task. The shared library is the fixed-point arithmetic of the RSP as plain integer functions (`hle_fx.h`; the closed forms and their test,
 `tools/hle/prim_test.c`, are Fleet B's: 0 failures over 200 000 trials x 8 lanes against the exact VU instruction sequences, and a mutation check) and the task framework. F3DEX2 is the first
-family (`hle_f3dex2.c`): its four builds (Donkey Kong 64, Paper Mario, Ocarina of Time, Pokemon Snap) are tables, and its `run()` is the interpreter below.
+family (`hle_f3dex2.c`): its four builds (Donkey Kong 64, Paper Mario, Ocarina of Time, Pokemon Snap) are tables, and its `run()` is the native front-end described under "The F3DEX2 front-end" below; the interpreter below is its exact reference.
 
 **What a family must produce.** Only what can be observed afterwards: the RDRAM the task writes, the concatenated RDP command stream, the SP / DPC / MI registers, the OSTask words the ucode writes, and
 DMEM except the ranges the build's table declares dead. The vector unit, the scalar registers, the accumulator and the flags are not part of it (the next task loads them before use). A family
@@ -251,7 +251,8 @@ therefore does not have to imitate the microcode's internal structure (its RDP o
 
 **The run.** `armlet_hle_run` saves the RSP state (`prsp_native_save`), zeroes the status-poll counters (the JIT does at the start of a task), switches the fork's sandbox on (SP DMA writes
 to RDRAM keep their old bytes, the RDP is not run) and calls the family. The family works on the real DMEM / IMEM / RDRAM and the SP / DPC registers through `hle_dma_read`,
-`hle_dma_read`, `hle_dma_write`, `hle_mtc0`, `hle_poll_status` (the fork's own DMA and register code, so the registers, IMEM dirty bits and events come out as the JIT's; when nothing records events, a one-row DMA between DMEM and RDRAM takes a short path with the same bytes, log and register values, and `hle_rdram_write` is the same write for a front-end that has its data in host words), and the sandbox keeps its own undo arena for those writes instead of the fork's allocation per DMA row. The DMA writes and the DPC
+`hle_dma_read`, `hle_dma_write`, `hle_mtc0`, `hle_poll_status` (the fork's own DMA and register code, so the registers, IMEM dirty bits and events come out as the JIT's), and, for a front-end that does not need the
+fork's DMA for a write to RDRAM, `hle_rdram_write` (the same effect on the log, the sandbox and the compare at a quarter of the cost: the fork's sandbox allocates an undo record for every DMA row; this one keeps its own, applied when the sandbox goes off). The DMA writes and the DPC
 register writes are logged. When the family returns `HLE_OK` the task is complete; `HLE_DECLINE` (`hle_decline(task, "why")`) gives the whole task to the JIT: the state is loaded back and
 the RDRAM restored, so nothing is split. At the commit the sandbox is switched off (RDRAM back to its state at the task start), then the log is replayed in order through
 `prsp_rdp_defer_dma_write` / `prsp_native_mtc0`, which is exactly the call sequence of a JIT run, so the video plugin and the RDRAM end identical. `SP_PC`, `SP_STATUS` (BROKE | HALT, the
@@ -259,8 +260,8 @@ SP interrupt) are what `BREAK` and the run loop leave.
 
 **The interpreter (`hle_rsp.cpp`).** A small RSP interpreter over the real memories: the scalar unit in plain code, the vector unit and the vector loads / stores through the fork's per-instruction
 helpers (the JIT's helper-call path; `tools/native/trace.cpp` uses the same ones), MFC0 / MTC0 through the framework. It is the exact reference of the task-level path: a family with no native code
-runs on it (that is the F3DEX2 `run()` today, and `ARMLET_HLE_INTERP=1` forces it for any family), `ARMLET_HLE_VERIFY=interp` compares a native front-end with it, and the offline harness replays
-captured tasks with it. It reproduces all captured tasks of the four games (570 tasks of Donkey Kong 64, Ocarina of Time, Paper Mario, Pokemon Snap). It is slower than the JIT (about 3x on a Donkey
+runs on it (`ARMLET_HLE_INTERP=1` forces it for any family), `ARMLET_HLE_VERIFY=interp` compares a native front-end with it, the offline harness replays captured tasks with it, and the F3DEX2 front-end uses it for the
+boot code (about 140 instructions up to the first fetch of the command loop) and for the end of the task (about 70). It reproduces all captured tasks of the four games (570 tasks of Donkey Kong 64, Ocarina of Time, Paper Mario, Pokemon Snap). It is slower than the JIT (about 3x on a Donkey
 Kong 64 task on the x86 desktop; on the A55 about 80 ns per interpreted instruction against the JIT's 11 ns) and is not a production path. Earlier work on *hooks* inside the interpreter (native handlers taking over at a pc) and on the JIT running the
 stretches between them was dropped in favour of whole-task native front-ends (see below); the hook code is not part of the tree.
 
@@ -269,14 +270,13 @@ native run in the sandbox, then the state is put back and the oracle runs the ta
 
 - **External effects (the default; the measure is the result, not what happens in between).** All of DMEM except the ucode's declared dead ranges, IMEM, the SP / DPC registers, MI_INTR (without the DP
   interrupt bit, which the RDP raises when it processes a full sync), the pc, `SP_STATUS_TIMEOUT`, the RDRAM the task wrote by SP DMA (the bytes of every range either side wrote, except the RDP output
-  ring: below), and **the bytes of the RDP lists as one stream** (FNV-1a-64 and length of all list bytes in order, parsed across list boundaries like foir's parser so that a command split over lists normalises
-  like a whole one, with the second word of NO_OP and the sync commands zeroed: the RDP ignores it and the microcode leaves stale scratch there; a ucode whose lists contain commands the default sizing gets
-  wrong sets `hle_ucode.rdp_cmd_size`). Not compared: the order and number of the intermediate SP register writes, the DMA chunking, the poll counts, the IMEM dirty bits, list boundaries (unobservable to foir;
-  coalescing already relies on it), the scalar and vector registers, the accumulator, flags and divide unit (`ARMLET_HLE_POISON=1` fills them with a pattern after a native task so that a wrong claim shows up
-  in the equivalence runs), the status-poll counters (the JIT zeroes them at every task start).
+  ring: below), and **the bytes of the RDP lists as one stream** (FNV-1a-64 and length of all list bytes in order, parsed across list boundaries like foir's parser, with the second word of NO_OP and the sync
+  commands zeroed: the RDP ignores it and the microcode leaves stale scratch there). Not compared: the order and number of the intermediate SP register writes, the DMA chunking, the poll counts, the IMEM
+  dirty bits, list boundaries (unobservable to foir; coalescing already relies on it), the scalar and vector registers, the accumulator, flags and divide unit (`ARMLET_HLE_POISON=1` fills them with a pattern
+  after a native task so that a wrong claim shows up in the equivalence runs), the status-poll counters (the JIT zeroes them at every task start).
 - **Exact events (`ARMLET_HLE_EXACT=1`).** The above plus the sequence of recorded SP register writes (DMA reads and writes with the hash of the bytes, status, semaphore, DPC_START / END / STATUS) and the
-  IMEM dirty bits (the oracle's must be a subset). A front-end that claims to do what the microcode does, DMA for DMA, can be held to it: it checks `hle_exact()` and then does every DMA and every IMEM load
-  the microcode does.
+  IMEM dirty bits (the oracle's must be a subset). A front-end that claims to do what the microcode does, DMA for DMA, can be held to it, and in this mode it has to be: a front-end checks `hle_exact()` and
+  does every DMA and every IMEM load the microcode does (the F3DEX2 front-end does; its replay of the 582 captured tasks is equal in both modes on the desktop and on both devices).
 
 **The RDP output ring is a mask in RDRAM.** The ucode's OSTask names the ring (`hle_ucode.ring_off`: the DMEM address of the two words, start and end; 0xfe8 on F3DEX2). The RDP lists are written there and
 taken by the video plugin; nothing reads the ring afterwards, and what a native run leaves in it differs from the JIT's in the stale second words of the sync commands (the stream compare zeroes them) and in
@@ -295,8 +295,32 @@ pictures and the audio of the unpoisoned run (docs/testing.md).
 the recorded events and the JIT's RDP stream) for tasks the JIT runs; `armlet-native-replay file.snap...` runs the family on them and compares with the recorded JIT result
 (`--bench N` times the front-end and the JIT; `HLE_POKE=addr=val,...` sets DMEM bytes first). Snapshots are ROM-derived: keep them in `test-output/`.
 
-**Environment.** `ARMLET_HLE_VERIFY` (`1`, `jit`, `interp`), `ARMLET_HLE_EXACT` (the exact-events compare), `ARMLET_HLE_INTERP`, `ARMLET_HLE_STATS` (counts, decline reasons, time), `ARMLET_HLE_POISON`, `ARMLET_DMEM_POISON`, `ARMLET_HLE_ABORT`,
-`ARMLET_HLE_QUIET`, `HLE_DUMP_STREAM=<file>` (the native side's RDP stream), `HLE_DMEM_ALL` (list every differing DMEM byte), `HLE_RSP_DEBUG=<n>` (the first n interpreted instructions), `HLE_RSP_TRACE` (every interpreted instruction with the vector register it wrote), `HLE_RSP_WATCH=<addr>` (every change of
+**The F3DEX2 front-end** (`hle_f3dex2.c`, `f3dex2_fx.[ch]`, `f3dex2_fx_neon.c`, `f3dex2_dmem.h`; the microcode's behaviour is written down in [ucode-f3dex2.md](ucode-f3dex2.md)). `run()` lets the interpreter run the
+microcode's boot code up to the first fetch of the command loop, takes over there with a C loop over the display list, and hands the end of the task (the outermost `G_ENDDL`) back to the interpreter, whose
+exit code flushes the RDP buffer and ends the task. Anything the loop does not know (`G_LOAD_UCODE`, `G_DMA_IO`, a yield, a vertex count over 32, an unknown overlay, more than 30 000 SP_STATUS polls, a state in
+which the microcode would wait for the RDP) declines the whole task. DMEM stays the home of the microcode's state (the matrices, the lights, the vertex records, the geometry mode, the display list stack, the segment
+table, the RDP output buffers), so the interpreter's exit code finds what it expects and the compare can check the state itself. The commands are plain C; the geometry is a set of functions over structs that
+know nothing of DMEM addresses or pcs (`f3dex2_fx.h`, after Fleet C's `f3d_fx.h`): `fx2_mtx_mul`, `fx2_light_setup`, `fx2_vtx_xform` (n vertices: lighting, texture generation, fog, the clip flags with the pair
+merging and the phantom partner of an odd count), `fx2_tri_setup` (the decisions and the RDP triangle command), `fx2_clip_tri` (the six-plane clipper with the new vertices completed by the vertex
+pipeline); `f3dex2_dmem.h` fills the structs from DMEM and writes them back. Each has a scalar form (`_scalar`, plain C11, the reference, checked against the interpreter running the microcode on every captured
+task and in the equivalence runs) and on aarch64 a NEON form with identical results (`tools/hle/test_fx2.c`: 400 000 random triangles, 40 000 vertex batches and 100 000 matrix products bit for bit, with deliberate
+errors in the NEON forms, `-DFX2_NEON_MUTATE=n`, caught). `HLE_FX2_SCALAR=1` selects the scalar forms at run time (A/B timing on a device).
+
+The **lean mode** (default; `ARMLET_HLE_EXACT=1` turns it off) does only the SP DMA and IMEM loads that the external effects need: the display list is read from RDRAM instead of through the 168-byte refills, the input
+vertices from RDRAM instead of through a DMA to the slots (the 40-byte records written over them cover the range), the matrices, lights and viewport are copied, the RDP buffer is written to the ring with
+`hle_rdram_write`, the lighting and clipping overlays are tracked and the one that the microcode would have left is loaded once at the end. The decisions that the microcode makes per chunk (where the ring wraps, whether the RDP
+would have to catch up) are still made chunk by chunk, so DPC_START / END and the FIFO pointer end where the microcode's do. The ranges that this leaves different from the JIT's are the F3DEX2 table's
+(`l_dead_out`, below).
+
+**The F3DEX2 table of dead ranges** (cited where it is declared): the display list input buffer 0x920 .. 0x9c8 (the last refill), the clipper's polygon lists 0x3ca .. 0x408 and new vertices 0x9c8 .. 0xba8, the RDP output buffers
+and their slack up to 0xfb8, the padding byte of each colour / direction of the light slots, and the word at 0xfc8 (OSTask.ucode_boot: the initialisation stores register a0 there, `sw a0, 0xfc8`, which holds what the
+previous task left in it; found because the equivalence run of a native-run Ocarina of Time diverged in its RSP hash from the second graphics task on). The microcode reloads DMEM from the ucode data at the start of every task, so
+the whole [0, 0xfc0) is dead across tasks (`ARMLET_DMEM_POISON=all` leaves the state stream, the pictures and the audio of the games identical); the table is deliberately smaller than that so that the compare keeps checking
+the state a native front-end computes and the interpreter does not need to reproduce.
+
+**Environment.** `ARMLET_HLE_VERIFY` (`1`, `jit`, `interp`), `ARMLET_HLE_EXACT` (the exact-events compare and the DMA-for-DMA front-end), `ARMLET_HLE_INTERP`, `ARMLET_HLE_STATS` (counts, decline reasons, time), `ARMLET_HLE_POISON`,
+`ARMLET_DMEM_POISON`, `ARMLET_HLE_ABORT`, `ARMLET_HLE_QUIET`, `HLE_FX2_SCALAR` (the scalar forms), `HLE_F3_PROF` (ticks per command kind, on stderr), `HLE_F3_TRACE` (every command and triangle), `HLE_F3_WATCH=<addr>` (a DMEM halfword,
+after every command that changes it), `HLE_DUMP_IMEM=<file>`, `HLE_DUMP_STREAM=<file>` (the native side's RDP stream), `HLE_DMEM_ALL` (list every differing DMEM byte), `HLE_RSP_TRIPC=<pc>` (the interpreter prints the three vertex slots at a triangle entry), `HLE_RSP_DEBUG=<n>` (the first n interpreted instructions), `HLE_RSP_TRACE` (every interpreted instruction with the vector register it wrote), `HLE_RSP_WATCH=<addr>` (every change of
 a DMEM byte, with the pc), `HLE_RSP_PROFILE` (executions per pc, `PROF pc count` lines on stderr at the end of every task).
 
 ## Native handler contract (superseded)
