@@ -7,7 +7,7 @@ Written with its defaults to `mupen64plus.cfg` the first time the plugin starts 
 | Key | Default | Effect |
 |---|---|---|
 | `Version` | `1.00` | Parameter-set version; a section with another major version is reset to the defaults. |
-| `GfxMode` | `lle` | `lle`: every graphics task runs on parallel-rsp's JIT, with no ucode identification (nothing extra is done per task). `hle`: each new graphics task's ucode is identified and logged; a ucode that has a native handler (none yet) would run natively, the rest run as `lle`. |
+| `GfxMode` | `lle` | `lle`: every graphics task runs on parallel-rsp's JIT, with no ucode identification (nothing extra is done per task). `hle`: each new graphics task's ucode is identified and logged; a ucode that has a task-level handler ([design.md](design.md#task-level-native-path)) runs through it (F3DEX2 today: on the interpreter, which is slower than the JIT; a native front-end replaces it later), the rest run as `lle`. |
 | `GfxHleUcodes` | empty | Comma-separated 64-bit ucode ids in hex, as logged by `GfxMode = hle`, that may run natively. Empty = every ucode that has a handler. At most 32 ids. |
 | `GfxNative` | `off` | Native microcode routines ([design.md](design.md#native-routines)). `off`: nothing is installed in the JIT, the module behaves as before. `on`: the routines of the task's ucode that the allow-list admits run natively where the JIT reaches their entry. `verify`: each call also runs the JIT's code from the same state and compares everything ([design.md](design.md#native-routines)); the JIT's result is the one that stands. |
 | `GfxNativeRoutines` | empty | Allow-list: comma-separated routine names (`f3dex2.vtx`) or families (`f3dex2`, the part before the first dot); `-name` excludes; empty = every routine. Routines named `test.*` run only when listed by name. |
@@ -31,6 +31,13 @@ There is nothing to set for the rest of the pairing: `hle_gfx` and `hle_aud` are
 | `ARMLET_NATIVE_PROBE=<list>` | poison, after an oracle-only or native routine, state that the rest of the run might read, to find out whether it does: `sr=<mask>`, `vr=<mask>`, `vl<n>=<lane mask>`, `acc`, `vco`, `vcc`, `vce`, `fl<0..2>=<flag bit mask>`, `div` (comma-separated); see design.md |
 | `ARMLET_NATIVE_POISON=1` | `on` mode: after a routine, fill the registers it declares dead with a pattern (shows a wrong live-out claim downstream) |
 | `ARMLET_NATIVE_CAPTURE=<dir>` | verify: write routine-entry snapshot files (`<routine>-ok-<call>.snap`, `-mismatch-`) for the offline harness; `ARMLET_NATIVE_CAPTURE_EVERY=n` (default 16) one entry in n, `ARMLET_NATIVE_CAPTURE_MAX=n` (default 32) per routine. ROM-derived: keep in `test-output/` |
+| `ARMLET_HLE_VERIFY=1\|jit\|interp` | `GfxMode=hle`: each task-level run is also run by the oracle (the JIT, or the interpreter with `interp`) and the end states, events and RDP streams compared ([design.md](design.md#task-level-native-path)); the JIT's result stands. Mismatches go to the log |
+| `ARMLET_HLE_INTERP=1` | `GfxMode=hle`: run the tasks on the interpreter instead of a family's native front-end |
+| `ARMLET_HLE_STATS=1` | the task-level path: tasks, native runs and time, declines and their reasons, verify counts (every 64 graphics tasks) |
+| `ARMLET_HLE_POISON=1` | after a task-level run, fill the scalar and vector registers, accumulator and flags with a pattern |
+| `ARMLET_HLE_ABORT=1`, `ARMLET_HLE_QUIET=1` | verify: `abort()` at the first mismatch; or do not log the mismatches |
+| `ARMLET_HLE_CAPTURE=<dir>` | write snapshot files of the graphics task starts the JIT runs (`hle.task-<ucode>-<n>.snap`) for `armlet-native-replay`; `ARMLET_HLE_CAPTURE_EVERY=n` (16), `_MAX=n` (16). ROM-derived: keep in `test-output/` |
+| `ARMLET_DMEM_POISON=<lo>-<hi>[,...]\|mask\|all` | at the end of every graphics task (whoever ran it) overwrite those DMEM bytes with a pseudo-random pattern: a probe for dead-DMEM ranges; `mask` = the dead ranges of the ucode's table, `all` = `[0, 0xfc0)` |
 | `ARMLET_RDP_COALESCE=auto\|on\|off` | overrides `RdpCoalesce` (`0`/`1` also work) |
 | `ARMLET_RDP_COALESCE_BYTES=<n>` | overrides `RdpCoalesceBytes` |
 | `ARMLET_RDP_STATS=1` | diagnostic: every 256 graphics tasks the coalescing counters (callbacks, deferred, direct, calls to the video plugin and why each flush happened) go to the log |

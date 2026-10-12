@@ -332,6 +332,8 @@ int main(int argc, char **argv)
 {
 	long maxn = 100000;
 	int stop = -1, quiet = 0, final_only = 0;
+	unsigned dump_lo = 0, dump_hi = 0;
+	int show_stores = 0;
 	const char *path = nullptr;
 	for (int a = 1; a < argc; a++)
 	{
@@ -339,6 +341,8 @@ int main(int argc, char **argv)
 		else if (!strcmp(argv[a], "-s") && a + 1 < argc) stop = int(strtol(argv[++a], nullptr, 0));
 		else if (!strcmp(argv[a], "-q")) quiet = 1;
 		else if (!strcmp(argv[a], "--final")) final_only = 1;
+		else if (!strcmp(argv[a], "--stores")) show_stores = 1;
+		else if (!strcmp(argv[a], "--dump") && a + 2 < argc) { dump_lo = unsigned(strtoul(argv[++a], nullptr, 0)); dump_hi = unsigned(strtoul(argv[++a], nullptr, 0)); }
 		else path = argv[a];
 	}
 	if (!path)
@@ -388,6 +392,9 @@ int main(int argc, char **argv)
 		uint32_t w = g_imem[pc >> 2];
 		uint32_t target;
 		bool isbr;
+		uint32_t before_dmem[1024];
+		if (show_stores)
+			memcpy(before_dmem, s.dmem, sizeof(before_dmem));
 		running = exec(s, pc, w, &target, &isbr);
 		n++;
 		if (!final_only)
@@ -396,6 +403,20 @@ int main(int argc, char **argv)
 			std::string d;
 			diff(prev, cur, d);
 			prev = cur;
+			if (show_stores)
+			{
+				for (unsigned a = 0; a < 4096; a++)
+					if (reinterpret_cast<const uint8_t *>(before_dmem)[a ^ 3] != reinterpret_cast<const uint8_t *>(s.dmem)[a ^ 3])
+					{
+						unsigned b = a;
+						while (b + 1 < 4096 && reinterpret_cast<const uint8_t *>(before_dmem)[(b + 1) ^ 3] != reinterpret_cast<const uint8_t *>(s.dmem)[(b + 1) ^ 3])
+							b++;
+						char sb[64];
+						snprintf(sb, sizeof(sb), " ST[%03x..%03x]", a, b);
+						d += sb;
+						a = b;
+					}
+			}
 			if (!quiet || !d.empty())
 				printf("%03x %s%s\n", pc, fixup(RSP::disassemble(pc, w)).c_str(), d.c_str());
 		}
@@ -417,6 +438,8 @@ int main(int argc, char **argv)
 	printf("-- %ld instructions, ended at pc %03x (JIT stop %03x)\n", n, pc, h.exit_pc);
 	PrspNativeSnap now;
 	prsp_native_save(&now);
+	for (unsigned a = dump_lo & ~15u; a < dump_hi; a += 16)
+		printf("DMEM %03x: %08x %08x %08x %08x\n", a, now.dmem[a >> 2], now.dmem[(a >> 2) + 1], now.dmem[(a >> 2) + 2], now.dmem[(a >> 2) + 3]);
 	int bad = 0;
 	for (int i = 1; i < 32; i++)
 		if (now.sr[i] != after.sr[i]) { printf("sr[%d]: trace %08x JIT %08x\n", i, now.sr[i], after.sr[i]); bad++; }

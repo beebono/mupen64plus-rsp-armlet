@@ -27,6 +27,7 @@
 #include "armlet.h"
 #include "native/native.h"
 #include "native/native_internal.h"
+#include "hle/hle_internal.h"
 #include "prsp_bridge.h"
 
 static unsigned l_mismatch_msgs;
@@ -135,6 +136,71 @@ static int replay(const char *path, unsigned bench)
         (void)!fread(ev, sizeof(*ev), h.n_events, f);
     fclose(f);
 
+    if (!strcmp(h.routine, "hle.task")) {
+        const struct hle_ucode *uc = armlet_hle_find(h.ucode);
+        struct hle_harness_result res;
+        int nd;
+        if (!uc) {
+            fprintf(stderr, "%s: ucode %016" PRIx64 " has no task-level handler in this build\n", path, h.ucode);
+            free(ev);
+            return 1;
+        }
+        before.pc = h.entry_pc;                 /* the capture took the state before the JIT set its pc from SP_PC */
+        if (getenv("HLE_POKE")) {               /* HLE_POKE=addr=val,addr=val (hex): DMEM bytes changed before the task runs (the recorded result then no longer applies) */
+            const char *q = getenv("HLE_POKE");
+            unsigned a, v;
+            int n;
+            while (sscanf(q, "%x=%x%n", &a, &v, &n) == 2) {
+                ((uint8_t *)before.dmem)[(a & 0xfff) ^ 3] = (uint8_t)v;
+                q += n;
+                if (*q == ',')
+                    q++;
+            }
+        }
+        prsp_native_load(&before);
+        prsp_native_resync();
+        nd = armlet_hle_harness(uc, &before, &after, ev, h.n_events, buf, sizeof(buf), &res);
+        if (nd < 0) {
+            printf("%s: DECLINED %s", path, buf);
+            free(ev);
+            return 2;
+        }
+        printf("%s: %s -> %s (%.1f us)\n", path, uc->name, nd ? "MISMATCH native vs JIT" : "native == JIT", res.native_us);
+        if (nd)
+            printf("%s", buf);
+        if (bench && !nd) {
+            double nn, jn = 0;
+            uint8_t *ram0 = malloc(0x800000);       /* the JIT's runs write the RDRAM (lists, and in some games over the display list): every run starts from the same bytes */
+            if (ram0)
+                memcpy(ram0, W.rdram, 0x800000);
+            nn = armlet_hle_bench(uc, &before, bench);
+            unsigned k;
+            for (k = 0; k < bench + 1 && !getenv("HLE_BENCH_NOJIT"); k++) {      /* (HLE_BENCH_NOJIT=1: some tasks do not run to their end on the JIT outside the plugin) */
+                struct timespec a, b;
+                prsp_native_load(&before);
+                prsp_native_resync();
+                if (ram0)
+                    memcpy(W.rdram, ram0, 0x800000);
+                W.regs[4] &= ~3u;
+                W.sp_pc = h.entry_pc;
+                clock_gettime(CLOCK_MONOTONIC, &a);
+                if (getenv("HLE_HK_DEBUG"))
+                    fprintf(stderr, "JIT run %u\n", k);
+                parallelRSPDoRspCycles(~0u);
+                clock_gettime(CLOCK_MONOTONIC, &b);
+                if (k)                  /* the first run compiles */
+                    jn += (double)(b.tv_sec - a.tv_sec) * 1e9 + (b.tv_nsec - a.tv_nsec);
+            }
+            jn /= bench;
+            if (getenv("HLE_BENCH_NOJIT"))
+                jn = nn;
+            free(ram0);
+            printf("  bench: front-end %.1f us, JIT %.1f us (%.2fx)\n", nn / 1000.0, jn / 1000.0, jn / nn);
+        }
+        free(ev);
+        return nd != 0;
+    }
+
     idx = armlet_native_find(l_as ? l_as : h.routine, h.ucode);
     if (idx < 0) {
         fprintf(stderr, "%s: routine %s of ucode %016" PRIx64 " is not in this build\n", path, h.routine, h.ucode);
@@ -206,10 +272,11 @@ static void hookbench(unsigned n)
         0x00000000u,                        /* nop */
         0x0000000du,                        /* break */
     };
-    double t[2];
+    double t[3];
     unsigned mode;
     int idx;
-    uint64_t id = 0x0123456789abcdefull;
+    uint64_t ids[3] = { 0, 0x0123456789abcdefull, 0x0123456789abcde0ull };
+    uint64_t id = ids[1];
     struct armlet_native_settings s;
 
     memset(W.imem, 0, sizeof(W.imem));
@@ -220,17 +287,17 @@ static void hookbench(unsigned n)
     W.imem[0x104 / 4] = 0;
     memset(&s, 0, sizeof(s));
     s.mode = ARMLET_NATIVE_ON;
-    snprintf(s.routines, sizeof(s.routines), "test.hook");
+    snprintf(s.routines, sizeof(s.routines), "test.hook,test.hookd");
     armlet_native_start(&s);
     idx = armlet_native_find("test.hook", id);
     if (idx < 0) {
         fprintf(stderr, "test.hook is not in this build\n");
         return;
     }
-    for (mode = 0; mode < 2; mode++) {
+    for (mode = 0; mode < 3; mode++) {
         int rep;
         double best = 1e30;
-        armlet_native_select(mode ? id : 0);
+        armlet_native_select(ids[mode]);
         for (rep = 0; rep < 5; rep++) {
             struct timespec a, b;
             prsp_native_resync();
@@ -244,7 +311,7 @@ static void hookbench(unsigned n)
         }
         t[mode] = best / n;
     }
-    printf("hookbench: %u calls; per loop iteration: JIT alone %.1f ns, with the hooked call %.1f ns; the hook costs %.1f ns per call\n", n, t[0], t[1], t[1] - t[0]);
+    printf("hookbench: %u calls; per loop iteration: JIT alone %.1f ns, with the hooked call %.1f ns (+%.1f), with the hook declining %.1f ns (+%.1f)\n", n, t[0], t[1], t[1] - t[0], t[2], t[2] - t[0]);
 }
 
 extern unsigned armlet_test_dep2_calls(void);
@@ -305,6 +372,11 @@ int main(int argc, char **argv)
             hb = (unsigned)atoi(argv[++a]);
         else if (!strcmp(argv[a], "--quiet"))
             l_quiet = 1;
+        else if (!strcmp(argv[a], "--masks")) {
+            /* the DMEM ranges that the task-level path declares dead, per ucode, in the form tools/equiv/rsp_shim.c reads (RSPT_MASKS): "<id>:<lo>-<hi>,<lo>-<hi>;..." */
+            armlet_hle_print_masks(stdout);
+            return 0;
+        }
         else if (!strcmp(argv[a], "--as") && a + 1 < argc)
             l_as = argv[++a];
         else

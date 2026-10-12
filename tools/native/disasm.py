@@ -40,4 +40,9 @@ def fix(text):
 for l in out.splitlines():
     head, _, text = l.partition(" | ")
     f = head.split()
-    print("%03x  %s  %s" % (int(f[1]), f[2], fix(text)))
+    t = fix(text)
+    # the decoder prints some instructions that write nothing as `nop` (a load or ALU op into $0: harmless); one with a non-zero word is flagged so that a real
+    # instruction hidden behind a nop cannot be missed again (the fork's decoder once printed `sw $0, off($0)`, a DMEM write, as nop)
+    if t.split()[-1] == "nop" and int(f[2], 16) != 0:
+        t += "   <-- NOP of a non-zero word"
+    print("%03x  %s  %s" % (int(f[1]), f[2], t))

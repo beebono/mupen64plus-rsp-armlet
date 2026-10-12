@@ -47,6 +47,10 @@ void armlet_native_report(int final);
  * Returns the PRSP_NATIVE_* result like the host's enter(). Used by the harness. */
 int armlet_native_call(unsigned idx, unsigned *next_pc, int *mode);
 
+/* The task-level path (src/hle) */
+void armlet_native_ensure_host(void);
+extern void (*armlet_event_listener)(const PrspNativeEvent *);   /* when set, the fork's recorded events go here and not into verify's logs */
+
 /* Harness support (tools/native/replay.c) */
 int armlet_native_find(const char *name, uint64_t ucode);   /* index in the registry, or -1 */
 /* Differences between two snapshots (the routine's masks applied, effect logs not compared); the first ones go to out. */

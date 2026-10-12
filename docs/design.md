@@ -233,19 +233,64 @@ arMLEt: gfx ucode 0d3f849c8dd309c4 F3DEX2: RSP Gfx ucode F3DZEX.NoN fifo 2.06H Y
 
 This is computed only in `GfxMode = hle`. With `lle` (the default) a graphics task goes straight to the JIT with no hashing.
 
-## Native handler contract
+## Task-level native path
 
-`armlet_gfx_try_native` accepts a task only when all of these hold: `GfxMode = hle`; boot size <= 0x1000 (a task, not a bare RSP program);
-type 1; fresh (`SP_PC` 0 and the yield flag clear); its ucode id has a handler in `l_native[]` (`gfx_ucode.c`); and the id is in `GfxHleUcodes`
-when that list is not empty. The table is empty today. A handler `int run(struct armlet_ctx *c, const struct armlet_ucode_id *u)` that returns
-non-zero has completed the task and must leave the machine as the LLE run would:
+A graphics task of a ucode that has an `hle_ucode` entry (`src/hle/hle.h`; `GfxMode=hle`, optionally restricted by `GfxHleUcodes`) is run by `armlet_hle_run` (`src/hle/hle_core.c`) instead of
+by the JIT; the JIT stays the reference and the fallback. Nothing of this runs in the default `GfxMode=lle`, and it needs the video plugin to be foir behind the coalescing path
+(`RdpCoalesce` resolved on), because the commit replays the RDP lists through that path.
 
-1. write the RDP commands to RDRAM where the ucode would (the output buffer or the FIFO) and set `DPC_START`, `DPC_CURRENT`, `DPC_END`;
-2. call `ProcessRdpList` (the callback in `c->rsp`) for them, in the order and with the batching the ucode uses;
-3. set `SP_STATUS` `TASKDONE | BROKE | HALT`;
-4. raise `MI_INTR_SP` when `INTR_ON_BREAK` is set and `MI_INTR_DP`, then call `CheckInterrupts`;
-5. leave DMEM / IMEM and the RSP registers either as the ucode would, or in a state the next task cannot observe (the next task reloads
-   both; only a yield, which the dispatcher already refuses, or a game that reads them back, could tell).
+**Structure.** A *family* (`struct hle_family`) has a `run(task, ucode)`; a *build* of a microcode is data (`struct hle_ucode`, registered with `HLE_UCODE()` into the section `hle_ucodes`,
+found by the ucode id): the layout offsets, flags, the variants within the family (`vtx_variant`, `tri_variant`, `clip_variant`), the family's own constants (`fam_data`), and the DMEM ranges
+that are dead at the end of a task. The shared library is the fixed-point arithmetic of the RSP as plain integer functions (`hle_fx.h`; the closed forms and their test,
+`tools/hle/prim_test.c`, are Fleet B's: 0 failures over 200 000 trials x 8 lanes against the exact VU instruction sequences, and a mutation check) and the task framework. F3DEX2 is the first
+family (`hle_f3dex2.c`): its four builds (Donkey Kong 64, Paper Mario, Ocarina of Time, Pokemon Snap) are tables, and its `run()` is the interpreter below.
 
-A handler returning 0 must not have changed anything; the task then runs on the JIT. The JIT stays the reference: any handler is judged by
-the `FOIR_SHOT` and RDP-stream comparison against it, per game, before it is enabled by default.
+**What a family must produce.** Only what can be observed afterwards: the RDRAM the task writes, the concatenated RDP command stream, the SP / DPC / MI registers, the OSTask words the ucode writes, and
+DMEM except the ranges the build's table declares dead. The vector unit, the scalar registers, the accumulator and the flags are not part of it (the next task loads them before use). A family
+therefore does not have to imitate the microcode's internal structure (its RDP output buffers, its vertex slot records) except where a later task, or the microcode's own next command, reads it.
+
+**The run.** `armlet_hle_run` saves the RSP state (`prsp_native_save`), zeroes the status-poll counters (the JIT does at the start of a task), switches the fork's sandbox on (SP DMA writes
+to RDRAM keep their old bytes, the RDP is not run) and calls the family. The family works on the real DMEM / IMEM / RDRAM and the SP / DPC registers through `hle_dma_read`,
+`hle_dma_write`, `hle_mtc0`, `hle_poll_status` (the fork's own DMA and register code, so the registers, IMEM dirty bits and events come out as the JIT's). The DMA writes and the DPC
+register writes are logged. When the family returns `HLE_OK` the task is complete; `HLE_DECLINE` (`hle_decline(task, "why")`) gives the whole task to the JIT: the state is loaded back and
+the RDRAM restored, so nothing is split. At the commit the sandbox is switched off (RDRAM back to its state at the task start), then the log is replayed in order through
+`prsp_rdp_defer_dma_write` / `prsp_native_mtc0`, which is exactly the call sequence of a JIT run, so the video plugin and the RDRAM end identical. `SP_PC`, `SP_STATUS` (BROKE | HALT, the
+SP interrupt) are what `BREAK` and the run loop leave.
+
+**The interpreter (`hle_rsp.cpp`).** A small RSP interpreter over the real memories: the scalar unit in plain code, the vector unit and the vector loads / stores through the fork's per-instruction
+helpers (the JIT's helper-call path; `tools/native/trace.cpp` uses the same ones), MFC0 / MTC0 through the framework. It is the exact reference of the task-level path: a family with no native code
+runs on it (that is the F3DEX2 `run()` today, and `ARMLET_HLE_INTERP=1` forces it for any family), `ARMLET_HLE_VERIFY=interp` compares a native front-end with it, and the offline harness replays
+captured tasks with it. It reproduces all captured tasks of the four games (570 tasks of Donkey Kong 64, Ocarina of Time, Paper Mario, Pokemon Snap). It is slower than the JIT (about 3x on a Donkey
+Kong 64 task on the x86 desktop; on the A55 about 80 ns per interpreted instruction against the JIT's 11 ns) and is not a production path. Earlier work on *hooks* inside the interpreter (native handlers taking over at a pc) and on the JIT running the
+stretches between them was dropped in favour of whole-task native front-ends (see below); the hook code is not part of the tree.
+
+**What verify compares** (`ARMLET_HLE_VERIFY=1` or `jit`: the oracle is the JIT; `=interp`: the oracle is the interpreter, and the JIT then runs the task for real; and the offline harness): the
+native run in the sandbox, then the state is put back and the oracle runs the task; then, native against oracle: all of DMEM (except the ucode's declared dead ranges) and IMEM, the SP / DPC registers,
+MI_INTR (without the DP interrupt bit, which the RDP raises when it processes a full sync), the pc, `SP_STATUS_TIMEOUT`, the IMEM-changed bits (the oracle's must be a subset of the native run's),
+the RDRAM written by SP DMA (the bytes of every range either side wrote, except the chunks of the RDP output buffer: those are compared as the stream), the sequence of recorded SP register writes
+(DMA reads and writes with the hash of the bytes, status, semaphore, DPC_START / END / STATUS), and **the bytes of the RDP lists as one stream** (FNV-1a-64 and length of all list bytes in order,
+with the second word of NO_OP and the sync commands zeroed: the RDP ignores it and the microcode leaves stale scratch there). Not compared: list boundaries, because they are unobservable to foir
+(coalescing already relies on it; a family that submits fewer, larger lists names the event kinds to skip in `ev_ignore`); the scalar and vector registers, the accumulator, flags and divide unit
+(`ARMLET_HLE_POISON=1` fills them with a pattern after a native task so that a wrong claim shows up in the equivalence runs); the status-poll counters (the JIT zeroes them at every task start).
+
+**DMEM masks.** A build may declare DMEM ranges dead at the end of a task (`hle_dead_range`: scratch the next task overwrites before reading, or never reads). A mask is data in the build's table, cites
+how it was established, is applied identically by the verify compare, the poison probe and the `tools/equiv` hash (`armlet_hle_print_masks` feeds the shim), is validated by the equivalence runs
+of all the target games on both devices, and never covers RDP lists, the output FIFO state, the DL stack or anything the RDP or a later task reads. **The evidence is per family**: the F3D family
+leaves DMEM dead except the OSTask header (Fleet C's poison runs), F3DEX 1.x does not reload DMEM 0x800-0xfbf between tasks; each family's mask needs its own proof.
+The probe is `ARMLET_DMEM_POISON=<lo>-<hi>[,...] | mask | all` (`hle_task.c`): at the end of every graphics task, whether the JIT or the task-level path ran it, those DMEM bytes are overwritten with a
+pseudo-random pattern (a different one each time); `mask` is the build's dead ranges, `all` is [0, 0xfc0). A range is dead when a run with it poisoned gives the events, the RDP stream, the
+pictures and the audio of the unpoisoned run (docs/testing.md).
+
+**Capture and offline replay.** `ARMLET_HLE_CAPTURE=<dir>` (with `_EVERY`, `_MAX`) writes snapshot files of task starts (state, the RDRAM rows the task's DMA reads read, the JIT's end state,
+the recorded events and the JIT's RDP stream) for tasks the JIT runs; `armlet-native-replay file.snap...` runs the family on them and compares with the recorded JIT result
+(`--bench N` times the front-end and the JIT; `HLE_POKE=addr=val,...` sets DMEM bytes first). Snapshots are ROM-derived: keep them in `test-output/`.
+
+**Environment.** `ARMLET_HLE_VERIFY` (`1`, `jit`, `interp`), `ARMLET_HLE_INTERP`, `ARMLET_HLE_STATS` (counts, decline reasons, time), `ARMLET_HLE_POISON`, `ARMLET_DMEM_POISON`, `ARMLET_HLE_ABORT`,
+`ARMLET_HLE_QUIET`, `HLE_RSP_DEBUG=<n>` (the first n interpreted instructions), `HLE_RSP_TRACE` (every interpreted instruction with the vector register it wrote), `HLE_RSP_WATCH=<addr>` (every change of
+a DMEM byte, with the pc), `HLE_RSP_PROFILE` (executions per pc, `PROF pc count` lines on stderr at the end of every task).
+
+## Native handler contract (superseded)
+
+`armlet_gfx_try_native` still accepts a task only when `GfxMode = hle`; boot size <= 0x1000 (a task, not a bare RSP program); type 1; fresh (`SP_PC` 0 and the yield flag
+clear); its ucode id has a handler (an `hle_ucode` entry, see above) and the id is in `GfxHleUcodes` when that list is not empty. The handler `run` returns non-zero when it completed the
+task; returning 0 changes nothing and the JIT runs the task. What a completed task leaves is described in "Task-level native path"; the JIT stays the reference.

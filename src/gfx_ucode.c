@@ -13,6 +13,7 @@
 #include "m64p_types.h"
 
 #include "gfx_ucode.h"
+#include "hle/hle.h"
 
 #define RDRAM_MASK 0x7fffff
 #define TEXT_MAX 0x1000
@@ -25,7 +26,7 @@
 #define BYTE_SWZ 3
 #endif
 
-/* Phase A: no native handler yet. */
+/* the task-level native path (src/hle) answers for the ucodes that have an hle_ucode entry; none other here */
 static const struct armlet_gfx_native l_native[] = {
     { 0, NULL }
 };
@@ -187,6 +188,14 @@ const struct armlet_ucode_id *armlet_gfx_identify(const struct armlet_ctx *c, bo
 const struct armlet_gfx_native *armlet_gfx_native_find(uint64_t id)
 {
     const struct armlet_gfx_native *n;
+#ifdef ARMLET_NATIVE
+    static struct armlet_gfx_native hle;
+    if (armlet_hle_find(id)) {
+        hle.id = id;
+        hle.run = armlet_hle_run;
+        return &hle;
+    }
+#endif
     for (n = l_native; n->run; n++)
         if (n->id == id)
             return n;

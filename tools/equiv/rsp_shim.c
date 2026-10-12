@@ -5,6 +5,9 @@
  *   RSPT_STATE=<file> appends one line per DoRspCycles call with a hash of what the core can see of the RSP and the RDP afterwards: SP_PC, SP_STATUS,
  *                     SP_SEMAPHORE, MI_INTR, DPC_START / END / CURRENT / STATUS (and, with RSPT_RDRAM=1, all of RDRAM: use it with FOIR_THREADS=0, the
  *                     workers of the video plugin write RDRAM asynchronously)
+ *   RSPT_MASKS="<ucode id>:<lo>-<hi>,<lo>-<hi>;..."  DMEM byte ranges (hex) that are zeroed before the hash of a graphics task of that ucode: the DMEM that the task-level native path
+ *                     declares dead (docs/design.md, "DMEM masks"); the reference runs use the same list, so the hash streams stay comparable. The ucode is identified like
+ *                     src/gfx_ucode.c does (FNV-1a over the text words). armlet-native-replay --masks prints the list.
  *   RSPT_LOG=<file>   about once a second "<CLOCK_BOOTTIME s> <calls> <cumulative RSP ms>"
  *   RSPT_MARK=<file>[,<file>...]  at the first call after each file exists (a FOIR_SHOT screenshot, written on the emulation thread,
  *                     so the point is the same for every build): "MARK <calls> <RSP ms> <emu-thread CPU ms> <process CPU ms>" to RSPT_LOG,
@@ -27,6 +30,14 @@
 static void *h;
 static FILE *lg, *hl, *sl;
 static int hash_rdram;
+#define MAX_MASK_UCODES 32
+#define MAX_MASK_RANGES 64
+static struct {
+    unsigned long long id;
+    unsigned n, lo[MAX_MASK_RANGES], hi[MAX_MASK_RANGES];
+} masks[MAX_MASK_UCODES];
+static unsigned n_masks;
+static int sticky[MAX_MASK_UCODES];     /* masks stay in force once a graphics task of their ucode has run: the dead bytes it left in DMEM stay there for the tasks after it */
 static double cum_ms, last_log;
 static unsigned long calls;
 #define MAX_MARKS 16
@@ -85,6 +96,23 @@ EXPORT m64p_error CALL PluginStartup(m64p_dynlib_handle ch, void *ctx, void (*cb
         hl = fopen(hf, "w");
     if (getenv("RSPT_STATE"))
         sl = fopen(getenv("RSPT_STATE"), "w");
+    if (getenv("RSPT_MASKS")) {
+        char *m = strdup(getenv("RSPT_MASKS")), *save = NULL, *e;
+        for (e = strtok_r(m, ";", &save); e && n_masks < MAX_MASK_UCODES; e = strtok_r(NULL, ";", &save)) {
+            char *colon = strchr(e, ':'), *r, *save2 = NULL;
+            if (!colon)
+                continue;
+            masks[n_masks].id = strtoull(e, NULL, 16);
+            for (r = strtok_r(colon + 1, ",", &save2); r && masks[n_masks].n < MAX_MASK_RANGES; r = strtok_r(NULL, ",", &save2)) {
+                unsigned lo, hi;
+                if (sscanf(r, "%x-%x", &lo, &hi) == 2) {
+                    masks[n_masks].lo[masks[n_masks].n] = lo;
+                    masks[n_masks].hi[masks[n_masks].n++] = hi;
+                }
+            }
+            n_masks++;
+        }
+    }
     hash_rdram = getenv("RSPT_RDRAM") && *getenv("RSPT_RDRAM") == '1';
     if (getenv("RSPT_MARK")) {
         char *m = strdup(getenv("RSPT_MARK")), *save = NULL, *p;
@@ -123,7 +151,40 @@ EXPORT unsigned int CALL DoRspCycles(unsigned int c)
     cum_ms += (b - a) * 1e3;
     calls++;
     if (hl && rinfo.DMEM) {
-        unsigned long long x = fnv(rinfo.DMEM, 4096, 0xcbf29ce484222325ull);
+        unsigned char dm[4096];
+        const unsigned char *dmem = rinfo.DMEM;
+        unsigned long long x;
+        if (n_masks && *(const unsigned *)(rinfo.DMEM + 0xfc0) == 1 && *(const unsigned *)(rinfo.DMEM + 0xfcc) <= 0x1000) {
+            /* a graphics task: identify its ucode as src/gfx_ucode.c does and zero the ranges it declares dead */
+            unsigned addr = *(const unsigned *)(rinfo.DMEM + 0xfd0) & 0x7fffff & ~3u, size = *(const unsigned *)(rinfo.DMEM + 0xfd4), i, k;
+            unsigned long long id = 0xcbf29ce484222325ull;
+            if (!size)
+                size = 0xf80;
+            if (size > 0x1000)
+                size = 0x1000;
+            size = (size + 3) & ~3u;
+            for (i = 0; i < size; i += 4)
+                id = (id ^ *(const unsigned *)(rinfo.RDRAM + ((addr + i) & 0x7ffffc))) * 0x100000001b3ull;
+            for (k = 0; k < n_masks; k++)
+                if (masks[k].id == id)
+                    sticky[k] = 1;
+        }
+        {
+            unsigned k, j, i;
+            int any = 0;
+            for (k = 0; k < n_masks; k++)
+                any |= sticky[k];
+            if (any) {
+                memcpy(dm, rinfo.DMEM, 4096);
+                for (k = 0; k < n_masks; k++)
+                    if (sticky[k])
+                        for (j = 0; j < masks[k].n; j++)
+                            for (i = masks[k].lo[j]; i < masks[k].hi[j] && i < 4096; i++)
+                                dm[i ^ 3] = 0;
+                dmem = dm;
+            }
+        }
+        x = fnv(dmem, 4096, 0xcbf29ce484222325ull);
         x = fnv(rinfo.IMEM, 4096, x);
         x = (x ^ r) * 0x100000001b3ull;
         fprintf(hl, "%llx\n", x);

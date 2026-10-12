@@ -102,3 +102,13 @@ unsigned armlet_test_dep2_calls(void)
 
 ARMLET_ROUTINE(l_dep2) = { .name = "test.dep2", .ucode = 0x0123456789abcdf0ull, .entry_pc = 0x100, .dep_lo = 0x100, .dep_hi = 0x108, .dep2_lo = 0x400, .dep2_hi = 0x408,
                            .imem_hash = 0xeb33598ddd1bf87dull, .run = test_dep2 };
+
+/* "test.hookd": test.hook that declines (the cost of a hooked call that the JIT then runs itself) */
+static int test_hookd(struct armlet_env *e)
+{
+    (void)e;
+    return ARMLET_NATIVE_DECLINE;
+}
+
+ARMLET_ROUTINE(l_hookd) = { .name = "test.hookd", .ucode = 0x0123456789abcde0ull, .entry_pc = 0x100, .dep_lo = 0x100, .dep_hi = 0x108,
+                            .imem_hash = 0xc84dc27f29a28935ull, .run = test_hookd };

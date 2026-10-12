@@ -51,6 +51,9 @@ list(TRANSFORM ARMLET_PRSP_EXTRA_CPP PREPEND "${ARMLET_PRSP_DIR}/" OUTPUT_VARIAB
 list(TRANSFORM ARMLET_HLE_C PREPEND "${ARMLET_HLE_DIR}/src/" OUTPUT_VARIABLE hle_c)
 set(armlet_c
     src/plugin.c src/config.c src/hle_glue.c src/dispatch.c src/gfx_ucode.c src/log.c src/rdp_defer.c)
+file(GLOB armlet_hle_src CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/hle/*.c")     # the task-level native path (src/hle)
+file(GLOB armlet_hle_cpp CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/hle/*.cpp")
+list(APPEND armlet_c ${armlet_hle_src})
 
 if(ARMLET_NATIVE)
     file(GLOB armlet_native_c CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/native/*.c")
@@ -58,7 +61,7 @@ if(ARMLET_NATIVE)
     list(APPEND armlet_c ${armlet_native_c})
 endif()
 
-set(armlet_cpp ${armlet_native_cpp})
+set(armlet_cpp ${armlet_native_cpp} ${armlet_hle_cpp})
 if(ARMLET_PROFILE)
     list(APPEND armlet_c src/prof/prof_glue.c)
     list(APPEND armlet_cpp src/prof/prof.cpp src/prof/rdp.cpp src/prof/walker.cpp src/prof/tasklog.cpp src/prof/map.cpp src/prof/counts.cpp src/prof/ucode.cpp)
@@ -127,7 +130,7 @@ endif()
 # Offline harness for native routines (tools/native/replay.c): the same sources, linked as a program
 option(ARMLET_NATIVE_TOOLS "build the offline native-routine harness armlet-native-replay (needs ARMLET_NATIVE)" OFF)
 if(ARMLET_NATIVE_TOOLS AND ARMLET_NATIVE)
-    add_executable(armlet-native-replay tools/native/replay.c src/gfx_ucode.c src/log.c ${armlet_native_c} ${armlet_native_cpp} ${prsp_cpp} ${prsp_extra_cpp})
+    add_executable(armlet-native-replay tools/native/replay.c src/gfx_ucode.c src/log.c src/rdp_defer.c ${armlet_hle_src} ${armlet_hle_cpp} ${armlet_native_c} ${armlet_native_cpp} ${prsp_cpp} ${prsp_extra_cpp})
     set_target_properties(armlet-native-replay PROPERTIES LINKER_LANGUAGE CXX)
     target_include_directories(armlet-native-replay PRIVATE
         "${M64P_API_INCLUDE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/src"

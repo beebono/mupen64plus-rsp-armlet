@@ -98,7 +98,7 @@ m64p_error armlet_config_startup(m64p_dynlib_handle core)
     ConfigSetDefaultFloat(l_section, CFG_VERSION, CONFIG_PARAM_VERSION, "arMLEt config parameter version number");
     ConfigSetDefaultString(l_section, CFG_GFX_MODE, "lle",
         "Graphics microcode: lle = every graphics task runs on parallel-rsp's JIT; "
-        "hle = tasks whose microcode has a native handler run natively (none yet), the rest run as lle");
+        "hle = tasks whose microcode has a native task-level handler (src/hle) run natively, the rest run as lle");
     ConfigSetDefaultString(l_section, CFG_GFX_UCODES, "",
         "Comma-separated 64-bit ucode ids (hex, as logged) allowed to run natively in GfxMode=hle; empty = all with a handler");
     ConfigSetDefaultString(l_section, CFG_GFX_NATIVE, "off",

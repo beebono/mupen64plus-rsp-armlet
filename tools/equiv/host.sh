@@ -33,6 +33,8 @@ if [ -n "$EQUIV_ROMS" ]; then
     ssh "$DEV" "mkdir -p $X/roms"
     while IFS= read -r rom; do [ -n "$rom" ] && sf "$rom" "$X/roms/$(basename "$rom" | tr " " "_")"; done <<< "$EQUIV_ROMS"
 fi
+if [ -x "$R/out/native-tools/armlet-native-replay" ]; then "$R/out/native-tools/armlet-native-replay" --masks > "$L/masks.txt"; else : > "$L/masks.txt"; fi
+sf "$L/masks.txt" $X/masks.txt
 ssh "$DEV" "rm -rf $X/out/* $X/done; cat > $X/runs.txt" <<< "$RUNS"
 if [ "$FLAVOUR" = rg35xxsp ]; then
     ssh "$DEV" "MAXWAIT=$WAIT PIN=$PIN timeout $((WAIT + 120)) sh $X/rg35xxsp_session.sh $X" > "$L/session.$LABEL.out" 2>&1 || true

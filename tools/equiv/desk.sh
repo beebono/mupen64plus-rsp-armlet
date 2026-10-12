@@ -13,6 +13,7 @@ ln -sf "$N/ref/mupen64plus-rsp-hle.so" "$N/ref/mupen64plus-rsp-parallel.so" "$X/
 ln -sf "$N/tools/rsp-shim.so" "$N/tools/input-det.so" "$N/tools/audio-adump.so" "$X/plug/"
 ln -sf "$FOIR_SO" "$X/plug/mupen64plus-rdp-foir.so"
 printf '%s\n' "$@" > "$X/runs.txt"
+if [ -x "$R/out/native-tools/armlet-native-replay" ]; then "$R/out/native-tools/armlet-native-replay" --masks > "$X/masks.txt"; else rm -f "$X/masks.txt"; fi
 export SDL_VIDEODRIVER=offscreen SDL_AUDIODRIVER=dummy HOME=$X/home XDG_DATA_HOME=$X/home XDG_CONFIG_HOME=$X/home XDG_CACHE_HOME=$X/home/cache
 MUPEN="$CONSOLE --corelib $CORE_DIR/libmupen64plus.so.2 --datadir $R/../mupen64plus-core/data"; ROMDIR=$R/..; VIDARGS=
 WRAP="systemd-run --user --scope -q -p MemoryMax=${MEMMAX:-2G} -p MemorySwapMax=0"; GAP=1

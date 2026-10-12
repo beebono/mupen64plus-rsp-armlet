@@ -18,6 +18,7 @@
 #include "armlet.h"
 #include "config.h"
 #include "gfx_ucode.h"
+#include "hle/hle.h"
 #include "hle.h"
 #include "prsp_bridge.h"
 #include "rdp_defer.h"
@@ -91,13 +92,14 @@ EXPORT void CALL InitiateRSP(RSP_INFO info, unsigned int *cycle_count)
 
     armlet_config_load(&c->cfg);
     if (c->cfg.gfx_mode == ARMLET_GFX_HLE)
-        armlet_log(M64MSG_INFO, "GfxMode=hle: this build has no native graphics handlers yet, graphics run on parallel-rsp");
+        armlet_log(M64MSG_INFO, "GfxMode=hle: tasks of the ucodes with a task-level native handler run natively, the rest on parallel-rsp");
 
     c->prsp = info;
     ARMLET_PROF_INIT(c);
     armlet_rdp_defer_init(c);           /* after the profiler: it wraps the video plugin's callback, the deferral wraps that */
     parallelRSPInitiateRSP(c->prsp, cycle_count);
     ARMLET_NATIVE_INIT(c);              /* after parallel-rsp: the hook needs its CPU state */
+    armlet_hle_init(c);
 }
 
 EXPORT void CALL RomClosed(void)
@@ -108,5 +110,6 @@ EXPORT void CALL RomClosed(void)
     armlet_rdp_defer_reset();
     ARMLET_PROF_ROMCLOSED();
     ARMLET_NATIVE_RESET();
+    armlet_hle_reset();
     parallelRSPRomClosed();
 }

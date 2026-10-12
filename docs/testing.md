@@ -289,3 +289,26 @@ All eight are caught in every snapshot where they apply (7: the snapshots whose 
 | 600-frame DK64 equivalence, `GfxNative=verify` and `on` + `ARMLET_NATIVE_POISON=1` with `test.dma` | RSP hash stream, state stream, 6 screenshots and audio identical to the reference |
 | the framework alone (no F3DEX2 routine files) builds with `-DARMLET_NATIVE_TOOLS=ON` and passes the replay of 15 `test.dma` snapshots | all equal |
 | `armlet-native-replay --hookbench` (desktop x86_64): a loop calling a two-instruction subroutine, with and without the hook | the hook adds about 5 ns per call (aarch64 devices: measured with the F3DEX2 routines) |
+
+## Task-level path: the framework (docs/design.md, "Task-level native path")
+
+The framework (sandbox, commit by replay, verify, capture, the interpreter, the DMEM probe) is tested with the F3DEX2 family as it is today, whose `run()` is the interpreter. It is the reference
+implementation: a native front-end must do what it does. Games: Donkey Kong 64, Ocarina of Time, Paper Mario, Pokemon Snap, 700 frames each on the x86 desktop, `GfxMode=hle`, against the reference
+pairing (rsp-hle + parallel-rsp), `tools/equiv` hash stream, state stream, 6 screenshots, audio.
+
+| check | result |
+|---|---|
+| offline replay of the captured task starts (`armlet-native-replay`, 60 + 60 + 330 + 120 tasks), the family on the interpreter against the recorded JIT result: x86 desktop, rgdsplus (A55), rg35xxsp (A53) | 570 of 570 equal on each |
+| `ARMLET_HLE_VERIFY=1` (the JIT is the oracle), 4 games | DK64 255, OoT 447, PM 703, Snap 575 tasks compared, 0 differences; equivalence PASS for all four |
+| `ARMLET_HLE_VERIFY=interp` (the interpreter is the oracle, the JIT runs for real afterwards), 4 games | the same counts, 0 differences; equivalence PASS |
+| `ARMLET_DMEM_POISON=mask` (the build's dead ranges overwritten with a different pseudo-random pattern at the end of every task-level run), 4 games | equivalence PASS: hash stream (masked by the same table), state stream, screenshots, audio identical |
+| `ARMLET_DMEM_POISON=all` (DMEM [0, 0xfc0) after every task), 4 games, 700 frames | a first data point only: state stream, 6 screenshots and audio identical in all four; the hash stream differs, as it hashes DMEM. The per-task event lists and gameplay windows on both devices are still to be done for F3DEX2 |
+| `tools/hle/build_prim_test.sh` (hle_fx.h against the VU instruction sequences, 200 000 trials x 8 lanes per primitive) | 0 failures; with `HLE_FX_MUTATE=1..7` (a deliberate error in function n) 2 264 697, 703 830, 735, 7 698, 21, 772 760 and 255 517 failures |
+| default fork build unchanged: the 20 object files of `build_m64p_plugin.sh` (x86_64), fork HEAD against the tree with the framework's two fork changes | 19 identical; `rsp_disasm.cpp.o` differs (below); the `native_enter` shortcut is inside `PRSP_NATIVE` |
+
+**Fork changes.** `rsp_disasm.cpp`: SB / SH / SW with `rt == 0` were printed as `nop` (the emulation was never affected, only the disassembly: `sw $0, 473($0)` is a real store); `rsp_jit.cpp`: `native_enter`
+continues with the block at the new pc if there is one (the cost of a hooked call that returns to compiled code fell from 183 ns to 46 ns).
+
+**The probe finds what is dead.** `ARMLET_DMEM_POISON=all` (DMEM [0, 0xfc0) after every task, whoever ran it) must change nothing the CPU or the RDP can see; where it does, the ranges that matter are
+found by bisecting the list (`ARMLET_DMEM_POISON=<lo>-<hi>,...`). The result for a family is the evidence of its mask (design.md "DMEM masks"): events, RDP stream, pictures, audio, on both devices
+over gameplay windows.

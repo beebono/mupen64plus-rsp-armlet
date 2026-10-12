@@ -27,6 +27,8 @@ equiv_run() {
     armlet|armlet-hle|armlet-off) export RSPT_TARGET=$P/mupen64plus-rsp-armlet.so ;;
     *) echo "$TAG: unknown build $BUILD" >> "$X/out/session.info"; return ;;
     esac
+    # DMEM ranges the task-level native path declares dead (tools/equiv/rsp_shim.c): the host stages $X/masks.txt, the reference runs use it too
+    if [ -s "$X/masks.txt" ]; then RSPT_MASKS=$(cat "$X/masks.txt"); export RSPT_MASKS; else unset RSPT_MASKS; fi
     unset ARMLET_GFX RSPT_HASH RSPT_STATE RSPT_MARK ADUMP_FILE ARMLET_NATIVE ARMLET_NATIVE_ROUTINES ARMLET_NATIVE_ABORT ARMLET_NATIVE_STATS \
           ARMLET_NATIVE_POISON ARMLET_NATIVE_CAPTURE ARMLET_NATIVE_CAPTURE_MAX ARMLET_NATIVE_CAPTURE_EVERY
     if [ -n "$EXTRA" ]; then

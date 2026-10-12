@@ -43,7 +43,7 @@ struct rows {
 
 static struct {
     struct armlet_native_settings set;
-    int started;
+    int started, hosted;
     const struct armlet_routine *reg[MAX_ROUTINES];
     struct armlet_native_stats stats[MAX_ROUTINES];
     unsigned n_reg;
@@ -60,6 +60,9 @@ static struct {
     unsigned captured[MAX_ROUTINES];
     uint64_t call_no, mismatch_total, verify_total, tasks;
     struct sigaction wd_old;
+    int fast;                                   /* mode ON without statistics, poison or probes: the shortest path through host_enter */
+    int probe_active;                           /* ARMLET_NATIVE_PROBE names something */
+    struct armlet_env env;                      /* the one environment of production calls: the view never changes, only the entry, mode and units */
     unsigned clock_hz;
 } G;
 
@@ -209,10 +212,14 @@ static void ev_push(struct evbuf *b, const PrspNativeEvent *e)
     b->v[b->n++] = *e;
 }
 
+void (*armlet_event_listener)(const PrspNativeEvent *);     /* the task-level path (src/hle) takes the events itself */
+
 static void host_event(void *user, const PrspNativeEvent *e)
 {
     (void)user;
-    if (G.cur_ev)
+    if (armlet_event_listener)
+        armlet_event_listener(e);
+    else if (G.cur_ev)
         ev_push(G.cur_ev, e);
 }
 
@@ -549,7 +556,7 @@ static void poison_regs(const struct dead_set *d)
     }
 }
 
-static int probe_any(void)
+static int probe_any_slow(void)
 {
     unsigned i;
     for (i = 0; i < 32; i++)
@@ -557,6 +564,8 @@ static int probe_any(void)
             return 1;
     return (G.set.probe_sr | G.set.probe_vr | G.set.probe_acc | G.set.probe_flags | G.set.probe_div | G.set.probe_flag_lanes[0] | G.set.probe_flag_lanes[1] | G.set.probe_flag_lanes[2]) != 0;
 }
+
+#define probe_any() (G.probe_active)
 
 /* the routine's dead state, with ARMLET_NATIVE_PROBE added */
 static void poison(const struct armlet_routine *r)
@@ -766,14 +775,17 @@ static int enter_native(unsigned idx, unsigned pc, unsigned *next_pc, int *mode)
 {
     const struct armlet_routine *rt = G.reg[idx];
     struct armlet_native_stats *st = &G.stats[idx];
-    struct armlet_env env;
+    struct armlet_env *env = &G.env;
     uint64_t t0 = 0;
     int npc;
 
-    env_init(&env, rt, pc);
+    env->entry_pc = pc;
+    env->mode = PRSP_NATIVE_MODE_CONTINUE;
+    env->units = 0;
+    env->routine = rt;
     if (G.set.stats)
         t0 = now_ticks();
-    npc = rt->run(&env);
+    npc = rt->run(env);
     if (G.set.stats)
         st->ticks += now_ticks() - t0;
     if (npc < 0) {
@@ -781,11 +793,11 @@ static int enter_native(unsigned idx, unsigned pc, unsigned *next_pc, int *mode)
         return PRSP_NATIVE_DECLINE;
     }
     st->calls++;
-    st->units += env.units;
+    st->units += env->units;
     if (G.set.poison || probe_any())
         poison(rt);
     *next_pc = (unsigned)npc & 0xffc;
-    *mode = env.mode;
+    *mode = env->mode;
     return PRSP_NATIVE_DONE;
 }
 
@@ -801,7 +813,20 @@ int armlet_native_call(unsigned idx, unsigned *next_pc, int *mode)
 static int host_enter(void *user, unsigned cookie, unsigned pc, unsigned *next_pc, int *mode)
 {
     (void)user;
-    (void)pc;
+    if (G.fast) {
+        const struct armlet_routine *rt = G.reg[cookie];
+        struct armlet_env *env = &G.env;
+        int npc;
+        env->entry_pc = pc;
+        env->mode = PRSP_NATIVE_MODE_CONTINUE;
+        env->routine = rt;
+        npc = rt->run(env);
+        if (npc < 0)
+            return PRSP_NATIVE_DECLINE;
+        *next_pc = (unsigned)npc & 0xffc;
+        *mode = env->mode;
+        return PRSP_NATIVE_DONE;
+    }
     return armlet_native_call(cookie, next_pc, mode);
 }
 
@@ -900,11 +925,9 @@ void armlet_native_settings_load(struct armlet_native_settings *s, const struct 
     s->watchdog_ms = (e = getenv("ARMLET_NATIVE_WATCHDOG_MS")) && *e ? (unsigned)atoi(e) : 0;
 }
 
-void armlet_native_start(const struct armlet_native_settings *s)
+static void host_install(void)
 {
-    G.set = *s;
-    registry_build();
-    if (G.set.mode == ARMLET_NATIVE_OFF || G.started)
+    if (G.hosted)
         return;
     G.s0 = calloc(3, sizeof(*G.s0));
     G.sn = G.s0 + 1;
@@ -912,10 +935,30 @@ void armlet_native_start(const struct armlet_native_settings *s)
     if (!G.s0)
         abort();
     prsp_native_view(&G.view);
+    env_init(&G.env, NULL, 0);
     G.host.lookup = host_lookup;
     G.host.enter = host_enter;
     G.host.event = host_event;
     prsp_native_install(&G.host);
+    G.hosted = 1;
+}
+
+/* the task-level path needs the fork's event hook and the view even when no routine is used */
+void armlet_native_ensure_host(void)
+{
+    registry_build();
+    host_install();
+}
+
+void armlet_native_start(const struct armlet_native_settings *s)
+{
+    G.set = *s;
+    G.probe_active = probe_any_slow();
+    registry_build();
+    if (G.set.mode == ARMLET_NATIVE_OFF || G.started)
+        return;
+    host_install();
+    G.fast = G.set.mode == ARMLET_NATIVE_ON && !G.set.stats && !G.set.poison && !G.probe_active;
     G.started = 1;
     armlet_log(M64MSG_INFO, "native routines %s (%u known%s%s)", G.set.mode == ARMLET_NATIVE_VERIFY ? "on, verified against the JIT" : "on", G.n_reg,
                G.set.routines[0] ? ", allow-list " : "", G.set.routines);
