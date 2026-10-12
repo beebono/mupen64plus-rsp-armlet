@@ -21,13 +21,14 @@ big=$(git ls-files -z | xargs -0 -I{} sh -c 'f="{}"; [ -f "$f" ] && [ "$(wc -c <
 [ -n "$big" ] && fail "files over 1 MiB: $big"
 
 # content of the index (what a commit would contain), not the working tree; the licence texts and the submodules are not scanned
-scan() { # description, regex
+scan() { # description, regex [extra pathspecs to exclude]
     local hits
-    hits=$(git grep --cached -nIE "$2" -- . ':!LICENSES' ':!COPYING' ':!scripts/check-commit.sh' 2>/dev/null)
+    hits=$(git grep --cached -nIE "$2" -- . ':!LICENSES' ':!COPYING' ':!scripts/check-commit.sh' $3 2>/dev/null)
     [ -n "$hits" ] && { fail "$1"; echo "$hits" | head -20; }
 }
 scan "local path (home, workspace mount, scratchpad)" '(^|[ "=:])/home/[a-z]|/Users/|/mnt/[0-9a-f]{8}-|/tmp/claude|noxwell|beebono@'
-scan "IP address" '(^|[^0-9.])([0-9]{1,3}\.){3}[0-9]{1,3}([^0-9.]|$)'
+# the ucode specs number their sections a.b.c.d, which reads as an address
+scan "IP address" '(^|[^0-9.])([0-9]{1,3}\.){3}[0-9]{1,3}([^0-9.]|$)' ":!docs/ucode-*"
 scan "credential-looking text" '[Pp]ass(word|wd)|sshpass|api[_-]?key|secret|BEGIN [A-Z ]*PRIVATE KEY|happygaming|rocknix[^a-zA-Z/-]'
 scan "ssh user@host" '(root|spruce)@[A-Za-z0-9]'
 
