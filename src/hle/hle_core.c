@@ -202,6 +202,8 @@ void hle_rdram_write(struct hle_task *t, uint32_t dram, const uint32_t *words, u
     K.n_arena = off + nbytes;
 }
 
+const char *armlet_hle_last_why(void) { return K.why; }
+
 int hle_decline(struct hle_task *t, const char *why)
 {
     (void)t;
@@ -794,7 +796,8 @@ int armlet_hle_run(struct armlet_ctx *c, const struct armlet_ucode_id *u)
     /* the JIT's own preconditions (run_rsp_task), and the one thing the replay relies on: the video plugin is foir, behind the coalescing path */
     if ((*c->rsp.SP_STATUS_REG & (SP_STATUS_HALT | SP_STATUS_BROKE)) || !c->cfg.rdp_coalesce || ((*c->rsp.DPC_STATUS_REG & DPC_STATUS_XBUS) && !(uc->flags & HLE_F_XBUS_OK))) {
         K.declined++;
-        count_reason("not eligible (SP halted, RDP coalescing off or XBUS)");
+        K.why = "not eligible (SP halted, RDP coalescing off or XBUS)";
+        count_reason(K.why);
         return 0;
     }
 

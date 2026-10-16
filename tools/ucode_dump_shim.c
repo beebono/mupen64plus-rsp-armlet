@@ -58,6 +58,38 @@ EXPORT m64p_error CALL PluginGetVersion(m64p_plugin_type *t, int *v, int *a, con
     if (!p_ver) { if (t) *t = M64PLUGIN_RSP; if (v) *v = 0x010000; if (a) *a = 0x020000; if (n) *n = "udump"; if (c) *c = 0; return M64ERR_SUCCESS; }
     return p_ver(t, v, a, n, c);
 }
+/* Texts that a G_LOAD_UCODE (0xdd) loads in the middle of a task (Ocarina of Time's S2DEX, Kirby 64's): they are never a task's own text, so find the command in RDRAM
+ * (a G_RDPHALF_1 0xe1 with the data address, then 0xdd with the text address and the size in w0), and dump text / data like a task start under the key of the first 0xf48 bytes. */
+static void scan_loads(void)
+{
+    uint32_t a;
+    for (a = 0; a + 16 <= 0x800000; a += 8) {
+        uint8_t m[16]; uint32_t w1, w2, w0b, ta, da, sz;
+        if (rinfo.RDRAM[(a ^ 3)] != 0xe1 || rinfo.RDRAM[((a + 8) ^ 3)] != 0xdd) continue;
+        rd_be(m, rinfo.RDRAM, a, 16);
+        w1 = m[4] << 24 | m[5] << 16 | m[6] << 8 | m[7];
+        w0b = m[8] << 24 | m[9] << 16 | m[10] << 8 | m[11];
+        w2 = m[12] << 24 | m[13] << 16 | m[14] << 8 | m[15];
+        ta = w2 & 0x7fffff & ~7u; da = w1 & 0x7fffff & ~7u; sz = (w0b & 0xfff) + 1;
+        if (!ta || !da || sz < 0x40 || sz > 0x800 || ta > 0x7fe000 || da > 0x7ff000) continue;
+        {
+            uint8_t tb[0x1000], db[0x1000 + 0x180], xb[0x2000], im[0x1000]; char key[40], n[100]; uint64_t th, dh = 0xcbf29ce484222325ull; unsigned i;
+            rd_be(tb, rinfo.RDRAM, ta, 0x1000);
+            th = fnv(rinfo.RDRAM + ta, 0xf48);
+            memset(db, 0, 0x180); rd_be(db + 0x180, rinfo.RDRAM, da, sz);
+            for (i = 0; i < sz; i++) dh = (dh ^ db[0x180 + i]) * 0x100000001b3ull;
+            snprintf(key, sizeof key, "L%015llx.%016llx", (unsigned long long)th & 0xfffffffffffffffull, (unsigned long long)dh);
+            for (i = 0; i < nseen; i++) if (!strcmp(seen[i], key)) break;
+            if (i < nseen || nseen >= 256) continue;
+            strcpy(seen[nseen++], key);
+            snprintf(n, sizeof n, "%s.text", key); wr(n, tb, 0x1000);
+            snprintf(n, sizeof n, "%s.data", key); wr(n, db, 0x180 + sz);
+            rd_be(xb, rinfo.RDRAM, ta + 0x1000, sizeof xb); snprintf(n, sizeof n, "%s.ext", key); wr(n, xb, sizeof xb);
+            memset(im, 0, sizeof im); snprintf(n, sizeof n, "%s.imem", key); wr(n, im, sizeof im);
+            { char lp[600]; FILE *lf; snprintf(lp, sizeof lp, "%s/loads.txt", dir); if ((lf = fopen(lp, "a"))) { fprintf(lf, "%s %x %x %llx\n", key, 0xf48, 0x180 + sz, (unsigned long long)th); fclose(lf); } }
+        }
+    }
+}
 EXPORT unsigned int CALL DoRspCycles(unsigned int c)
 {
     int isgfx = rinfo.DMEM && dm32(0xfc0) == 1;
@@ -83,6 +115,7 @@ EXPORT unsigned int CALL DoRspCycles(unsigned int c)
             char n[100]; strcpy(seen[nseen++], key);
             snprintf(n, sizeof n, "%s.text", key); wr(n, tb, 0x1000);
             snprintf(n, sizeof n, "%s.data", key); wr(n, db, ds);
+            { uint8_t xb[0x2000]; rd_be(xb, rinfo.RDRAM, ua + 0x1000, sizeof xb); snprintf(n, sizeof n, "%s.ext", key); wr(n, xb, sizeof xb); }   /* RDRAM behind the 4 KiB: the overlays the data descriptors point at (tools/derive_build.py) */
             done = 1;
         }
     }
@@ -93,6 +126,7 @@ EXPORT unsigned int CALL DoRspCycles(unsigned int c)
             rd_be(im, rinfo.IMEM, 0, 0x1000);
             snprintf(n, sizeof n, "%s.imem", key); wr(n, im, 0x1000);
         }
+        if (isgfx && (gfx < 8 || (gfx & 31) == 0) && getenv("UDUMP_LOADS")) scan_loads();
         return r;
     }
 }

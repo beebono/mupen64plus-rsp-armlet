@@ -22,6 +22,7 @@
 #include "hle.h"
 #include "prsp_bridge.h"
 #include "rdp_defer.h"
+#include "ustats.h"
 
 #define PLUGIN_VERSION 0x000100
 #define PLUGIN_API_VERSION 0x020000
@@ -106,6 +107,7 @@ EXPORT void CALL RomClosed(void)
 {
     l_ctx.hle.cached_ucodes.count = 0;
     l_ctx.cached_seen = 0;
+    armlet_ustats_flush();
     armlet_gfx_reset();
     armlet_rdp_defer_reset();
     ARMLET_PROF_ROMCLOSED();
