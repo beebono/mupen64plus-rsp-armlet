@@ -23,6 +23,7 @@
 
 #include "gfx_ucode.h"
 #include "rdp_defer.h"
+#include "ustats.h"
 
 /* prsp_rdp_defer.h's PRSP_RDP_FLUSH_* (C++ header): why the fork asks for a flush */
 enum { FLUSH_START, FLUSH_STATUS, FLUSH_RUN_END };
@@ -42,6 +43,16 @@ enum { FLUSH_START, FLUSH_STATUS, FLUSH_RUN_END };
 
 static uint32_t *l_start_reg, *l_cur_reg, *l_end_reg, *l_status_reg;
 static void (*l_real)(void);
+static inline void call_real(void)
+{
+    if (armlet_ustats_on) {
+        uint64_t t0 = armlet_ustats_now();
+        l_real();
+        armlet_ustats_cb_ns += armlet_ustats_now() - t0;
+    } else {
+        l_real();
+    }
+}
 static uint32_t l_thresh;           /* bytes */
 static int l_task_on;               /* the running task is a known graphics ucode */
 static uint32_t l_ps, l_pe;         /* the pending range [l_ps, l_pe), bytes; empty when l_ps == l_pe */
@@ -59,7 +70,7 @@ static inline void run_pending(void)
     *l_end_reg = l_pe;
     l_ps = l_pe = 0;
     l_stat.flushes++;
-    l_real();                       /* the video plugin ends with START = CURRENT = END = the end it was given */
+    call_real();                       /* the video plugin ends with START = CURRENT = END = the end it was given */
     *l_start_reg = s;
     *l_cur_reg = c;
     *l_end_reg = e;
@@ -72,7 +83,7 @@ static void defer_cb(void)
     l_stat.calls++;
     if (!l_task_on) {               /* not a graphics task of a known family: untouched */
         l_stat.direct++;
-        l_real();
+        call_real();
         return;
     }
     cur = *l_cur_reg & ~7u;
@@ -85,7 +96,7 @@ static void defer_cb(void)
             run_pending();
         }
         l_stat.direct++;
-        l_real();
+        call_real();
         return;
     }
     if (l_ps == l_pe)

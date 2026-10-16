@@ -8,6 +8,7 @@
 
 #include "dispatch.h"
 #include "gfx_ucode.h"
+#include "ustats.h"
 
 static const char *const l_family[] = { "other", "F3D", "F3DEX", "F3DEX2" };
 
@@ -30,7 +31,14 @@ bool armlet_gfx_try_native(struct armlet_ctx *c)
     if (is_new)
         armlet_log(M64MSG_INFO, "gfx ucode %016" PRIx64 " %s: %s [%s]", u->id, l_family[u->family], u->name[0] ? u->name : "(no banner)",
                    !n ? "no native handler, LLE" : armlet_gfx_allowed(&c->cfg, u->id) ? "native" : "not in GfxHleUcodes, LLE");
+    armlet_ustats_offer(c, u, n != 0);
     if (!n || !armlet_gfx_allowed(&c->cfg, u->id))
         return false;
+    if (armlet_ustats_on) {
+        uint64_t t0 = armlet_ustats_now();
+        bool ok = n->run(c, u) != 0;
+        armlet_ustats_result(ok, armlet_ustats_now() - t0);
+        return ok;
+    }
     return n->run(c, u) != 0;
 }
