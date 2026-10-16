@@ -55,7 +55,7 @@ struct fx2_vtx {                                    /* a vertex record as G_VTX 
     uint8_t col[4];                                 /* r g b a as stored (+0x10): lit, with the fog value in a when fog is on */
     int16_t s, t;                                   /* scaled texture coordinates (+0x14) */
     int16_t sx, sy;                                 /* screen x y (+0x18) */
-    int16_t szi;                                    /* screen z, integer part, negatives set to 0 (+0x1c) */
+    int16_t szi;                                    /* screen z, integer part, negatives set to 0 (+0x1c; F3DEX2 2.04: as computed) */
     uint16_t szf;                                   /* its fraction (+0x1e) */
     int16_t rwi;                                    /* 1/W integer part (+0x20) */
     uint16_t rwf;                                   /* fraction (+0x22) */
@@ -74,6 +74,8 @@ struct fx2_vctx {
     int16_t tg[3];                                  /* the linear texture generation polynomial (DMEM 0x1d0 ..) */
     int16_t c31_7;                                  /* v31[7] = 0x7fff */
     unsigned mode;                                  /* FX2_FOG | FX2_LIGHTING | FX2_TEXGEN */
+    unsigned gen204;                                /* F3DEX2 2.04 / 2.04H: the stored screen z keeps its sign (the later builds set a negative integer part to 0), and the linear texture generation's
+                                                     * polynomial has 0x4000 in place of x in its linear term (the lighting overlay's `VMUDH v22` that the later builds changed to v21 overwrites x) */
     struct fx2_lights L;
 };
 
@@ -85,6 +87,7 @@ void fx2_vtx_xform(const struct fx2_vctx *c, const struct fx2_vin *in, unsigned 
 enum { FX2_TRI_SKIP = 0, FX2_TRI_DRAW = 1, FX2_TRI_CLIP = 2 };
 struct fx2_tri_in {
     const struct fx2_vtx *v[3];                     /* the vertices in command order */
+    const struct fx2_vtx *flat;                     /* the vertex whose colour a flat-shaded triangle takes, or NULL: v[0]. The microcode keeps the first vertex of the triangle command for the triangles the clipper makes of it */
     uint32_t g;                                     /* the geometry mode word */
     unsigned tex, tile;                             /* the G_TEXTURE bytes at 0x1e7 / 0x1e6 */
     uint32_t reject_mask;                           /* a triangle whose three flag words have a common bit in it is rejected (the build's) */
@@ -106,6 +109,9 @@ struct fx2_clip_ctx {
     const struct fx2_vctx *v;           /* the viewport, perspective norm and guard-band ratio the new vertices are completed with */
     int16_t plane[6][4];                /* the six planes in the order the code takes them (DMEM 0x1a8, 0x1a0, 0x198, 0x190, 0x188, 0x180): x y z w coefficients */
     uint32_t mask[6];                   /* the flag bits that say "outside" (DMEM 0x40c, 0x408, ... 0x3f8) */
+    /* The clipper of F3DEX2 2.04 / 2.04H differs from the later builds' in two places (docs/ucode-f3dex2-dialects.md, section 5): */
+    unsigned sign0;                     /* the scale of the intersection's reciprocal has the sign of the distance difference's integer part, and is 0 when that is 0 (later: the sign of `int | 1`, never 0) */
+    unsigned fan_l0;                    /* the polygon is drawn as the fan around its first vertex, last triangle first: (L[0], L[n-2-k], L[n-1-k]) (later: (L[k], L[k+1], L[n-1])) */
 };
 struct fx2_clip_out {
     unsigned ntri;                      /* 0: the whole triangle was discarded */

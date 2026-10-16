@@ -34,14 +34,60 @@ static struct {
     int recording;
     PrspNativeSnap *s0, *s1;
     struct evbuf ev;
+    uint8_t *rowbuf;                                           /* the RDRAM rows the task's DMA reads read, as they were when read (the task's own writes to the RDP ring may overwrite some of them, as in Cruis'n World) */
+    size_t rowbuf_n, rowbuf_cap;
     uint64_t ucode;
     unsigned pc0;
     struct hle_stream st;
     PrspNativeView v;
 } H;
 
+/* the rows of one DMA read event, calling put(hdr = { RDRAM address, length }, length, source address, arg) for each */
+static void dma_rows(const PrspNativeEvent *e, void (*put)(const uint32_t hdr[2], uint32_t length, uint32_t src, void *arg), void *arg)
+{
+    uint32_t cache = e->a & ~3u, dram = e->b & ~7u, lenreg = e->c;
+    uint32_t length = ((lenreg & 0xfff) + 1 + 7) & ~7u, skip = (lenreg >> 20) & 0xfff;
+    unsigned n = (lenreg >> 12) & 0xff, row;
+    if (((cache & 0xfff) + length) > 0x1000)
+        length = 0x1000 - (cache & 0xfff);
+    for (row = 0; row <= n; row++) {
+        uint32_t hdr[2] = { dram & 0x7ffffc, length };
+        put(hdr, length, dram & 0x7ffffc, arg);
+        dram += length + skip;
+        cache += length;
+    }
+}
+
+static void row_count(const uint32_t hdr[2], uint32_t length, uint32_t src, void *arg)
+{
+    (void)hdr;
+    (void)length;
+    (void)src;
+    (*(uint32_t *)arg)++;
+}
+
+static void row_save(const uint32_t hdr[2], uint32_t length, uint32_t src, void *arg)
+{
+    size_t need = H.rowbuf_n + 8 + length;
+    uint32_t j;
+    (void)arg;
+    if (need > H.rowbuf_cap) {
+        H.rowbuf_cap = need * 2;
+        H.rowbuf = realloc(H.rowbuf, H.rowbuf_cap);
+        if (!H.rowbuf)
+            abort();
+    }
+    memcpy(H.rowbuf + H.rowbuf_n, hdr, 8);
+    H.rowbuf_n += 8;
+    for (j = 0; j < length; j += 4)
+        memcpy(H.rowbuf + H.rowbuf_n + j, (const uint8_t *)H.v.rdram + ((src + j) & 0x7ffffc), 4);
+    H.rowbuf_n += length;
+}
+
 static void ev_cb(const PrspNativeEvent *e)
 {
+    if (H.recording && e->kind == PRSP_EV_DMA_RD)
+        dma_rows(e, row_save, NULL);
     if (H.ev.n == H.ev.cap) {
         H.ev.cap = H.ev.cap ? H.ev.cap * 2 : 4096;
         H.ev.v = realloc(H.ev.v, H.ev.cap * sizeof(*H.ev.v));
@@ -175,6 +221,7 @@ bool armlet_hle_task_begin(struct armlet_ctx *c)
         H.pc0 = *c->rsp.SP_PC_REG & 0xfff;
         prsp_native_save(H.s0);
         H.ev.n = 0;
+        H.rowbuf_n = 0;
         hle_stream_reset(&H.st, armlet_hle_find(u->id));
         armlet_event_listener = ev_cb;
         prsp_native_record(1);
@@ -183,43 +230,14 @@ bool armlet_hle_task_begin(struct armlet_ctx *c)
     return false;
 }
 
-static void rows_write(FILE *f, uint32_t *count, int write, const unsigned char *rdram)
-{
-    size_t i;
-    *count = 0;
-    for (i = 0; i < H.ev.n; i++) {
-        uint32_t cache, dram, lenreg, length, skip;
-        unsigned n, row;
-        if (H.ev.v[i].kind != PRSP_EV_DMA_RD)
-            continue;
-        cache = H.ev.v[i].a & ~3u;
-        dram = H.ev.v[i].b & ~7u;
-        lenreg = H.ev.v[i].c;
-        length = ((lenreg & 0xfff) + 1 + 7) & ~7u;
-        skip = (lenreg >> 20) & 0xfff;
-        n = (lenreg >> 12) & 0xff;
-        if (((cache & 0xfff) + length) > 0x1000)
-            length = 0x1000 - (cache & 0xfff);
-        for (row = 0; row <= n; row++) {
-            uint32_t src = dram & 0x7ffffc, j, hdr[2] = { src, length };
-            if (write) {
-                fwrite(hdr, 4, 2, f);
-                for (j = 0; j < length; j += 4)
-                    fwrite(rdram + ((src + j) & 0x7ffffc), 4, 1, f);
-            }
-            (*count)++;
-            dram += length + skip;
-            cache += length;
-        }
-    }
-}
-
 void armlet_hle_task_end(struct armlet_ctx *c)
 {
     char path[512];
     FILE *f;
     struct armlet_snapfile_hdr h;
     uint32_t nrows;
+    size_t i;
+    (void)c;
     if (!H.gfx)
         return;
     H.gfx = 0;
@@ -244,7 +262,10 @@ void armlet_hle_task_end(struct armlet_ctx *c)
     h.ucode = H.ucode;
     h.entry_pc = H.pc0;
     h.exit_pc = H.s1->pc;
-    rows_write(NULL, &nrows, 0, c->rsp.RDRAM);
+    nrows = 0;
+    for (i = 0; i < H.ev.n; i++)
+        if (H.ev.v[i].kind == PRSP_EV_DMA_RD)
+            dma_rows(&H.ev.v[i], row_count, &nrows);
     h.n_rows = nrows;
     {
         PrspNativeEvent se = { HLE_EV_STREAM, (uint32_t)H.st.len, (uint32_t)(H.st.len >> 32), 0, H.st.hash };
@@ -253,7 +274,7 @@ void armlet_hle_task_end(struct armlet_ctx *c)
     h.n_events = (uint32_t)H.ev.n;
     fwrite(&h, sizeof(h), 1, f);
     fwrite(H.s0, sizeof(*H.s0), 1, f);
-    rows_write(f, &nrows, 1, c->rsp.RDRAM);
+    fwrite(H.rowbuf, 1, H.rowbuf_n, f);
     fwrite(H.s1, sizeof(*H.s1), 1, f);
     fwrite(H.ev.v, sizeof(PrspNativeEvent), H.ev.n, f);
     fclose(f);

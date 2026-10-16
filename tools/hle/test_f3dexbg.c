@@ -63,6 +63,7 @@ int main(int argc, char **argv)
         for (k = 0; k < 3; k++)
             c.tg[k] = r16();
         c.mode = (rnd() % 3 ? FX2_TEXGEN : 0) | (rnd() % 4 == 0 ? FX2_TEXGEN_LINEAR : 0) | (rnd() % 4 == 0 ? FX2_FOG : 0);   /* (the standard lighting stays off: the pass does it) */
+        c.gen204 = 0;
         memset(&bc, 0, sizeof bc);
         bc.top = nl + 1;
         bc.positional = rnd() % 4 != 0;

@@ -208,6 +208,7 @@ static inline void f2_ld_vctx(const struct hle_task *t, struct fx2_vctx *c)
     for (k = 0; k < 3; k++)
         c->tg[k] = (int16_t)hle_dm16(t, f2L->tg + 2 * k);
     c->mode = hle_dm16(t, F2_GEOM) & 15u;
+    c->gen204 = 0;
 }
 
 #endif

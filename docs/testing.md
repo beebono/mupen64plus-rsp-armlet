@@ -369,6 +369,35 @@ The F3DEXBG lit routine's longer run (Conker, 3700 frames) showed 60 tasks whose
 closed forms now, checked against those transliterations first ("Regenerating the microcode oracles" below) and then against the JIT by the runs above. Not bit-exact corners are declined, not emulated: a background whose wrap loop would not end, an even number of
 lights (the microcode's lighting loop never ends on it), more than 11 lights, DMEM vector constants other than S2DEX 2.08's.
 
+## F3DEX2 2.04 and 2.04H (docs/ucode-f3dex2-dialects.md, section 5)
+
+Builds `5dce` (F3DEX 2.04: Buck Bumble, Cruis'n World) and `e857` (2.04H: Super Smash Bros.; Kirby 64 declines in every task, section 5.6). Desktop (x86_64) unless said, `GfxMode=hle`, against the reference pairing, 3700 frames (62 s) unless said.
+
+| check | result |
+|---|---|
+| equivalence gates, `ref`, `armlet-hle` and `armlet` (default) | Buck Bumble, Cruis'n World, Super Smash Bros., Kirby 64: hash stream, state stream, 6 screenshots, audio identical in both pairs |
+| `ARMLET_HLE_VERIFY=1` (and with `ARMLET_HLE_EXACT=1`), 3700 f | Buck Bumble 3711 tasks, Cruis'n World 1663, Super Smash Bros. 3327: 0 differences, 0 declined; equivalence PASS each |
+| `ARMLET_HLE_VERIFY=1`, 12000 f | Buck Bumble 11967 tasks, Cruis'n World 5695, Super Smash Bros. 10559: 0 differences |
+| share of the graphics tasks of the 3700 frames that ran natively | Buck Bumble 3711 of 3712, Cruis'n World 1663 of 1664, Super Smash Bros. 3327 of 3328 (the first task of a run never is), Kirby 64 0 of 1792 (692 + 11 declines per 1500 frames: section 5.6) |
+| `ARMLET_HLE_POISON=1`, `ARMLET_DMEM_POISON=mask`, `=all`, `=ring` | `POISON=1` and `mask` PASS (hash included) in all three; `all`: state, pictures and audio identical (hash differs by design); `ring` PASS in Buck Bumble and Cruis'n World; in Super Smash Bros. the hash differs (first at call 1165) **with the JIT alone** (`ARMLET_UCODES=1`), state, pictures and audio identical: the game reads its ring (not the front-end) |
+| regression, 3700 f, `ref` against `armlet-hle` | Paper Mario, Dr. Mario 64, Banjo-Kazooie, Conker's Bad Fur Day, Worms Armageddon, Super Mario 64: identical (hash, state, screenshots, audio) |
+| captured task starts, recorded JIT result: x86_64, aarch64 under qemu NEON, aarch64 under qemu scalar (`scripts/build.sh aarch64 --tools [--scalar]`) | Buck Bumble 150 of 150, Cruis'n World 337 of 337 (every task of the first 900 frames), Super Smash Bros. 150 of 150, Donkey Kong 64 55 of 55; the same on all three |
+| synthetic tasks (`tools/hle/synth_ex2.sh`, `mksyn_ex2.py`: clip, zneg, tri, mix, misc, lit), JIT run from the same state (`--oracle`), 400 to 1000 seeds per case | x86_64: 100 % equal on a Buck Bumble, a Cruis'n World and a Super Smash Bros. task (lit and clipping ones as bases) and on Donkey Kong 64 (before the fixes below: 16 to 25 % of the clip, zneg, tri and mix seeds differed on every build, 30 % of the lit seeds on 2.04H); aarch64 NEON and scalar under qemu: 600 to 1000 seeds per case, 0 differences |
+| `tools/hle/build_test_fx2.sh` (NEON forms against scalar, with the new `gen204` and `flat` inputs), qemu-aarch64 | 200 000 triangles, 20 000 vertex batches, 50 000 matrices: 0 differences; with `-DFX2_NEON_MUTATE=6` (the NEON z clamp): 4584 of 10 000 batches differ |
+| mutations 210 .. 216 (`tools/hle/mutcheck_204.sh`) | 210 (clipper sign): synthetic only, 336 of 400 tasks; 211 (fan): 15 captured, 1242 synthetic; 212 (unclamped z): 1 captured (Cruis'n World), 2215 synthetic; 213 (phantom vertex of the last slot): 20 captured, 52 synthetic; 214 (flat colour of clipped triangles): synthetic only, 288; 215 (texgen polynomial): synthetic only, 114; 216 (the valid byte the matrix concatenation sets): 275 captured, 2260 synthetic. All caught |
+| x86 front-end time against the JIT (`armlet-native-replay --bench 300`) | Buck Bumble 3.2 to 5.1 times, Cruis'n World 1.9 to 3.6, Super Smash Bros. 3.9 to 5.0 (tasks of 25 to 600 us of JIT time) |
+| builds: `scripts/build.sh native`, `aarch64`, `rg35xxsp` (`RG35_TOOLCHAIN`), `--tools` | succeed; no new warning in `src/` or `tools/` (the fork's own `-Wparentheses` / `-Wunused-function` ones are unchanged); the rg35xxsp module needs GLIBC_2.17 |
+
+**What the captured tasks did and did not show.** Buck Bumble's first replay had one task with a different RDP stream (the fan of a clipped quad; mutation 211), Cruis'n World's one (a clipped triangle with a negative screen z; mutation 212) and Super Smash Bros.'s 20 tasks differed
+in the flags of the last vertex slot (213). The clipper's reciprocal sign (210), the texture generation polynomial (215) and the flat colour of clipped triangles (214) are not reached by the captured tasks at all, and the first synthetic tasks (`clip`, `lit`) found them.
+Both general bugs (flat colour, phantom vertex) were in the front-end for every F3DEX2 build; Donkey Kong 64's 300 seeds per case are equal after them as well.
+
+**A capture bug found on the way.** `ARMLET_HLE_CAPTURE` wrote the RDRAM rows a task's DMA reads read as they were at the *end* of the task. Cruis'n World's RDP ring overlaps its ucode data (section 5.3 of the dialects page), so a task's own flush
+overwrote the rows of the next task's start: replays of its small tasks differed in 0x6e0 .. 0x800 and 0x7c5. The rows are copied when the DMA event comes now (`hle_task.c`, `row_save`).
+
+**Replay harness: `HLE_PATCH`.** `armlet-native-replay` writes `HLE_PATCH=addr:hex;addr:hex` into RDRAM before the task (and `HLE_POKE` into DMEM): the synthetic display lists of `tools/hle/mksyn_ex2.py` (and `tools/f3d/mksyn.py`, whose runtime side this is) live at 0x300000; use `--oracle`. The snapshot supplies the
+microcode, its overlays (a base that never loaded the lighting overlay has none in its RDRAM image: the lit cases need a base with lit vertices, and a clipped one) and the start state.
+
 ## Diddy Kong Racing, Jet Force Gemini and Indiana Jones (docs/native-custom.md)
 
 The three custom microcodes run closed forms (`hle_rare.c`, `hle_indy.c`); the page [native-custom.md](native-custom.md) has the whole test record. In short, on the final tree (desktop, x86_64):

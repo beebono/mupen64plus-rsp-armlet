@@ -292,7 +292,7 @@ pseudo-random pattern (a different one each time); `mask` is the build's dead ra
 pictures and the audio of the unpoisoned run (docs/testing.md).
 
 **Capture and offline replay.** `ARMLET_HLE_CAPTURE=<dir>` (with `_EVERY`, `_MAX`) writes snapshot files of task starts (state, the RDRAM rows the task's DMA reads read, the JIT's end state,
-the recorded events and the JIT's RDP stream) for tasks the JIT runs; `armlet-native-replay file.snap...` runs the family on them and compares with the recorded JIT result
+the recorded events and the JIT's RDP stream) for tasks the JIT runs; `armlet-native-replay file.snap...` runs the family on them and compares with the recorded JIT result (the rows of RDRAM that the task's DMA reads read are copied when the DMA happens: the task's own flush can overwrite them; `HLE_PATCH=addr:hex;...` writes RDRAM before the run, for the synthetic tasks of `tools/hle/mksyn_ex2.py`, docs/testing.md)
 (`--bench N` times the front-end and the JIT; `HLE_POKE=addr=val,...` sets DMEM bytes first). Snapshots are ROM-derived: keep them in `test-output/`.
 
 **The F3DEX2 front-end** (`hle_f3dex2.c`, `f3dex2_fx.[ch]`, `f3dex2_fx_neon.c`, `f3dex2_dmem.h`; the microcode's behaviour is written down in [ucode-f3dex2.md](ucode-f3dex2.md)). `run()` lets the interpreter run the
@@ -332,6 +332,9 @@ that share the F3DEX2 skeleton (the display list refill, the DL stack, the RDP c
   `G_TRI4` (F3DEXBG) is a command of the loop itself.
 - **`G_LOAD_UCODE`** (handler 0xfac in every build): when the text it loads is byte-identical to the task's own (Conker ends every task this way), the interpreter runs the microcode's stub and the initialisation of the
   reloaded text up to the first command fetch and the native loop continues from there (state re-read, kinds re-classified); another text declines the task.
+- **`gen204`** (`f3dex2_build`): F3DEX2 2.04 / 2.04H, the generation before 2.05 (Buck Bumble, Cruis'n World, Super Smash Bros., Kirby 64): an unclamped screen z, another clipper reciprocal sign and fan, a slip in the linear texture generation. One flag, three
+  fields of the geometry structs (`fx2_vctx.gen204`, `fx2_clip_ctx.sign0` / `fan_l0`); the triangle setup is the existing `zex` parameter set ([ucode-f3dex2-dialects.md](ucode-f3dex2-dialects.md) section 5). A task that loads another ucode in the middle (Kirby 64's S2DEX, F-Zero X's F3DLX.Rej)
+  is remembered by its text / data pointers and declines at once afterwards (every 64th runs again).
 - **Overlays.** The S2DEX 2.x code overlays take the slots of the F3DEX2 clip / light overlays (`OV_CLIP` = A, `OV_LIGHT` = B); the end-of-task fix-up of the resident overlay is the same.
 - **Kernels.** Nothing in the production path is a transliteration of the microcode any more. The three routines that once were (S2DEX's sprite rectangle and background, F3DEXBG's lit vertices; `tools/rsp2c/rsp2c.py` made or drafted
   them, one statement per instruction on the exact vector-unit library `tools/hle/ref_vu.h`) are closed forms: S2DEX `G_OBJ_RECTANGLE` in `s2dex2_rect.c`, `G_BG_1CYC` in `s2dex2_bg.c` (sections 3a and 3b of
@@ -341,7 +344,7 @@ that share the F3DEX2 skeleton (the display list refill, the DL stack, the RDP c
   pipeline under it is the NEON one. On x86 the front-end runs at 1.6 to 3.4 times the JIT's speed (Worms tasks) and 3.4 to 3.9 (Conker's lit tasks), so lit vertices are native by default. A closed form declines (nothing written, the task
   goes to the JIT) what its derivation does not cover: another set of vector constants, a scale of 0 or negative, a loop that would not end. `tools/rsp2c/rsp2c.py` stays as the generator of the references the closed forms are checked
   against ([testing.md](testing.md), "Regenerating the microcode oracles"); the generated files are not part of the tree.
-- **Mutation numbers** (`MUT(n, ...)`, `scripts/build.sh native --tools --hmut=N`, `tools/hle/mutcheck_dialects.sh`): 30 to 39 and 44 the S2DEX front-end and the rectangle's tile/command part, 150 to 166 the rectangle closed form, 65 / 66 `G_TRI4` / `G_LOAD_UCODE`, 70 to 93 the background routine, 100 to 120 the F3DEXBG lighting, 40 to 60 the Rare front-end (`hle_rare.c`), 170 to 201 the Indiana Jones front-end (`hle_indy.c`); the numbers are only live in the code of the family that runs, so a number may be used by two families (`tools/rare/mutcheck.sh` runs the Rare and Indiana Jones ones). `--gmut=N` is `F3D_FX_MUTATE` in the F3D struct-level functions (27 to 46 are the Rare and Indiana Jones paths).
+- **Mutation numbers** (`MUT(n, ...)`, `scripts/build.sh native --tools --hmut=N`, `tools/hle/mutcheck_dialects.sh`): 30 to 39 and 44 the S2DEX front-end and the rectangle's tile/command part, 150 to 166 the rectangle closed form, 65 / 66 `G_TRI4` / `G_LOAD_UCODE`, 70 to 93 the background routine, 100 to 120 the F3DEXBG lighting, 40 to 60 the Rare front-end (`hle_rare.c`), 170 to 201 the Indiana Jones front-end (`hle_indy.c`), 210 to 216 the F3DEX2 2.04 / 2.04H differences and the two general fixes found with them (`f3dex2_fx.c`, `hle_f3dex2.c`; `tools/hle/mutcheck_204.sh`); the numbers are only live in the code of the family that runs, so a number may be used by two families (`tools/rare/mutcheck.sh` runs the Rare and Indiana Jones ones). `--gmut=N` is `F3D_FX_MUTATE` in the F3D struct-level functions (27 to 46 are the Rare and Indiana Jones paths).
 
 ## Native handler contract (superseded)
 

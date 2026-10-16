@@ -22,6 +22,21 @@ HLE_UCODE(l_ex2_ac31) = { .id = 0xac310503c83b23eaull, .name = "F3DEX 2.08 (Dr. 
 HLE_UCODE(l_ex2_d2d1) = { .id = 0xd2d1f9f2e7dfe1abull, .name = "F3DEX 2.08 (WinBack, Mario Golf, Hydro Thunder ...)", .fam = &f3dex2_fam, .flags = HLE_F_NEAR_CLIP, .fam_data = &l_b_ex2_208, F3DEX2_DEAD };
 HLE_UCODE(l_ex2_33dc) = { .id = 0x33dc705a5e4d39aeull, .name = "F3DEX 2.03 (F-Zero X)", .fam = &f3dex2_fam, .flags = HLE_F_NEAR_CLIP, .fam_data = &l_b_ex2_203, F3DEX2_DEAD };
 
+/* F3DEX2 2.04 (Buck Bumble, Cruis'n World) and 2.04H (Kirby 64, Super Smash Bros.) */
+static const struct f3dex2_build l_b_ex2_204 = {
+    .head = 0x18c, .copy = 0x208, .sync = 0x20c, .segcopy = 0x218, .ef = 0x238, .ed = 0x244, .tri1 = 0x794, .tri2 = 0x78c, .vtx = 0x4e8,
+    .mtx = 0x0f0, .geom = 0x1d0, .enddl = 0x1e4, .half2 = 0x1f8, .modvtx = 0xc54, .culldl = 0xc14, .branchz = 0xc3c, .zex = 1, .gen204 = 1, .reject_mask = 0x7070 };
+static const struct f3dex2_build l_b_ex2_204h = {
+    .head = 0x18c, .copy = 0x220, .sync = 0x224, .segcopy = 0x230, .ef = 0x250, .ed = 0x25c, .tri1 = 0x7ac, .tri2 = 0x7a4, .vtx = 0x500,
+    .mtx = 0x0f0, .geom = 0x1e8, .enddl = 0x1fc, .half2 = 0x210, .modvtx = 0xc6c, .culldl = 0xc2c, .branchz = 0xc54, .mvp = 0x1b8, .zex = 1, .gen204 = 1, .reject_mask = 0x7070 };
+/* Cruis'n World's RDP ring (RDRAM 0x353380 ..) overlaps the last 0x120 bytes of the ucode data (0x352ca0 + 0x800): the lists a task writes there come back as data at the start of the next task,
+ * into DMEM [0x6e0, 0x800), which is vertex slots 17 .. 22 (written before they are read). The lists differ from the JIT's in the stale second words of the sync commands (docs/design.md, "The RDP output
+ * ring is a mask in RDRAM"), so those bytes of the next task's DMEM differ too; dead like the rest of the vertex area at the end of a task. */
+static const struct hle_dead_range l_dead_204[] = { F3DEX2_DEAD_RANGES, { 0x6e0, 0x800 } };
+HLE_UCODE(l_ex2_5dce) = { .id = 0x5dce3244420ce715ull, .name = "F3DEX 2.04 (Buck Bumble, Cruis'n World)", .fam = &f3dex2_fam, .flags = HLE_F_NEAR_CLIP, .fam_data = &l_b_ex2_204,
+    .ring_off = 0xfe8, .dead = l_dead_204, .n_dead = F3DEX2_N_DEAD_OUT + 1 };
+HLE_UCODE(l_ex2_e857) = { .id = 0xe857446754069ab5ull, .name = "F3DEX 2.04H (Kirby 64, Super Smash Bros.)", .fam = &f3dex2_fam, .flags = HLE_F_NEAR_CLIP, .fam_data = &l_b_ex2_204h, F3DEX2_DEAD };
+
 /* F3DEXBG.NoN 2.08 (Conker's Bad Fur Day): the F3DEX2 code with the state moved (the structures between 0x1d0 and 0x2e0 by 0x60 / 0x68, everything above by 0x260 / 0x298), a 16-byte output buffer
  * threshold (two buffers 320 bytes apart), a reject mask with the w lane instead of z, and G_TRI4 (opcodes 0x10 .. 0x1f). */
 

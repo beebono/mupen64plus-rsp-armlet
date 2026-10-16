@@ -455,7 +455,7 @@ void fx2_vtx_xform(const struct fx2_vctx *c, const struct fx2_vin *in, unsigned 
             o->sy = vget_lane_s16(Si, 1);
             {
                 int16_t z2 = vget_lane_s16(Si, 2);
-                o->szi = z2 < 0 ? 0 : z2;
+                o->szi = z2 < 0 && !NMUT(6, c->gen204, 0) ? 0 : z2;
             }
             o->szf = vget_lane_u16(Sf, 2);
             o->rwi = R1i[i];

@@ -65,6 +65,7 @@ static void test_tri(unsigned n)
             rand_vtx(&v[k]);
             in.v[k] = &v[k];
         }
+        in.flat = rnd() % 4 == 0 ? &v[rnd() % 3] : NULL;
         in.g = (rnd() & 0x200000) | (rnd() & 5) | (rnd() % 8 == 0 ? 0 : 0);
         in.tex = rnd() % 3 ? 2 : 0;
         in.tile = (rnd() & 7) << 0;
@@ -125,6 +126,7 @@ static void test_vtx(unsigned n)
         for (k = 0; k < 3; k++)
             c.tg[k] = (int16_t)r16();
         c.mode = rnd() % 16;
+        c.gen204 = rnd() % 2;
         if (c.mode & FX2_LIGHTING) {
             unsigned nl = 1 + rnd() % 7, g, m;
             c.L.top = nl + 1;

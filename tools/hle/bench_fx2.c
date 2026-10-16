@@ -46,6 +46,7 @@ static void plausible_ctx(struct fx2_vctx *c, unsigned mode)
     c->pn = 0xfffe; c->ratio = 3; c->sc_s = 0x8000; c->sc_t = 0x8000; c->c31_3 = 0x7f00; c->c31_7 = 0x7fff;
     c->tg[0] = (int16_t)0xc000; c->tg[1] = 0x44d3; c->tg[2] = 0x6cb3;
     c->mode = mode;
+    c->gen204 = 0;
     c->L.top = 2;
     for (g = 0; g < 2; g++)
         for (m = 0; m < 3; m++)
@@ -96,7 +97,7 @@ static void bench_tri(unsigned g, unsigned tex, const char *name)
         in.v[k] = &v[k];
     }
     v[2].sx = 600; v[2].sy = 100;                       /* a clockwise... whichever: the cull table word decides */
-    in.g = g; in.tex = tex; in.tile = 0; in.reject_mask = 0x7070; in.clip_mask = 0; in.cull = 0x80000000u;
+    in.flat = NULL; in.g = g; in.tex = tex; in.tile = 0; in.reject_mask = 0x7070; in.clip_mask = 0; in.cull = 0x80000000u;
     in.rcp_k = 0x20; in.dx_k = 0x1000; in.slope_lim = 0x100; in.frac_mask = 0xfff8;
     if (fx2_tri_setup_scalar(&in, cmd, &len) != FX2_TRI_DRAW) {
         in.cull = 0xffff0000u;
