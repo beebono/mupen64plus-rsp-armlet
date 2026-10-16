@@ -59,6 +59,20 @@ void armlet_hle_print_masks(FILE *f)
     fprintf(f, "\n");
 }
 
+const struct hle_ucode *armlet_hle_next(const struct hle_ucode *prev)
+{
+    const struct hle_ucode *const *p = __start_hle_ucodes;
+    if (prev) {
+        while (p < __stop_hle_ucodes && *p != prev)
+            p++;
+        p++;
+    }
+    for (; p < __stop_hle_ucodes; p++)
+        if (*p)
+            return *p;
+    return NULL;
+}
+
 const struct hle_ucode *armlet_hle_find(uint64_t id)
 {
     const struct hle_ucode *const *p;
@@ -92,6 +106,7 @@ static struct {
     const char *why;
     unsigned end_pc;
     int broke;
+    int switched;                       /* the last native task took another build over (hle_task.switched) */
     /* verify */
     struct evbuf ev[2];                 /* [0] native, [1] JIT */
     struct hle_stream st[2];
@@ -458,7 +473,7 @@ static void compare_tasks(struct report *r, const struct hle_ucode *u, const Prs
         }
     }
     /* the RDP lists, as one byte stream */
-    if (K.st[0].len != K.st[1].len || K.st[0].hash != K.st[1].hash) {
+    if (K.st[0].len != K.st[1].len || (K.st[0].hash != K.st[1].hash && !(K.switched && K.st[0].hash_r == K.st[1].hash_r))) {
         uint64_t k, n = K.st[0].len < K.st[1].len ? K.st[0].len : K.st[1].len;
         rep(r, "  RDP command stream: native %" PRIu64 " bytes %016" PRIx64 ", JIT %" PRIu64 " bytes %016" PRIx64 "\n", K.st[0].len, K.st[0].hash, K.st[1].len, K.st[1].hash);
         if (n > HLE_STREAM_KEEP)
@@ -744,6 +759,7 @@ static int native_run(struct armlet_ctx *c, const struct hle_ucode *uc, int reco
     }
     prsp_native_sandbox(1);
     rc = interp || K.interp ? hle_interp_task(&t) : uc->fam->run(&t, uc);
+    K.switched = t.switched;
     if (rc == HLE_OK && !K.broke) {
         K.why = "the family returned without ending the task";
         rc = HLE_DECLINE;
@@ -1068,6 +1084,7 @@ void armlet_hle_core_reset(void)
 
 #else
 const struct hle_ucode *armlet_hle_find(uint64_t id) { (void)id; return NULL; }
+const struct hle_ucode *armlet_hle_next(const struct hle_ucode *prev) { (void)prev; return NULL; }
 int armlet_hle_run(struct armlet_ctx *c, const struct armlet_ucode_id *u) { (void)c; (void)u; return 0; }
 void armlet_hle_core_reset(void) {}
 #endif

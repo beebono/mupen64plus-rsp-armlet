@@ -1,7 +1,7 @@
 # S2DEX 2.x microcode semantics (as the native front-end reproduces them)
 
 S2DEX is the 2D microcode: sprites (`uObjSprite`), backgrounds (`uObjBg`) and texture loads (`uObjTxtr`) turned into RDP texture rectangles. Builds known: S2DEX fifo 2.08 (Worms Armageddon, id `b228360be43c0447`,
-claimed), fifo 2.06 (Resident Evil 2, `5f33af89e713878b`, not claimed: the background routine and the front-end tables are for 2.08's pcs) and the 1.06 / 1.07 builds of Yoshi's Story and Pokemon Puzzle League ([section 6](#6-s2dex-1x)).
+claimed; Kirby 64's, which is loaded in the middle of its F3DEX2 2.04H tasks by `G_LOAD_UCODE`, claimed: its handlers from 0x184 on are 8 bytes lower, [ucode-f3dex2-dialects.md](ucode-f3dex2-dialects.md) section 5.6), fifo 2.06 (Resident Evil 2, `5f33af89e713878b`, and the text Ocarina of Time loads: not claimed: the background routine and the front-end tables are for 2.08's pcs, and its output buffers and flush differ, section 5.7 of the dialects page) and the 1.06 / 1.07 builds of Yoshi's Story and Pokemon Puzzle League ([section 6](#6-s2dex-1x)).
 The front-end is a dialect of the F3DEX2 one (`src/hle/hle_s2dex2.c`, built on the shared header `hle_f3dex2_int.h`): S2DEX 2.x is built on the F3DEX2 skeleton, so the display list refill, the DL stack, the segment table, the other-mode
 commands, the RDP command copies and the flush of the output buffer are the F3DEX2 ones at other pcs and DMEM addresses; the sprite and background commands are its own. Addresses are DMEM byte addresses.
 
@@ -37,11 +37,12 @@ and **B** (backgrounds, at text + 0x1198). Each starts with stubs that load the 
 | `G_OBJ_LOADTXTR` 0x05, `LDTX_SPRITE` 0x06, `LDTX_RECT` 0x07, `LDTX_RECT_R` 0x08 | 0x558 | the object to 0x3a8; when its bits are not in the loaded-texture word yet: (SYNC_TILE when 0x2ae says so), SET_TEXTURE_IMAGE, SET_TILE (tile 7), SYNC_LOAD, the load command; then the halfword at `0x202 + (w0 >> 23)` is the pc the microcode continues at (the loop head, the sprite code at 0x6e8, the rectangle code at 0xba8, negative: the rotated rectangle) |
 | `G_OBJ_RECTANGLE` 0x01, `_R` 0xda | overlay A 0xb88 | SET_TILE, SET_TILE_SIZE and TEXTURE_RECTANGLE (+ a sync before them when the tile toggles); `s2dex2_obj_rect` in `s2dex2_rect.c` (section 3b) |
 | `G_BG_1CYC` 0x09 | overlay B 0x6f4 | the background as strips of texture rectangles; `s2dex2_obj_bg1cyc` (`s2dex2_bg.c`, section 3a) |
-| `G_OBJ_SPRITE` 0x02 / 0xd9, `G_BG_COPY` 0x0a | | not implemented (the front-end declines the task); Worms uses none of them |
+| `G_BG_COPY` 0x0a | 0x210 (Kirby 64's build: 0x208) | the background in the COPY cycle type; `s2dex2_obj_bgcopy` (`s2dex2_bg.c`, section 3c) |
+| `G_OBJ_SPRITE` 0x02 / 0xd9 | | not implemented (the front-end declines the task); neither Worms nor Kirby 64 uses them |
 
 ## 3. Kernels
 
-`s2dex2_fx.h` declares the two kernels, both closed forms in plain C: the sprite rectangle (`s2dex2_rect.c`, section 3b) and the background (`s2dex2_bg.c`, section 3a), with the DMEM access, the 16-bit saturation and the vector
+`s2dex2_fx.h` declares the three kernels, closed forms in plain C: the sprite rectangle (`s2dex2_rect.c`, section 3b) and the backgrounds (`s2dex2_bg.c`, sections 3a and 3c), with the DMEM access, the 16-bit saturation and the vector
 constants in `s2dex2_int.h`. Both reproduce the microcode's DMEM scratch writes, so the compare needs no extra dead ranges beyond the buffers. They decline (`S2_UNSUPPORTED`, nothing written, the task goes to the JIT) what the
 derivation does not cover; neither is a transliteration (an earlier instruction-by-instruction rectangle on `tools/hle/ref_vu.h` is kept only as a test oracle, [testing.md](testing.md), "Regenerating the microcode oracles").
 
@@ -88,9 +89,27 @@ positive; the kernel declines the rest. Worms uses unit scales, no flip, and the
 **NEON.** None, on purpose: two lanes of eight carry data, the rest is about sixty integer operations, a division-free multiply per axis and one table lookup of the reciprocal. Measured on x86 (`armlet-native-replay --bench`, Worms
 snapshots) against the instruction-level kernel it replaced: see [testing.md](testing.md), "F3DEX2 dialects and S2DEX 2.x".
 
+### 3c. G_BG_COPY, `src/hle/s2dex2_bg.c`
+
+The same uObjBg (40 bytes at 0x3b0) drawn in the COPY cycle type: unscaled, so there are no reciprocals and the frame is only cut and wrapped once. (Fields as in 3a; the bytes at 0x3c6 and 0x3c7 are the RDP's format and texel size, in that order: section 3a's `siz` / `fmt` were named the
+other way round, and its guard rejected a format 4 (I) background and let a size 4 through; the tables are `TILE_BY_FMT` (5 halfwords at 0x2a4) and `TILE_BY_SIZ` (4 pairs at 0x294).) The routine is in the resident code (no overlay), 0x208 .. 0x54c of Kirby 64's text; its
+vector part works on the lanes of the uObjBg (x: imageX imageW frameX frameW, y: the next four) and of the scissor (lanes 2, 3 and 6, 7), and with the vector flags clear on entry (VCO is the carry of VSUB / VADD, which the first VSUB consumes; no other command of S2DEX leaves it set, and a stale vector register
+does not matter: the random test randomises them) comes to:
+
+1. **Frame against the scissor, per axis** (F frame position, W frame size, lo / hi the scissor, all s10.2): `cut = max(0, lo - F)`, `ex = max(0, F + W - hi)`, `vis = W - cut - ex`. Either `vis <= 0`: nothing is drawn and nothing written (the microcode leaves at 0x278).
+2. **The image position of the first visible pixel**: `t = ((imageX >> 3) & 0xfffc) + cut` in quarter pixels, wrapped once into the image (`t - imageSize` when that is not negative); the y one is `yp` (>> 2 again).
+3. **The setup commands**: SET_TILE (format, size, the line from the word at 0x3cc, a byte at 0x3c4), SET_TILE_SIZE, SET_TILE: 24 bytes, words from the object and the constants of the vector register v29.
+4. **The strips**: `a0 = (imageH & ~3) - 4 yp` rows (less 4 when the table entry `T[1] * Z >> 16` is positive, at most the visible height `at`), in strips of `s5` (the halfword at 0x3ce) rows; per strip 48 bytes, SYNC_LOAD (one byte, the rest stale), SET_TEXTURE_IMAGE (the width field from the halfword at 0x3d4, the image address resolved through the segment table), LOAD_TILE, SYNC_PIPE
+   (one byte) and a TEXTURE_RECTANGLE from the table row (0x274 + 8 times the texel size) and the visible x; the last strip is shortened by the product `V * a0` (V the halfword at 0x3d4), the scratch words at 0x1c0 / 0x1c2 get its halves. When rows are left (the image's last rows wrap), a second pass of 88 bytes
+   (two loads and rectangles) and a loop again for the remaining rows (`at -= 4`). Each rectangle is followed by the flush check of the RDP buffer (a callback into the front-end), like 3a.
+The domain is a screen: every field of the uObjBg except the image position, and the scissor, within +-0x2000, so that no 16-bit lane of the vector part saturates or wraps; the closed form declines the rest (and a texel size past 3, the constants other than 2.08's). The one-byte commands leave seven stale
+bytes: the stream compare of a task that switched builds zeroes the first three of them (design.md, "Build switching").
+
+Checked against the microcode itself (the rsp2c translation of Kirby 64's 0x224 .. 0x54c, `tools/hle/oracle/bgcopy_gen.inc`, git-ignored) on random DMEM images with `tools/hle/test_s2dex2.c` (S2BGC_ORACLE): see [testing.md](testing.md), "Build switching, G_BG_COPY and the S2DEX dialect".
+
 ## 4. Dead ranges
 
-0x418 .. 0x890 and 0x8c0 .. 0xc90 (input buffer, the two output buffers with their slack), 0xfc8 .. 0xfcc. Poison runs: `ARMLET_DMEM_POISON=mask` and `all` on Worms, 900 frames, state / pictures / audio identical.
+0x418 .. 0x890 and 0x8c0 .. 0xc90 (input buffer, the two output buffers with their slack), 0xfc8 .. 0xfcc; Kirby 64's build has the same ranges, and they are in the F3DEX2 2.04H entry too (the task starts with that text). Poison runs: `ARMLET_DMEM_POISON=mask` and `all` on Worms, 900 frames, state / pictures / audio identical.
 
 ## 5. What was measured
 

@@ -21,7 +21,7 @@
 #include "hle.h"
 #include "s2dex2_fx.h"
 
-#if defined(S2BG_ORACLE) || defined(S2RECT_ORACLE)
+#if defined(S2BG_ORACLE) || defined(S2RECT_ORACLE) || defined(S2BGC_ORACLE)
 #define VU_FORCE_SCALAR 1
 #include "ref_vu.h"
 struct rctx {
@@ -40,6 +40,15 @@ struct rctx {
 #endif
 #ifdef S2RECT_ORACLE
 #include S2RECT_ORACLE
+#endif
+#ifdef S2BGC_ORACLE
+#ifndef S2BGC_ENTRY                                         /* Kirby 64's S2DEX: the routine after its DMA wait and the loop head it ends at; Worms' (and the other 2.08 builds') is 8 bytes further: S2BGC_ENTRY=0x22c S2BGC_END=0x1ac */
+#define S2BGC_ENTRY 0x224
+#define S2BGC_END 0x1a4
+#endif
+static int bgc_seg(struct rctx *x, uint32_t *r) { (void)x; r[24] = (r[24] & 0xffffff) + 0x1000; return 0; }
+static int bgc_flush(struct rctx *x, uint32_t *r) { (void)x; if ((int32_t)(r[23] - r[22]) > 0) { r[22] ^= 0xc00; r[23] = r[22] - 800; } return 0; }
+#include S2BGC_ORACLE
 #endif
 #ifdef S2RECT_VU
 int s2ref_obj_rect(uint32_t *dm, unsigned *s7p);
@@ -150,6 +159,51 @@ static void rect_dmem(uint32_t *dm)
     st8(dm, 0x3d7, (uint8_t)(rnd() % 3 == 0 ? rnd() : rnd() % 4 * 0x10 + (rnd() & 1) ));
 }
 
+/* a G_BG_COPY task: the constants of S2DEX 2.08, the tables of the data segment at 0x274 (or random ones), a uObjBg of realistic and wild values, a scissor that cuts or rejects it */
+static const uint16_t bgc_tab_real[16] = { 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000 };
+static void bgc_dmem(uint32_t *dm)
+{
+    unsigned k, m;
+    for (k = 0; k < 1024; k++)
+        dm[k] = rnd();
+    memcpy(dm + 0x180 / 4, bg_consts, sizeof bg_consts);
+    m = rnd() % 4;
+    for (k = 0; k < 16; k++)
+        st16(dm, 0x274 + 2 * k, m == 0 ? r16() : m == 1 ? (uint16_t)rnd() : bgc_tab_real[k]);
+    for (k = 0; k < 40; k++)
+        st8(dm, 0x3b0 + k, (uint8_t)rnd());
+    for (k = 0; k < 8; k++) {                   /* imageX imageW frameX frameW, imageY imageH frameY frameH */
+        unsigned v;
+        switch (rnd() % 6) {
+        case 0: v = r16(); break;
+        case 1: v = rnd() % 0x1400; break;
+        case 2: v = (rnd() % 400) * 4; break;
+        case 3: v = (rnd() % 0x4000) - 0x2000; break;       /* the whole domain of the closed form, and its edges */
+        default: v = (rnd() % 0x500); break;
+        }
+        st16(dm, 0x3b0 + 2 * k, (uint16_t)v);
+    }
+    st16(dm, 0x3b2, (uint16_t)(1 + rnd() % 0x500 * 4 / 4));
+    st16(dm, 0x3ba, (uint16_t)((1 + rnd() % 300) * 4 + (rnd() % 8 == 0 ? rnd() % 4 : 0)));
+    st16(dm, 0x3b6, (uint16_t)(1 + rnd() % 0x500));
+    st16(dm, 0x3be, (uint16_t)(1 + rnd() % 0x400));
+    switch (rnd() % 5) {
+    case 0: case 1: st16(dm, 0x204, 0); st16(dm, 0x206, 1280); st16(dm, 0x208, 0); st16(dm, 0x20a, 960); break;
+    case 2: st16(dm, 0x204, (uint16_t)(rnd() % 600)); st16(dm, 0x206, (uint16_t)(600 + rnd() % 700)); st16(dm, 0x208, (uint16_t)(rnd() % 400)); st16(dm, 0x20a, (uint16_t)(400 + rnd() % 600)); break;
+    case 3: st16(dm, 0x204, (uint16_t)(rnd() % 0x4000 - 0x2000)); st16(dm, 0x206, (uint16_t)(rnd() % 0x4000 - 0x2000)); st16(dm, 0x208, (uint16_t)(rnd() % 0x4000 - 0x2000)); st16(dm, 0x20a, (uint16_t)(rnd() % 0x4000 - 0x2000)); break;
+    default: st16(dm, 0x204, r16()); st16(dm, 0x206, r16()); st16(dm, 0x208, r16()); st16(dm, 0x20a, r16()); break;
+    }
+    st8(dm, 0x3c6, (uint8_t)(rnd() % 4)); st8(dm, 0x3c7, (uint8_t)(rnd() % 4));
+    st8(dm, 0x3cb, (uint8_t)(rnd() % 3 == 0 ? rnd() : 0));
+    st8(dm, 0x3c5, (uint8_t)(rnd() % 3 == 0 ? rnd() : rnd() % 100));
+    st8(dm, 0x3c4, (uint8_t)rnd());
+    st16(dm, 0x3d4, rnd() % 8 == 0 ? r16() : (uint16_t)(rnd() % 400));
+    st16(dm, 0x3d6, (uint16_t)rnd());
+    st16(dm, 0x3ce, (uint16_t)(1 + rnd() % 64));
+    st16(dm, 0x3cc, rnd() % 4 ? (uint16_t)(rnd() % 512) : r16());
+    st32(dm, 0x3c0, 0x02000000 | (rnd() & 0xfffff8));
+}
+
 static sigjmp_buf jb;
 static void on_alarm(int s) { (void)s; siglongjmp(jb, 1); }
 
@@ -170,7 +224,7 @@ static int or_flush(void *ctx, uint32_t *r) { (void)ctx; if ((int32_t)(r[23] - r
 
 int main(int argc, char **argv)
 {
-    unsigned n = argc > 1 ? (unsigned)atoi(argv[1]) : 100000, i, fails = 0, skipped = 0, done[4] = { 0, 0, 0, 0 };
+    unsigned n = argc > 1 ? (unsigned)atoi(argv[1]) : 100000, i, fails = 0, skipped = 0, done[4] = { 0, 0, 0, 0 }, bgc_n[3] = { 0, 0, 0 };
     static uint32_t a[1024], b[1024];
     struct sigaction sa;
     memset(&sa, 0, sizeof sa);
@@ -178,6 +232,9 @@ int main(int argc, char **argv)
     sigaction(SIGALRM, &sa, NULL);
     for (i = 0; i < n; i++) {
         int kind = (int)(rnd() % 4 == 0), ra, rb;
+#ifdef S2BGC_ORACLE
+        if (rnd() % 8 >= 6) kind = 2;
+#endif
         unsigned sa_ = 0x4c0 + 8 * (rnd() % 8), sb_ = sa_;
         rand_dmem(a);
         memcpy(b, a, sizeof a);
@@ -232,6 +289,55 @@ int main(int argc, char **argv)
                 }
 #endif
             }
+        } else if (kind == 2) {
+#ifdef S2BGC_ORACLE
+            struct s2_ctx c = { b, bg_seg, bg_flush };
+            unsigned s7 = 0x4c0 + 8 * (rnd() % 8), s6 = 0x4c0 + 800, s7i = s7;
+            bgc_dmem(a);
+            memcpy(b, a, sizeof a);
+            if (sigsetjmp(jb, 1)) {
+                skipped++;
+                continue;
+            }
+            ualarm(150000, 0);
+            ra = s2dex2_obj_bgcopy(b, &s7, &s6, &c);
+            ualarm(0, 0);
+            if (ra == S2_UNSUPPORTED) {
+                done[3]++;
+                bgc_n[2]++;
+                if (memcmp(a, b, sizeof a) && fails++ < 5)
+                    printf("bgcopy %u: declined, but DMEM written\n", i);
+            } else {
+                struct rctx x;
+                uint32_t r1[32], o[1024];
+                unsigned vi;
+                memset(&x, 0, sizeof x);
+                memset(r1, 0, sizeof r1);
+                memcpy(o, a, sizeof o);
+                r1[20] = 0x3b0; r1[30] = 0x1c0; r1[23] = s7i; r1[22] = 0x4c0 + 800;
+                x.u.dmem = o;
+                LQV(&x.u, 31, 0, 0x180); LQV(&x.u, 30, 0, 0x190); LQV(&x.u, 29, 0, 0x1a0); LQV(&x.u, 28, 0, 0x1b0);
+                VXOR(&x.u, 0, 0, 0, 0); VSUB(&x.u, 1, 0, 31, 11);
+                for (vi = 2; vi < 14; vi++) { uint16_t *e = (uint16_t *)&x.u.r[vi]; unsigned q; for (q = 0; q < 8; q++) e[q] = (uint16_t)rnd(); }      /* stale vector state: must not matter */
+                { uint16_t *e = (uint16_t *)&x.u.acc_md; unsigned q; for (q = 0; q < 8; q++) e[q] = (uint16_t)rnd(); e = (uint16_t *)&x.u.acc_hi; for (q = 0; q < 8; q++) e[q] = (uint16_t)rnd(); }
+                memcpy(x.r, r1, sizeof r1);
+                LLV(&x.u, 2, 4, x.r[30] + 68); LLV(&x.u, 2, 12, x.r[30] + 72);
+                if (sigsetjmp(jb, 1)) {
+                    skipped++;
+                    continue;
+                }
+                ualarm(150000, 0);
+                bgcopy_gen(&x, S2BGC_ENTRY);
+                ualarm(0, 0);
+                bgc_n[ra == S2_DONE && s7 == s7i ? 1 : 0]++;
+                if (x.pc != S2BGC_END || memcmp(o, b, sizeof o) || x.r[23] != s7 || x.r[22] != s6) {
+                    if (fails++ < 5)
+                        printf("bgcopy %u: microcode pc %x, dmem %s, s7 %x / %x\n", i, x.pc, memcmp(o, b, sizeof o) ? "differs" : "equal", x.r[23], s7);
+                }
+            }
+#else
+            (void)0;
+#endif
         } else {
             struct s2_ctx c = { b, bg_seg, bg_flush };
             unsigned k, s7 = 0x4c0, s6 = 0x4c0 + 800;
@@ -285,6 +391,9 @@ int main(int argc, char **argv)
 #endif
         }
     }
+#ifdef S2BGC_ORACLE
+    printf("test_s2dex2: G_BG_COPY %u drawn / %u nothing visible / %u declined\n", bgc_n[0], bgc_n[1], bgc_n[2]);
+#endif
     printf("test_s2dex2: %u cases, rectangles %u drawn / %u outside the scissor / %u declined, %u backgrounds done, %u skipped (timeout), %u failures; oracles:%s%s%s\n", n, done[0], done[1], done[3], done[2], skipped, fails,
 #ifdef S2RECT_ORACLE
            " rect-microcode",
@@ -300,6 +409,9 @@ int main(int argc, char **argv)
            " bg-microcode"
 #else
            ""
+#endif
+#ifdef S2BGC_ORACLE
+           " bgcopy-microcode"
 #endif
     );
     return fails != 0;

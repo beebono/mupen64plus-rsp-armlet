@@ -21,6 +21,7 @@ extern "C" {
 #define HLE_STREAM_KEEP (32u << 20)
 struct hle_stream {
     uint64_t hash, len;
+    uint64_t hash_r;                            /* the same stream with bytes 1 .. 7 of NO_OP and the syncs zeroed (the relaxed comparison of a task that switched builds, hle_task.switched) */
     uint8_t *bytes;
     size_t cap;
     unsigned (*size)(unsigned first_byte);      /* the ucode's own sizing of a command, or NULL */
@@ -30,7 +31,7 @@ struct hle_stream {
 static inline void hle_stream_reset(struct hle_stream *s, const struct hle_ucode *uc)
 {
     s->size = uc ? uc->rdp_cmd_size : NULL;
-    s->hash = 0xcbf29ce484222325ull;
+    s->hash = s->hash_r = 0xcbf29ce484222325ull;
     s->len = 0;
     s->cmd_pos = s->cmd_end = 0;
     s->ignore_from = ~0u;
@@ -47,7 +48,9 @@ static inline unsigned hle_rdp_cmd_size(unsigned op)
     return 8;
 }
 /* The second word of NO_OP and of the sync commands is ignored by the RDP; the microcode leaves whatever the output buffer held there (scratch of earlier commands), so the
- * stream comparison zeroes it (docs/design.md, "What verify compares"). */
+ * stream comparison zeroes it (docs/design.md, "What verify compares"). Where a one-byte store writes the command (S2DEX), the three bytes behind it in the first word are scratch as well; they are
+ * the same in a native run and the JIT's unless the task switched builds (a G_LOAD_UCODE in the middle: the buffers of the build it loaded lie over DMEM that the build before left, in ranges it
+ * declares dead and does not keep exactly: the clipper's new vertices, the scratch of the triangle setup); the comparison of such a task zeroes them too (hash_r). */
 static inline int hle_rdp_w1_ignored(unsigned op) { return op == 0x00 || (op >= 0x26 && op <= 0x29); }
 
 /* the list [cur, end) as a CMD_END event reports it (status bit 0 = XBUS: the bytes are in DMEM); dmem / rdram are the host word images */
@@ -64,8 +67,12 @@ static inline void hle_stream_add(struct hle_stream *s, const PrspNativeEvent *e
             s->cmd_end = s->size ? s->size(byte) : hle_rdp_cmd_size(op);
             s->ignore_from = hle_rdp_w1_ignored(op) ? 4 : ~0u;
         }
-        if (s->cmd_pos >= s->ignore_from && s->cmd_pos < s->ignore_from + 4)
-            byte = 0;
+        {
+            uint8_t rb = s->ignore_from != ~0u && s->cmd_pos >= 1 ? 0 : byte;
+            if (s->cmd_pos >= s->ignore_from && s->cmd_pos < s->ignore_from + 4)
+                byte = 0;
+            s->hash_r = (s->hash_r ^ rb) * 0x100000001b3ull;
+        }
         s->cmd_pos++;
         s->hash = (s->hash ^ byte) * 0x100000001b3ull;
         if (s->len < HLE_STREAM_KEEP) {

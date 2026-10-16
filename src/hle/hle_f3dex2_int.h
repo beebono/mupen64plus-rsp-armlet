@@ -32,6 +32,7 @@ struct f3dex2_build {
     uint16_t mvp;                   /* a handler that concatenates the matrices now (G_SPECIAL_1 of F3DEX.NoN 2.08H), or 0 */
     unsigned gen204;                /* F3DEX2 2.04 / 2.04H, the generation before 2.05: unclamped screen z, and the clipper's reciprocal sign and fan (fx2_vctx.gen204, fx2_clip_ctx.sign0 / fan_l0; docs/ucode-f3dex2-dialects.md section 5) */
     unsigned zex;                   /* F3DZEX: other lanes of the constant vectors, no mask on the slope fractions */
+    uint64_t load_key;              /* FNV-1a-64 (armlet_ucode_hash) of the first 0xf48 bytes of the text: the part a G_LOAD_UCODE copies to IMEM, which names the build that command loads (loaded_build) */
     uint32_t reject_mask;           /* a triangle whose three clip-flag words have a common bit in this mask is rejected */
     uint16_t tri4;                  /* G_TRI4 (F3DEXBG): four triangles in one command, or 0 */
     const struct f2_layout *lay;    /* the DMEM layout when it is not the standard one */
@@ -78,7 +79,9 @@ struct f3 {
     int lean;                       /* the external-effects mode: no DMA the effects do not need (the display list and the vertices are read from RDRAM, the overlays are loaded once at the end) */
     int ov0;                        /* the overlay IMEM held at the start */
     int trace, watch;
-    uint32_t uc0;                   /* OSTask.ucode at the start (the text this run is for) */
+    uint32_t nsrc;                  /* with nb != b: the address of the text it is loaded from (uc0 after the switch) */
+    uint32_t uc0;                   /* the address of the text this run is for: OSTask.ucode at the start, the text address of the last G_LOAD_UCODE that switched builds */
+    const struct f3dex2_build *nb;  /* the build a G_LOAD_UCODE that was handed to the interpreter loads (b: the same text), taken over when the reloaded microcode reaches its first command fetch */
     unsigned ho_pc;                 /* where the interpreter takes over when the loop hands the task back: the G_ENDDL handler, or 0xfac (G_LOAD_UCODE) */
     uint16_t wval;
     unsigned ncmd;

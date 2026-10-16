@@ -15,6 +15,10 @@
          wild    vertices with coordinates over the whole 16-bit range and matrices of large scale (the overflow and saturation paths of the vertex pipeline and the triangle setup), triangles between
          bad     commands whose vertex numbers, indices or offsets no game writes (past the 32 slots, odd, past the tables): a triangle, G_MODIFYVTX, G_CULLDL, G_BRANCH_Z, G_MOVEWORD, G_MOVEMEM; the front-ends decline them
          lit     lit vertices (1 to 5 lights, look-at vectors, texture generation linear or not, fog), the triangles between them
+         mtx     matrices whose halfwords are random 16-bit values (any integer and fraction part, the saturating corners of the product): G_MTX load, multiply and push, modelview and projection, then vertices
+         load    a task that loads another microcode in the middle and back (Kirby 64's: F3DEX2 2.04H -> S2DEX 2.08 -> F3DEX2 2.04H): triangles, G_RDPHALF_1 + G_LOAD_UCODE, S2DEX commands (scissor, render mode, sprite
+                 rectangles, backgrounds in 1-cycle and COPY mode, texture loads, display list selection), G_LOAD_UCODE back, triangles again. The addresses of the texts and data in RDRAM are the game's
+                 (MKSYN_S2TEXT, MKSYN_S2DATA, MKSYN_F2TEXT, MKSYN_F2DATA override them; a data address is that of the data row, the one G_LOAD_UCODE copies to DMEM 0x180); the snapshot must hold those rows (any captured Kirby 64 task does)
 """
 import random
 import struct
@@ -271,6 +275,98 @@ def case(name, seed):
             for _ in range(4):
                 a, b2, c = r.sample(range(v0, v0 + n), 3)
                 d.cmd((0x05 << 24) | (a * 2 << 16) | (b2 * 2 << 8) | c * 2)
+        d.cmd(0xdf000000, 0)
+    elif name == "mtx":
+        geom = r.choice([0, 0x4]) | r.choice([0, 1]) | 0x800000
+        d, data = common(r, geom, r.choice([0x1ff, 0]), 0)
+        for k in range(r.randrange(2, 6)):
+            vals = bytes(r.randrange(256) for _ in range(64))
+            if r.random() < 0.5:                           # integer halfwords from a small set, fractions random
+                vals = struct.pack(">16H", *[r.choice([0, 1, 0xffff, 0x8000, 0x7fff, r.randrange(1 << 16)]) for _ in range(16)]) + vals[32:]
+            data[0x500 + 0x40 * k] = vals
+            d.cmd(0xda380000 | r.choice([0, 1, 2, 3, 4, 5, 6, 7]), BASE + 0x500 + 0x40 * k)
+        n = 4
+        data[0x600] = b"".join(vtx(r.randint(-40, 40), r.randint(-40, 40), r.randint(-40, 40), r.randrange(-512, 512), r.randrange(-512, 512), (1, 2, 3, 4)) for _ in range(n))
+        d.cmd((0x01 << 24) | (n << 12) | (n << 1), BASE + 0x600)
+        d.cmd((0x05 << 24) | (0 << 16) | (2 << 8) | 4)
+        d.cmd(0xdf000000, 0)
+    elif name == "load":
+        import os
+        s2t, s2d = int(os.environ.get("MKSYN_S2TEXT", "0x3c3b0"), 0), int(os.environ.get("MKSYN_S2DATA", "0x42980"), 0)
+        f2t, f2d = int(os.environ.get("MKSYN_F2TEXT", "0x39e90"), 0), int(os.environ.get("MKSYN_F2DATA", "0x42170"), 0)
+        geom = r.choice([0, 0x4]) | r.choice([0, 1]) | 0x800000
+        d, data = common(r, geom, r.choice([0x1ff, 0]), r.choice([0, 2]))
+        data[0x500] = mtx([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1])
+        data[0x540] = mtx(rnd_matrix(r, r.choice([1, 0.5, 1 / 8])))
+        d.cmd(0xda380007, BASE + 0x540)
+        d.cmd(0xda380003, BASE + 0x500)
+        vaddr = [0x600]
+
+        def f2_stage(d):
+            for _ in range(r.randrange(1, 3)):
+                n = r.choice([3, 4, 5, 6, 9])
+                v0 = r.randrange(0, 32 - n + 1)
+                data[vaddr[0]] = b"".join(vtx(r.randint(-40, 40), r.randint(-40, 40), r.randint(-40, 40), r.randrange(-512, 512), r.randrange(-512, 512),
+                                              (r.randrange(256), r.randrange(256), r.randrange(256), r.randrange(256))) for _ in range(n))
+                d.cmd((0x01 << 24) | (n << 12) | ((v0 + n) << 1), BASE + vaddr[0])
+                vaddr[0] += 0x100
+                for _ in range(r.randrange(1, 5)):
+                    a, b2, c = r.sample(range(v0, v0 + n), 3)
+                    d.cmd((0x05 << 24) | (a * 2 << 16) | (b2 * 2 << 8) | c * 2)
+
+        def u16(v): return v & 0xffff
+
+        def sprite():
+            return struct.pack(">hHHHhHHHHHBBBB", r.randint(-40, 1300), r.choice([0x400, 0x400, 0x200, 0x800, r.randrange(0x100, 0x1000)]), r.randrange(8, 64) * 32, 0,
+                               r.randint(-40, 980), r.choice([0x400, 0x400, 0x200, 0x800, r.randrange(0x100, 0x1000)]), r.randrange(8, 64) * 32, 0,
+                               r.randrange(0, 40), r.randrange(0, 0x200), r.randrange(0, 5), r.randrange(0, 4), r.randrange(0, 16), r.choice([0, 0, 1, 0x10, 0x11]))
+
+        def bg(copy):
+            sc = 0x400 if not copy else r.choice([0x400, 0x400, 0x53, r.randrange(0x400)])
+            iw = r.choice([0x500, 0x2c0, 0x500, r.randrange(0x40, 0xc00)])
+            ih = r.choice([0xc0, 0x88, r.randrange(0x20, 0x380)])
+            return struct.pack(">8HIHBBBBBBHHiHH", r.choice([0, 0, 0, r.randrange(0, 0x400)]), iw, r.choice([0xa4, 0x1c, 0, r.randrange(0, 0x300)]), r.choice([iw, iw, r.randrange(0x40, 0xc00)]),
+                               r.choice([0, 0, r.randrange(0, 0x300)]), ih, r.choice([0x2e8, 0x2d8, 0, r.randrange(0, 0x300)]), r.choice([ih, ih, r.randrange(0x20, 0x380)]),
+                               0x00100000 + r.randrange(0x4000) * 8, r.choice([0xfff4, 0, r.randrange(1 << 16)]), r.randrange(0, 5), r.randrange(0, 4), r.randrange(0, 2), r.randrange(0, 16),
+                               0, r.choice([0, 0, 1]), sc, sc, r.choice([0, 0x17, r.randrange(0, 0x100)]), r.randrange(0, 0x100), r.randrange(0, 0x200))
+
+        def s2_stage(d):
+            d.cmd(0xed000000 | (r.randrange(0, 40) << 14) | r.randrange(0, 40) * 4, ((1280 - r.randrange(0, 40) * 4) << 12) | (960 - r.randrange(0, 40) * 4))
+            d.cmd(0x0b000000 | r.choice([0, 8]), r.randrange(1 << 8) | (r.randrange(0, 4) << 3) | (r.randrange(0, 8) << 4))
+            o = 0x2000
+            for _ in range(r.randrange(2, 7)):
+                k = r.randrange(6)
+                if k in (0, 1):
+                    data[o] = sprite()
+                    d.cmd(0x01000000, BASE + o)
+                elif k == 2:
+                    data[o] = bg(False)
+                    d.cmd(0x09000000, BASE + o)
+                elif k == 3:
+                    data[o] = bg(True)
+                    d.cmd(0x0a000000, BASE + o)
+                elif k == 4:
+                    data[o] = struct.pack(">IIIIIHH", 0x00001033, 0x00100000 + r.randrange(0x1000) * 8, r.randrange(0x7ff), 0x100, r.randrange(1 << 16), 0, 0)[:24]
+                    d.cmd(0x05000017, BASE + o)
+                elif k == 5 and r.random() < 0.15:                 # an opcode nobody defined, whose jump table entry is 0x0fff (the data row is patched): the build declines it (the marker of a missing handler is 0xffff)
+                    op = r.choice([0x30, 0x20, 0x4a, 0x10])
+                    data[s2d + 0x250 + 2 * (op - 0x30) - BASE] = b"\x0f\xff"
+                    d.cmd(op << 24 | r.randrange(1 << 24), r.randrange(1 << 32))
+                else:
+                    d.cmd(0x04000000 | r.randrange(0x10000), r.randrange(1 << 32))
+                    d.cmd(0xe6000000, 0)
+                o += 0x80
+        f2_stage(d)
+        d.cmd(0xe1000000, s2d - 0x180)
+        d.cmd(0xdd0007ff, s2t)
+        s2_stage(d)
+        d.cmd(0xe1000000, f2d - 0x180)
+        d.cmd(0xdd0007ff, f2t)
+        setup(d, r, geom, 0x1ff)
+        data[0x700] = mtx([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1])
+        d.cmd(0xda380007, BASE + 0x540)
+        d.cmd(0xda380003, BASE + 0x700)
+        f2_stage(d)
         d.cmd(0xdf000000, 0)
     else:
         sys.exit("unknown case " + name)

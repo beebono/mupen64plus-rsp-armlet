@@ -12,6 +12,16 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 import snaplib
 
 out, n, seed, opb, field = sys.argv[1], int(sys.argv[2]), int(sys.argv[3]), int(sys.argv[4], 16), sys.argv[5]
+# FUZZ_DONOR=<snapshot>: its rows are added to every snapshot that lacks the same RDRAM address (as in fuzz_snaps.py: overlay code and the other microcode's text and data that a changed list reaches)
+donor = []
+if os.environ.get("FUZZ_DONOR"):
+    dd = open(os.environ["FUZZ_DONOR"], "rb").read()
+    dh = struct.unpack("<II48sQIIIII4x", dd[:struct.calcsize("<II48sQIIIII4x")])
+    o = struct.calcsize("<II48sQIIIII4x") + snaplib.SNAP_SIZE
+    for _ in range(dh[6]):
+        a, ln = struct.unpack("<II", dd[o:o + 8])
+        donor.append((a, dd[o:o + 8 + ln]))
+        o += 8 + ln
 rng = random.Random(seed)
 os.makedirs(out, exist_ok=True)
 for path in sys.argv[6:]:
@@ -20,11 +30,17 @@ for path in sys.argv[6:]:
     hdr = struct.unpack("<II48sQIIIII4x", bytes(d[:hsize]))
     nrows, nev = hdr[6], hdr[7]
     o = hsize + snaplib.SNAP_SIZE
-    allspans = []
+    allspans, have = [], set()
     for _ in range(nrows):
         a, ln = struct.unpack("<II", d[o:o + 8])
         allspans.append((o + 8, ln))
+        have.add((a, ln))
         o += 8 + ln
+    if donor:
+        miss = [blob for a, blob in donor if (a, struct.unpack("<II", blob[:8])[1]) not in have]
+        d[o:o] = b"".join(miss)
+        struct.pack_into("<I", d, struct.calcsize("<II48sQII"), nrows + len(miss))
+        o += sum(len(b) for b in miss)
     o += snaplib.SNAP_SIZE
     cands, k = [], 0
     for i in range(nev):

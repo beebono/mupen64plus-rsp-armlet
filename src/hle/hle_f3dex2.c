@@ -17,6 +17,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "armlet.h"
+#include "gfx_ucode.h"
 #include "hle_f3dex2_int.h"
 
 #ifdef ARMLET_NATIVE
@@ -282,6 +284,8 @@ static int cmd_mtx(struct f3 *f)
         return hle_decline(t, "G_MTX with an unusual index");
     if (MUT(230, ((len | 7) + 1) != 64, 0))              /* a short DMA leaves the rest of the matrix as it was in DMEM, a long one runs on over the state after it */
         return hle_decline(t, "G_MTX with an unusual length");
+    if (f->trace)
+        fprintf(stderr, "  MTX flags %02x dst %03x len %u sp %08x seg %08x\n", w0 & 0xff, dst, len + 1, hle_dm32(t, 0xf4), seg_addr(t, w1));
     if ((w0 & 5) == 0) {                                /* push: the current modelview matrix goes to the matrix stack in RDRAM (pointer at 0xf4, which moves up by 64) */
         uint32_t sp = hle_dm32(t, 0xf4);
         hle_dma_write(t, 0, sp, 63);
@@ -475,6 +479,8 @@ void f3_do_dl(struct f3 *f, uint32_t w0, uint32_t w1)
         hle_st8(t, DL_DEPTH, (uint8_t)(d + 4));
     }
     f->k0 = target;
+    if (MUT(240, target & 7, 0))                        /* the refill DMA rounds the address down to 8 and the list starts at the rounded address; the lean mode reads from the address itself */
+        f->bad = "unaligned display list address";
     refill(f);
 }
 
@@ -503,6 +509,31 @@ static void load_note(const struct hle_task *t)
         l_loads[l_nloads].data = hle_dm32(t, 0xfd8);
         l_loads[l_nloads++].n = 1;
     }
+}
+
+/* The build a G_LOAD_UCODE loads: the one whose text is the 3912 bytes the command copies to IMEM 0x80 (f3dex2_build.load_key, the FNV of exactly those bytes: the overlay code behind them is not part of
+ * the identity, as in the ucode id of a task). Only a build of this front-end (f3dex2_fam: the F3DEX2 dialects and S2DEX 2.x) can be taken over. The last two texts are remembered (compared with memcmp
+ * against RDRAM, as gfx_ucode.c does), so that a task that loads the same text every time does not hash it every time. NULL: not a registered build. */
+static const struct hle_ucode *loaded_build(const struct hle_task *t, uint32_t src)
+{
+    static struct { uint8_t text[0xf48]; uint32_t addr; const struct hle_ucode *u; int used; } slot[2];
+    static unsigned next;
+    const struct hle_ucode *u = NULL;
+    uint64_t key;
+    unsigned i;
+    for (i = 0; i < 2; i++)
+        if (slot[i].used && slot[i].addr == src && !memcmp(slot[i].text, t->rdram + src, 0xf48))
+            return slot[i].u;
+    key = armlet_ucode_hash(t->rdram, src, 0xf48);
+    while ((u = armlet_hle_next(u)) != NULL)
+        if (u->fam == &f3dex2_fam && ((const struct f3dex2_build *)u->fam_data)->load_key == MUT(250, key, ~key))
+            break;
+    i = next++ & 1;
+    memcpy(slot[i].text, t->rdram + src, 0xf48);
+    slot[i].addr = src;
+    slot[i].u = u;
+    slot[i].used = 1;
+    return u;
 }
 
 static int run_loop(struct f3 *f, int *handover)
@@ -538,7 +569,7 @@ static int run_loop(struct f3 *f, int *handover)
         kd = f->kind[w0 >> 24];
         t_cmd = g_prof ? ticks() : 0;
         if (f->trace)
-            fprintf(stderr, "CMD %5u k0=%08x op=%02x kind=%u w0=%08x w1=%08x out=%u\n", f->ncmd++, f->k0 + f->k1, w0 >> 24, kd, w0, w1, f->total + (f->s7 - (f->s6 - OUT_BYTES)));
+            fprintf(stderr, "CMD %5u k0=%08x op=%02x kind=%u w0=%08x w1=%08x out=%u entry=%04x\n", f->ncmd++, f->k0 + f->k1, w0 >> 24, kd, w0, w1, f->total + (f->s7 - (f->s6 - OUT_BYTES)), hle_dm16(t, JUMP_TABLE + 2 * (int)(int8_t)(w0 >> 24)));
         switch (kd) {
         case K_NOP:
             break;
@@ -550,14 +581,31 @@ static int run_loop(struct f3 *f, int *handover)
             if (*handover)
                 return rc;
             break;
-        case K_LOADUCODE: {                             /* the microcode's own code (on the interpreter) loads a ucode text and data and starts it; the same text is a re-initialisation, any other declines */
+        case K_LOADUCODE: {                             /* the microcode's own code (on the interpreter) loads a ucode text and data and starts it. The same text is a re-initialisation; the text of another registered build of this front-end switches the build
+                                                         * the loop works with (f3_bind) once the interpreter has run the loaded microcode's initialisation; any other text declines */
             uint32_t src = w1 & 0x7ffff8, cur = f->uc0 & 0x7ffff8;
-            if (src + 0xf48 > 0x800000 || cur + 0xf48 > 0x800000 || memcmp(t->rdram + src, t->rdram + cur, 0xf48)) {
+            if (src + 0x1000 > 0x800000 || cur + 0xf48 > 0x800000) {
                 load_note(t);
-                return hle_decline(t, "G_LOAD_UCODE of another ucode");
+                return hle_decline(t, "G_LOAD_UCODE outside RDRAM");
+            }
+            f->nb = b;
+            if (memcmp(t->rdram + src, t->rdram + cur, 0xf48)) {
+                const struct hle_ucode *nu = loaded_build(t, src);
+                if (f->trace)
+                    fprintf(stderr, "  G_LOAD_UCODE text %08x key %016llx data %08x -> %s\n", src, (unsigned long long)armlet_ucode_hash(t->rdram, src, 0xf48), hle_dm32(t, 0xd8), nu ? nu->name : "(not registered)");
+                if (!nu || (t->ctx && !armlet_gfx_allowed(&t->ctx->cfg, nu->id))) {
+                    load_note(t);
+                    return hle_decline(t, "G_LOAD_UCODE of another ucode");
+                }
+                f->nb = (const struct f3dex2_build *)nu->fam_data;
+                f->nsrc = src;
             }
             f->ho_pc = 0xfac;
-            if (f->lean) {                              /* the stub reads the command's second word from the input buffer */
+            if (f->lean) {                              /* the stub reads the command's second word from the input buffer. The lean mode does not keep the buffer in DMEM, but the microcode that is loaded goes on from
+                                                         * DMEM as it is: its output buffers lie over this one, and the bytes it does not write of its commands (the seven after a one-byte sync) are what the
+                                                         * buffer held, so the last chunk of the display list (168 bytes before k0) is put there. */
+                if (MUT(251, 1, 0))
+                    memcpy(&t->dmem[F2_IN >> 2], t->rdram + ((f->k0 - F2_IN_REFILL) & 0x7ffff8), F2_IN_REFILL);
                 hle_st32(t, F2_IN_END + f->k1 - 8, w0);
                 hle_st32(t, F2_IN_END + f->k1 - MUT(66, 4, 8), w1);
             }
@@ -706,9 +754,11 @@ static int run_loop(struct f3 *f, int *handover)
             if (MUT(223, vidx_bad(w0), 0))
                 return hle_decline(t, "G_BRANCH_Z with an unusual vertex number");
             unsigned vs = hle_dm16(t, F2_VTAB + (w0 & 0xfff));
-            uint32_t z = b->zex && MUT(246, 1, 0) ? (uint32_t)(int32_t)(int16_t)hle_dm16(t, vs + 6) : hle_dm32(t, vs + 0x1c);   /* F3DZEX compares the integer part of the clip w (`lh 6(vertex)`), the others the screen z */
+            uint32_t z = b->zex && MUT(259, !b->gen204, 1) && MUT(246, 1, 0) ? (uint32_t)(int32_t)(int16_t)hle_dm16(t, vs + 6) : hle_dm32(t, vs + 0x1c);   /* F3DZEX compares the integer part of the clip w (`lh 6(vertex)`), the others (F3DEX2 2.04 / 2.04H, which have the `zex` triangle constants, too) the screen z */
             if ((int32_t)(z - w1) < 0) {                /* a branch (no stack) to the address G_RDPHALF_1 left at 0xd8 */
                 f->k0 = seg_addr(t, hle_dm32(t, 0xd8));
+                if (MUT(240, f->k0 & 7, 0))
+                    f->bad = "unaligned display list address";
                 refill(f);
             }
             break;
@@ -823,12 +873,34 @@ static unsigned classify_op(const struct f3dex2_build *b, unsigned op, unsigned 
     return k;
 }
 
+/* The loop works with one build at a time (f->b, the layout f2L, the classification of the opcodes by the jump table in DMEM, the overlay IMEM holds, the pc the end of the task goes to): taken from the
+ * state of the microcode when it is at the first fetch of its command loop, at the start of a task and after a G_LOAD_UCODE (the same build or another one). */
+static void f3_bind(struct f3 *f, const struct f3dex2_build *b)
+{
+    struct hle_task *t = f->t;
+    unsigned op;
+    int sw = f->b != NULL && f->b != b;                 /* another build than the loop was working with (the first call and a reload of the same text have none) */
+
+    (void)sw;                                           /* (only the mutation checks use it) */
+    f->b = b;
+    if (MUT(252, 1, !sw))
+        f2L = b->lay ? b->lay : &l_lay_std;
+    if (MUT(256, 1, !sw))
+        f->ho_pc = b->enddl;
+    if (MUT(257, 1, !sw)) {
+        f->ov = overlay_match(t, DESC_CLIP) ? OV_CLIP : overlay_match(t, DESC_LIGHT) ? OV_LIGHT : OV_UNKNOWN;
+        f->ov0 = f->ov;
+    }
+    if (MUT(253, 1, !sw))
+        for (op = 0; op < 256; op++)
+            f->kind[op] = (uint8_t)classify_op(b, op, hle_dm16(t, JUMP_TABLE + 2 * (int)(int8_t)op) & 0xfff);
+}
+
 static int f3dex2_run(struct hle_task *t, const struct hle_ucode *u)
 {
     const struct f3dex2_build *b = (const struct f3dex2_build *)u->fam_data;
     struct hle_cpu c;
     struct f3 f;
-    unsigned op;
     int handover = 0, rc;
 
     if (g_prof < 0) {
@@ -848,7 +920,6 @@ static int f3dex2_run(struct hle_task *t, const struct hle_ucode *u)
         return hle_decline(t, "the task yields");
     memset(&f, 0, sizeof(f));
     f.t = t;
-    f.b = b;
     f.k0 = c.r[HLE_REG_K0];
     f.k1 = c.r[HLE_REG_K1];
     f.s6 = c.r[HLE_REG_S6];
@@ -860,19 +931,20 @@ static int f3dex2_run(struct hle_task *t, const struct hle_ucode *u)
     f.watch = getenv("HLE_F3_WATCH") ? (int)strtoul(getenv("HLE_F3_WATCH"), NULL, 16) : -1;
     f.wval = f.watch >= 0 ? hle_dm16(t, f.watch) : 0;
     f.total = 0;
-    f.ho_pc = b->enddl;
     f.lean = !hle_exact();
-    f.ov = overlay_match(t, DESC_CLIP) ? OV_CLIP : overlay_match(t, DESC_LIGHT) ? OV_LIGHT : OV_UNKNOWN;
-    f.ov0 = f.ov;
-    for (op = 0; op < 256; op++)
-        f.kind[op] = (uint8_t)classify_op(b, op, hle_dm16(t, JUMP_TABLE + 2 * (int)(int8_t)op) & 0xfff);
     f.uc0 = hle_dm32(t, 0xfd0);
+    f3_bind(&f, b);
     for (;;) {
         rc = run_loop(&f, &handover);
         if (rc != HLE_OK)
             return rc;
-        if (getenv("HLE_DUMP_IMEM")) {
-            FILE *fp = fopen(getenv("HLE_DUMP_IMEM"), "wb");
+        if (getenv("HLE_DUMP_IMEM")) {                  /* (one file per hand-over: <file>, <file>.1, ...) */
+            static unsigned dumps;
+            char nm[512];
+            FILE *fp;
+            snprintf(nm, sizeof(nm), "%s.%u", getenv("HLE_DUMP_IMEM"), dumps);
+            dumps++;
+            fp = fopen(nm, "wb");
             if (fp) {
                 fwrite(t->imem, 4, 1024, fp);
                 fclose(fp);
@@ -895,7 +967,12 @@ static int f3dex2_run(struct hle_task *t, const struct hle_ucode *u)
         c.pc = f.ho_pc;
         if (f.ho_pc != 0xfac)
             break;
-        c.stop_pc = b->head + 4;                        /* the reloaded microcode starts again: run its initialisation up to the first fetch */
+        /* G_LOAD_UCODE: the stub of the microcode that is loaded now (overlay 0, IMEM 0) flushes the RDP buffer, saves the position in the display list (OSTask.data_ptr, DMEM 0xff0) and the text address
+         * (0xfd0), copies 3912 bytes of text to IMEM 0x80 and the data segment (G_RDPHALF_1's word, 0xd8, the size in w0) to DMEM 0x180 .. , and starts the new text at 0x80, which runs its initialisation
+         * (including the overlay descriptors: text address added) up to its first command fetch. What the microcode carries across is what that code does not write: DMEM below 0x180 (the matrices and
+         * viewport of F3DEX2, the RDP state words at 0xc0 .. 0xd8, the FIFO pointer, the segment table, the display list stack and its depth, OSTask) and above the data it loads, IMEM outside the text, the
+         * SP / DPC registers and RDRAM; the registers k0 / k1 / s6 / s7 are the new microcode's own, from its initialisation. The loop then takes the new build over (f3_bind). */
+        c.stop_pc = MUT(255, f.nb->head, f.b->head) + 4;   /* the reloaded microcode starts again: run its initialisation up to the first fetch */
         rc = hle_rsp_run(t, &c);
         if (rc != HLE_STOP)
             return rc;
@@ -906,12 +983,13 @@ static int f3dex2_run(struct hle_task *t, const struct hle_ucode *u)
         f.k1 = c.r[HLE_REG_K1];
         f.s6 = c.r[HLE_REG_S6];
         f.s7 = c.r[HLE_REG_S7];
-        f.polls = 1;
-        f.ho_pc = b->enddl;
-        f.ov = overlay_match(t, DESC_CLIP) ? OV_CLIP : overlay_match(t, DESC_LIGHT) ? OV_LIGHT : OV_UNKNOWN;
-        f.ov0 = f.ov;
-        for (op = 0; op < 256; op++)
-            f.kind[op] = (uint8_t)classify_op(b, op, hle_dm16(t, JUMP_TABLE + 2 * (int)(int8_t)op) & 0xfff);
+        f.polls += MUT(249, 1, -(int)f.polls + 1);      /* (the count of SP_STATUS polls is the task's, not the build's: the JIT halts at 32767 of them whichever microcode makes them; the reloaded one polls once more before the first command) */
+        if (f.nb != f.b) {
+            t->switched = 1;
+            if (MUT(254, 1, 0))
+                f.uc0 = f.nsrc;
+        }
+        f3_bind(&f, f.nb);
     }
     c.stop_pc = 0x1000;
 
@@ -927,16 +1005,16 @@ const struct hle_family f3dex2_fam = { .name = "f3dex2", .run = f3dex2_run };
 
 static const struct f3dex2_build l_b_dk64 = {
     .head = 0x18c, .copy = 0x208, .sync = 0x20c, .segcopy = 0x218, .ef = 0x238, .ed = 0x244, .tri1 = 0x7b4, .tri2 = 0x7ac, .vtx = 0x4f0,
-    .mtx = 0x0f0, .geom = 0x1d0, .enddl = 0x1e4, .half2 = 0x1f8, .modvtx = 0xc78, .culldl = 0xc38, .branchz = 0xc60, .reject_mask = 0x7070 };
+    .mtx = 0x0f0, .geom = 0x1d0, .enddl = 0x1e4, .half2 = 0x1f8, .modvtx = 0xc78, .culldl = 0xc38, .branchz = 0xc60, .reject_mask = 0x7070, .load_key = 0x4d947651fb1d5494ull };
 static const struct f3dex2_build l_b_oot = {
     .head = 0x18c, .copy = 0x208, .sync = 0x20c, .segcopy = 0x218, .ef = 0x238, .ed = 0x244, .tri1 = 0x7b4, .tri2 = 0x7ac, .vtx = 0x4f0,
-    .mtx = 0x0f0, .geom = 0x1d0, .enddl = 0x1e4, .half2 = 0x1f8, .modvtx = 0xc74, .culldl = 0xc34, .branchz = 0xc5c, .zex = 1, .reject_mask = MUT(245, 0x70b0, 0x7030) };
+    .mtx = 0x0f0, .geom = 0x1d0, .enddl = 0x1e4, .half2 = 0x1f8, .modvtx = 0xc74, .culldl = 0xc34, .branchz = 0xc5c, .zex = 1, .reject_mask = MUT(245, 0x70b0, 0x7030), .load_key = 0x70184057549a5640ull };
 static const struct f3dex2_build l_b_pm = {
     .head = 0x194, .copy = 0x210, .sync = 0x214, .segcopy = 0x220, .ef = 0x240, .ed = 0x24c, .tri1 = 0xa44, .tri2 = 0xa3c, .vtx = 0x780,
-    .mtx = 0x0f0, .geom = 0x1d8, .enddl = 0x1ec, .half2 = 0x200, .modvtx = 0xf08, .culldl = 0xec8, .branchz = 0xef0, .reject_mask = 0x7070 };
+    .mtx = 0x0f0, .geom = 0x1d8, .enddl = 0x1ec, .half2 = 0x200, .modvtx = 0xf08, .culldl = 0xec8, .branchz = 0xef0, .reject_mask = 0x7070, .load_key = 0xf3e64981ab1bc14bull };
 static const struct f3dex2_build l_b_snap = {
     .head = 0x194, .copy = 0x228, .sync = 0x22c, .segcopy = 0x238, .ef = 0x258, .ed = 0x264, .tri1 = 0x7d4, .tri2 = 0x7cc, .vtx = 0x510,
-    .mtx = 0x0f0, .geom = 0x1f0, .enddl = 0x204, .half2 = 0x218, .modvtx = 0xc98, .culldl = 0xc58, .branchz = 0xc80, .mvp = 0x1c0, .reject_mask = MUT(245, 0x70b0, 0x7030) };
+    .mtx = 0x0f0, .geom = 0x1f0, .enddl = 0x204, .half2 = 0x218, .modvtx = 0xc98, .culldl = 0xc58, .branchz = 0xc80, .mvp = 0x1c0, .reject_mask = MUT(245, 0x70b0, 0x7030), .load_key = 0x1721044c22f4f0ecull };
 
 /* DMEM dead at the end of a task (docs/design.md, "The F3DEX2 table of dead ranges"; docs/testing.md has the evidence): the display list input buffer (0x920 .. 0x9c8: the microcode's last refill;
  * a lean run reads the list from RDRAM), the clipper's polygon lists (0x3ca .. 0x408) and new vertices (12 records from 0x9c8; the clipper makes them anew for every triangle), the two RDP output buffers

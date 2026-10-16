@@ -59,7 +59,8 @@ The handler pc of an opcode is in the jump table (DMEM 0x36e + 2 int8(op)); a ha
 | `G_SETTIMG` / `G_SETZIMG` / `G_SETCIMG` 0xfd .. 0xff | 0x218 | the segment address resolved, appended |
 | the other RDP commands | 0x208 | appended (2 words); the syncs (0xe6 .. 0xe9, 0x00) 0x20c: only the first word is written, the second is stale scratch |
 | 0x08 `G_LINE3D`, 0xd3, 0xd4, 0xd0, 0xd2, 0xe0 | the loop head | nothing |
-| `G_LOAD_UCODE` 0xdd, `G_DMA_IO` 0xd6 | 0xfac, 0x1b8 | not implemented (the front-end declines the task) |
+| `G_LOAD_UCODE` 0xdd | 0xfac | loads a text (3912 bytes to IMEM 0x80, the data segment to DMEM 0x180) and starts it; the front-end hands it to the interpreter and takes over the build that was loaded when it registered ([design.md](design.md#build-switching-g_load_ucode)), else declines the task |
+| `G_DMA_IO` 0xd6 | 0x1b8 | not implemented (the front-end declines the task) |
 
 ## 3. Vertices
 

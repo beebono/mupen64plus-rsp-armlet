@@ -10,6 +10,7 @@
 
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 #include "hle_f3dex2_int.h"
 #include "s2dex2_fx.h"
@@ -23,7 +24,7 @@ static const struct f2_layout l_lay_s2 = {
     .jump_table = 0x370, .mw_max = 14, .geom_def = F2_GEOM_DEF, .in = 0x418, .in_end = 0x4c0, .moveword_adj = 10374, .out_bytes = 800, .out_toggle = 0xc00,
     .desc_clip = 0x314, .desc_light = 0x31c };       /* the two code overlays of the microcode at IMEM 0x6c8 (sprites, rectangles) and (backgrounds) take the slots of the clipping and lighting overlays */
 
-static const struct f2_pcs l_pcs_s2 = { .dl = 0x054, .texture = 0xfff, .texrect = 0x018, .half1 = 0x01c, .moveword = 0x090, .popmtx = 0xfff, .movemem = 0xfff, .omh = 0x0b4, .oml = 0x0b8 };
+static const struct f2_pcs l_pcs_s2 = { .dl = 0x054, .texture = MUT(248, 0xffff, 0xfff), .texrect = 0x018, .half1 = 0x01c, .moveword = 0x090, .popmtx = 0xffff, .movemem = 0xffff, .omh = 0x0b4, .oml = 0x0b8 };
 static const uint16_t l_ext_s2[][2] = {
     { 0x024, K_S2_SELDL }, { 0x558, K_S2_LOADTXTR }, { 0xb7c, K_S2_BG1CYC }, { 0x210, K_S2_BGCOPY }, { 0x0e8, K_S2_RENDERMODE }, { 0xb88, K_S2_RECT }, { 0x6c8, K_S2_SPRITE },
     { 0x0a4, K_S2_MOVEMEM }, { 0x1d8, K_S2_SCISSOR }, { 0x128, K_S2_HALF2 }, { 0xffff, 0 } };
@@ -58,9 +59,13 @@ static int s2_loadtxtr(struct f3 *f, unsigned *cont, int *neg)
     *cont = (unsigned)c & 0xffc;
     *neg = c < 0;
     t8 = seg_addr(t, w1);
+    if (MUT(241, f3_store_unmodelled(f, 0x3a8, w0 & 255), 0))     /* the object's length is the command's low byte: 24 bytes in a game; up to 256 run over the display list buffer and the state behind it */
+        return hle_decline(t, "S2DEX texture object longer than its buffer");
     f3_dma_rd(f, 0x3a8, t8, w0 & 255);
     at = (int8_t)hle_dm8(t, 0x2ae);
     v1 = hle_dm8(t, 0x3a8 + 15);
+    if (MUT(247, f3_store_unmodelled(f, 0x2b0 + v1, 3), 0))   /* the loaded-texture word of the object's class: the object picks it by a byte, and a word past the two there stores over the microcode's own state (the jump table ...) */
+        return hle_decline(t, "S2DEX texture class outside the state words");
     a3 = s2_lw(t, 0x3a8 + 20);
     a1 = s2_lw(t, 0x3a8 + 16);
     a0 = s2_lw(t, 0x2b0 + v1);
@@ -195,16 +200,16 @@ static int s2_ext_cmd(struct f3 *f, unsigned kind)
         f3_do_dl(f, w0, hle_dm32(t, 0xd0));
         return HLE_OK;
     }
-    case K_S2_LOADTXTR: {
-        unsigned cont;
+    case K_S2_LOADTXTR: {                               /* (the continuation pcs are the 2.08 ones less the build's shift: Kirby 64's text has its handlers from 0x184 on 8 bytes lower) */
+        unsigned cont, sh = MUT(258, 0x1ac - f->b->head, 0);
         int neg, rc;
         int32_t c = s2_lh(t, 0x202 + (w0 >> 23));
-        if (((unsigned)c & 0xffc) == 0x6e8 || (((unsigned)c & 0xffc) == 0xba8 && c < 0))
+        if (((unsigned)c & 0xffc) == 0x6e8 - sh || (((unsigned)c & 0xffc) == 0xba8 - sh && c < 0))
             return hle_decline(t, "S2DEX LDTX_SPRITE / LDTX_RECT_R");
         rc = s2_loadtxtr(f, &cont, &neg);
-        if (rc != HLE_OK || cont == 0x1ac)
+        if (rc != HLE_OK || cont == 0x1ac - sh)
             return rc;
-        if (cont != 0xba8)
+        if (cont != 0xba8 - sh)
             return hle_decline(t, "S2DEX LOADTXTR continuation");
         return s2_rect(f, w1, 0);
     }
@@ -220,8 +225,38 @@ static int s2_ext_cmd(struct f3 *f, unsigned kind)
         if (f->ov != S2_OV_B)
             f3_overlay_load(f, S2_OV_B);                                 /* G_BG_1CYC: the uObjBg (40 bytes) to DMEM 0x3b0, then the background is drawn as strips of texture rectangles */
         f3_dma_rd(f, 0x3b0, seg_addr(t, w1), 39);
+        if (getenv("S2_DUMP_BG1")) {
+            FILE *fp = fopen(getenv("S2_DUMP_BG1"), "ab");
+            if (fp) {
+                uint32_t hdr[3] = { s7, s6, 0 };
+                fwrite(hdr, 4, 3, fp);
+                fwrite(t->dmem, 4, 1024, fp);
+                fclose(fp);
+            }
+        }
         if (s2dex2_obj_bg1cyc(t->dmem, &s7, &s6, &c) != S2_DONE)
             return hle_decline(t, "S2DEX BG_1CYC routine");
+        f->s7 = s7;
+        f->s6 = s6;
+        return HLE_OK;
+    }
+    case K_S2_BGCOPY: {                                 /* G_BG_COPY: the uObjBg (40 bytes) to DMEM 0x3b0, then the background is drawn as strips of texture rectangles (the code is in the resident part: no overlay) */
+        struct s2_ctx c = { f, s2_cb_seg, s2_cb_flush };
+        uint32_t s7 = f->s7, s6 = f->s6;
+        int rc;
+        f3_dma_rd(f, 0x3b0, seg_addr(t, w1), 39);
+        if (getenv("S2_DUMP_BGC")) {
+            FILE *fp = fopen(getenv("S2_DUMP_BGC"), "ab");
+            if (fp) {
+                uint32_t hdr[3] = { s7, s6, 0 };
+                fwrite(hdr, 4, 3, fp);
+                fwrite(t->dmem, 4, 1024, fp);
+                fclose(fp);
+            }
+        }
+        rc = s2dex2_obj_bgcopy(t->dmem, &s7, &s6, &c);
+        if (rc != S2_DONE)
+            return hle_decline(t, "S2DEX BG_COPY routine");
         f->s7 = s7;
         f->s6 = s6;
         return HLE_OK;
@@ -244,13 +279,23 @@ static int s2_ext_cmd(struct f3 *f, unsigned kind)
 }
 
 static const struct f3dex2_build l_b_s2_208 = {
-    .head = 0x1ac, .copy = 0x140, .sync = 0x144, .segcopy = 0x150, .ef = 0x170, .ed = 0xfff, .tri1 = 0, .tri2 = 0, .vtx = 0,
-    .mtx = 0, .geom = 0, .enddl = 0x07c, .half2 = 0xfff, .modvtx = 0, .culldl = 0, .branchz = 0, .reject_mask = 0, .tri4 = 0, .lay = &l_lay_s2, .pcs = &l_pcs_s2, .ext = l_ext_s2, .ext_cmd = s2_ext_cmd };
+    .head = 0x1ac, .copy = 0x140, .sync = 0x144, .segcopy = 0x150, .ef = 0x170, .ed = MUT(248, 0xffff, 0xfff), .tri1 = 0, .tri2 = 0, .vtx = 0,
+    .mtx = 0, .geom = 0, .enddl = 0x07c, .half2 = MUT(248, 0xffff, 0xfff), .modvtx = 0, .culldl = 0, .branchz = 0, .reject_mask = 0, .tri4 = 0, .lay = &l_lay_s2, .pcs = &l_pcs_s2, .ext = l_ext_s2, .ext_cmd = s2_ext_cmd, .load_key = 0xe81031ed857b6664ull };
 
 /* dead at the end of a task: the display list input buffer (0x418 .. 0x4c0; a lean run reads the list from RDRAM) and the two RDP output buffers with their slack (0x4c0 .. 0x890 and 0x8c0 .. 0xc90: 800 bytes each,
  * 0xc00 apart, 0xb0 of slack for the longest command): the handlers write the commands there and the flush DMAs them to the FIFO. */
 static const struct hle_dead_range l_dead_s2[] = { { 0x418, 0x890 }, { 0x8c0, 0xc90 }, { 0xfc8, 0xfcc } };
 #define S2DEAD .ring_off = 0xfe8, .dead = l_dead_s2, .n_dead = sizeof(l_dead_s2) / sizeof(l_dead_s2[0])
+/* Kirby 64's S2DEX (loaded by G_LOAD_UCODE in the middle of the F3DEX2 2.04H tasks: docs/ucode-f3dex2-dialects.md section 5.6): the same microcode as Worms' with its handlers from 0x184 on 8 bytes lower (one
+ * initialisation instruction less, a nop less), the same DMEM layout, constants and overlay code; the continuation pcs of G_OBJ_LOADTXTR are shifted with them (s2_ext_cmd). */
+static const uint16_t l_ext_s2k[][2] = {
+    { 0x024, K_S2_SELDL }, { 0x550, K_S2_LOADTXTR }, { 0xb74, K_S2_BG1CYC }, { 0x208, K_S2_BGCOPY }, { 0x0e8, K_S2_RENDERMODE }, { 0xb80, K_S2_RECT }, { 0x6c0, K_S2_SPRITE },
+    { 0x0a4, K_S2_MOVEMEM }, { 0x1d0, K_S2_SCISSOR }, { 0x128, K_S2_HALF2 }, { 0xffff, 0 } };
+static const struct f3dex2_build l_b_s2_kirby = {
+    .head = 0x1a4, .copy = 0x140, .sync = 0x144, .segcopy = 0x150, .ef = 0x170, .ed = MUT(248, 0xffff, 0xfff), .tri1 = 0, .tri2 = 0, .vtx = 0,
+    .mtx = 0, .geom = 0, .enddl = 0x07c, .half2 = MUT(248, 0xffff, 0xfff), .modvtx = 0, .culldl = 0, .branchz = 0, .reject_mask = 0, .tri4 = 0, .lay = &l_lay_s2, .pcs = &l_pcs_s2, .ext = l_ext_s2k, .ext_cmd = s2_ext_cmd, .load_key = 0x9748556461d85ab3ull };
+HLE_UCODE(l_s2_kirby) = { .id = 0x569252e49c5c6d3bull, .name = "S2DEX fifo 2.08 (Kirby 64, loaded by G_LOAD_UCODE)", .fam = &f3dex2_fam, .fam_data = &l_b_s2_kirby, S2DEAD };
+
 HLE_UCODE(l_s2_208) = { .id = 0xb228360be43c0447ull, .name = "S2DEX fifo 2.08 (Worms Armageddon)", .fam = &f3dex2_fam, .fam_data = &l_b_s2_208, S2DEAD };
 
 #endif
