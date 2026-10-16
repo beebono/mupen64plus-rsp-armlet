@@ -122,6 +122,7 @@ struct hle_task {
     void *priv;                     /* the framework's */
     unsigned start_pc;              /* SP_PC at the start of the task */
     int log;                        /* nonzero: RDRAM writes and RDP register writes are logged for the commit (the task-level run; not the step routine) */
+    int switched;                   /* set by a family that took another build over in the middle of the task (G_LOAD_UCODE): the verify compare of the RDP stream ignores the scratch bytes behind one-byte commands */
 };
 
 /* DMEM accessors (big-endian view). DMEM and RDRAM are arrays of 32-bit words that are also accessed as halfwords and bytes: through types that may alias. */
@@ -182,6 +183,7 @@ int hle_interp_task(struct hle_task *t);
 
 /* the table (hle_core.c) */
 const struct hle_ucode *armlet_hle_find(uint64_t id);
+const struct hle_ucode *armlet_hle_next(const struct hle_ucode *prev);   /* the registered builds in turn (prev NULL: the first); NULL at the end */
 /* the handler dispatch.c calls for a task of a ucode with a table entry (gfx_ucode.c): nonzero when the task was completed natively */
 int armlet_hle_run(struct armlet_ctx *c, const struct armlet_ucode_id *u);
 

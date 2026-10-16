@@ -34,6 +34,10 @@ struct s2_ctx {
 };
 int s2dex2_obj_bg1cyc(uint32_t *dmem, uint32_t *s7, uint32_t *s6, const struct s2_ctx *c);
 
+/* G_BG_COPY (the background in the COPY cycle type, unscaled): the same object at DMEM 0x3b0, the same callbacks; returns S2_DONE, or S2_UNSUPPORTED (nothing written) when the DMEM constants are not those of S2DEX 2.08
+ * or the object is outside what the closed form covers (s2dex2_bg.c). */
+int s2dex2_obj_bgcopy(uint32_t *dmem, uint32_t *s7, uint32_t *s6, const struct s2_ctx *c);
+
 #ifdef __cplusplus
 }
 #endif

@@ -371,14 +371,14 @@ lights (the microcode's lighting loop never ends on it), more than 11 lights, DM
 
 ## F3DEX2 2.04 and 2.04H (docs/ucode-f3dex2-dialects.md, section 5)
 
-Builds `5dce` (F3DEX 2.04: Buck Bumble, Cruis'n World) and `e857` (2.04H: Super Smash Bros.; Kirby 64 declines in every task, section 5.6). Desktop (x86_64) unless said, `GfxMode=hle`, against the reference pairing, 3700 frames (62 s) unless said.
+Builds `5dce` (F3DEX 2.04: Buck Bumble, Cruis'n World) and `e857` (2.04H: Super Smash Bros.; Kirby 64 loads S2DEX in every task: it declined then, section 5.6 and the next section). Desktop (x86_64) unless said, `GfxMode=hle`, against the reference pairing, 3700 frames (62 s) unless said.
 
 | check | result |
 |---|---|
 | equivalence gates, `ref`, `armlet-hle` and `armlet` (default) | Buck Bumble, Cruis'n World, Super Smash Bros., Kirby 64: hash stream, state stream, 6 screenshots, audio identical in both pairs |
 | `ARMLET_HLE_VERIFY=1` (and with `ARMLET_HLE_EXACT=1`), 3700 f | Buck Bumble 3711 tasks, Cruis'n World 1663, Super Smash Bros. 3327: 0 differences, 0 declined; equivalence PASS each |
 | `ARMLET_HLE_VERIFY=1`, 12000 f | Buck Bumble 11967 tasks, Cruis'n World 5695, Super Smash Bros. 10559: 0 differences |
-| share of the graphics tasks of the 3700 frames that ran natively | Buck Bumble 3711 of 3712, Cruis'n World 1663 of 1664, Super Smash Bros. 3327 of 3328 (the first task of a run never is), Kirby 64 0 of 1792 (692 + 11 declines per 1500 frames: section 5.6) |
+| share of the graphics tasks of the 3700 frames that ran natively | Buck Bumble 3711 of 3712, Cruis'n World 1663 of 1664, Super Smash Bros. 3327 of 3328 (the first task of a run never is), Kirby 64 0 of 1792 then (692 + 11 declines per 1500 frames), 1791 of 1792 with the build switching (next section) |
 | `ARMLET_HLE_POISON=1`, `ARMLET_DMEM_POISON=mask`, `=all`, `=ring` | `POISON=1` and `mask` PASS (hash included) in all three; `all`: state, pictures and audio identical (hash differs by design); `ring` PASS in Buck Bumble and Cruis'n World; in Super Smash Bros. the hash differs (first at call 1165) **with the JIT alone** (`ARMLET_UCODES=1`), state, pictures and audio identical: the game reads its ring (not the front-end) |
 | regression, 3700 f, `ref` against `armlet-hle` | Paper Mario, Dr. Mario 64, Banjo-Kazooie, Conker's Bad Fur Day, Worms Armageddon, Super Mario 64: identical (hash, state, screenshots, audio) |
 | captured task starts, recorded JIT result: x86_64, aarch64 under qemu NEON, aarch64 under qemu scalar (`scripts/build.sh aarch64 --tools [--scalar]`) | Buck Bumble 150 of 150, Cruis'n World 337 of 337 (every task of the first 900 frames), Super Smash Bros. 150 of 150, Donkey Kong 64 55 of 55; the same on all three |
@@ -462,6 +462,40 @@ identical (the hash stream differs by design); `ARMLET_HLE_POISON=1` (the regist
 microcode uses as scratch; `rsp_shim.c` took the task's ucode from that header after the call, so the first version of this test failed on the hash stream; the shim identifies the task before the call
 now (it reads the header the core wrote). Without 0xfc0 - 0xfd0 in the list the native result differs from the JIT's in those 16 bytes, so the range stays. Diddy Kong Racing and Jet Force Gemini:
 `=mask,ring` PASS.
+
+## Build switching, G_BG_COPY and the S2DEX dialect (docs/design.md, "Build switching"; docs/ucode-s2dex2.md section 3c)
+
+The F3DEX2 front-end follows a `G_LOAD_UCODE` to another registered build and back (Kirby 64: F3DEX2 2.04H -> S2DEX 2.08 -> 2.04H, in every task), and S2DEX `G_BG_COPY` is a closed form. Desktop (x86_64) unless said, `GfxMode=hle` against the reference pairing.
+
+| check | result |
+|---|---|
+| native share of Kirby 64's graphics tasks (`ARMLET_HLE_STATS`) | 3700 frames: 1791 of 1792 (was 0 of 1792; the first task of a run never is), 0 declined; 12 000 frames: 5887 of 5888 |
+| captured task starts of Kirby 64 (90, first 1500 frames), recorded JIT result: x86_64, aarch64 NEON and scalar under qemu | 90 of 90 equal on all three, 0 declined (before: 90 declined; 65 of the 90 contain a `G_BG_COPY`, one set of parameters) |
+| x86 front-end time against the JIT (`armlet-native-replay --bench 200`, the 90 tasks) | 7.8 ms against 25.6 ms: 3.28 times the JIT's speed (1.3 times for the smallest task, 3.8 times for one of 1.2 ms of JIT time) |
+| equivalence gates, 3700 frames, `ref` against `armlet-hle` (`GfxMode=hle`) and `armlet` (default): hash stream, state stream, 6 screenshots, audio | identical, both pairs: Kirby 64, Donkey Kong 64, Ocarina of Time, Paper Mario, Banjo-Kazooie, Super Mario 64, Conker, Worms, Super Smash Bros., Buck Bumble, F-Zero X |
+| Kirby 64, 3700 frames, variants | `ARMLET_HLE_VERIFY=1`: 1791 tasks compared, 0 differences; `+ ARMLET_HLE_EXACT=1`: 1791, 0; `ARMLET_HLE_POISON=1`, `ARMLET_DMEM_POISON=mask`, `=ring`: PASS (hash included); `=all`: state, pictures and audio identical, hash differs by design (as in every build) |
+| `ARMLET_HLE_VERIFY=1`, 12 000 frames | Kirby 64 5887 tasks, Super Smash Bros. 10 559, Buck Bumble 11 967, Cruis'n World 5695, Conker 4927, Ocarina of Time 586: 0 differences |
+| share of the graphics tasks that ran natively, 3700 frames, before -> after | Kirby 64 0 -> 1791 of 1792; Ocarina of Time 544 of 1472 -> 544 (S2DEX 2.06: not registered, 918 + 9 declines); F-Zero X 1 of 1920 -> 1 (F3DLX.Rej: not a build); Conker 1215 of 1216, Worms 2879 of 2880, Super Smash Bros. 3327 of 3328, Buck Bumble 3711 of 3712: unchanged |
+| synthetic tasks crossing a load (`tools/hle/mksyn_ex2.py load`: triangles, `G_RDPHALF_1` + `G_LOAD_UCODE` to S2DEX, scissor / render mode / sprites / backgrounds in 1-cycle and COPY mode / texture loads / display list selection / undefined opcodes, `G_LOAD_UCODE` back, triangles), JIT run from the same state, 400 seeds | x86_64 309 equal, 0 differ, 91 declined (the poll limit of loops the random objects make, undefined opcodes); aarch64 NEON and scalar under qemu (300 seeds): 262 equal, 0 differ, 38 declined, the same |
+| synthetic tasks with fully random matrices (`mksyn_ex2.py mtx`, 300 seeds), x86, NEON, scalar | 299 equal, 0 differ, 1 declined on all three |
+| perturbed copies of the captured Kirby 64 tasks (`tools/rsp2c/fuzz_snaps.py`, `FUZZ_DONOR`: 9 seeds x 30 copies of each of the 90 tasks, 24 300 files), `--oracle`, x86 | 2232 equal, 0 mismatches, 22 068 declined (undefined opcodes, indices and vertex numbers outside what a game writes, the poll limit), 0 hangs |
+| aimed perturbations (`fuzz_cmds.py`: the opcodes 01 04 05 06 07 08 09 0a 0b dd e1 ed x the fields w0lo, w0mid, w1lo, 8 copies of each of the tasks that contain the opcode: 36 sets, 21 480 files), `--oracle`, x86 | 14 902 equal, 0 mismatches, 6578 declined, 0 hangs |
+| the same, 5 sets under qemu NEON and scalar | identical to x86 (equal / declined counts) |
+| older perturbed sets of other games (Worms x4, Conker x4, Super Smash Bros. x4, Buck Bumble x4, Cruis'n World x4: 53 000 files) with this build | 15 958 equal, 0 mismatches (6 hangs of the JIT, as before) |
+| G_BG_COPY closed form against the microcode (`tools/hle/test_s2dex2.c`, `S2BGC_ORACLE=tools/hle/oracle/bgcopy_gen.inc`, the rsp2c translation of Kirby 64's 0x224 .. 0x54c; random DMEM images with random stale vector registers) | 1 500 000 cases, 0 failures (56 930 backgrounds drawn, 210 857 outside the scissor, the rest declined by the domain); 600 000 cases (22 833 drawn) against the translation of Worms' build (`S2BGC_ENTRY=0x22c S2BGC_END=0x1ac`), 0 failures; 100 000 cases under qemu-aarch64, 0 failures |
+| S2DEX `G_BG_1CYC` against its oracle after the format / texel size guard was corrected (`S2BG_ORACLE`, `S2RECT_ORACLE` regenerated from Worms' end-of-task IMEM) | 4 differences in 200 000 cases, all "the translation stops at 0xfc8" (the microcode waits for a DMA that the closed form does not model); the unchanged devel code gives 2 of the same kind |
+| builds: `scripts/build.sh native`, `aarch64`, `rg35xxsp` (`RG35_TOOLCHAIN`), `--tools`, `--tools --scalar` | succeed; no new warning in `src/` or `tools/`; the rg35xxsp module needs GLIBC_2.17 |
+
+**Mutations** (`tools/hle/mutcheck_switch.sh`; deliberate error N, `scripts/build.sh native --tools --hmut=N`; caught = more snapshots mismatch or are declined than with the unmutated build): 240 (a display list address that is not 8-aligned), 241 / 247 (the texture object longer than its
+buffer / a class byte that stores outside the state words), 249 (the poll count reset at a load), 250 (the load key ignored), 252 / 253 / 256 / 257 (the layout, the classification, the end pc, the overlay not taken over by `f3_bind`), 254 (the text address not updated: a second load back is taken for the same text), 255 (the stop pc of the old build),
+258 (the continuation pcs of Kirby 64's `G_OBJ_LOADTXTR`), 259 (`G_BRANCH_Z` of 2.04 / 2.04H) are caught by the 10 050 captured and perturbed Kirby 64 snapshots (`--oracle`: 240 by 1, 241 by 5, 247 by 2, 249 by 1, 257 by 2173, 259 by 10 mismatches, the others by declines); 251 (the last display list chunk
+put in the input buffer) only by the recorded results (40 of the 90 tasks differ in the stale bytes behind a sync; with `--oracle` the relaxed stream compare of a task that switched ignores them), 248 (the "no such command" marker 0xfff of the S2DEX tables) by the synthetic tasks (48 of 400 seeds differ). All 40 mutations of `G_BG_COPY` (260 .. 299)
+are caught: 25 by the 90 captured tasks (65 of them mismatch), 15 (262 .. 266, 271, 272, 275, 279, 283, 290 .. 292, 294, 299) only by the random test against the microcode (3 to 3826 failures in 100 000 cases).
+
+**What fuzzing the switching tasks found**, all outside the games' lists and all fixed or declined: `G_BRANCH_Z` of F3DEX2 2.04 / 2.04H compared the clip w (259); the S2DEX builds' "no such command" markers (0xfff) equalled the 0x0fff entries of the jump table (248); the SP_STATUS poll count was reset at a reload,
+so a task that spins on the JIT's 32767-poll limit after a load ran on in the front-end (249); a display list address that is not 8-aligned (240); a `G_OBJ_LOADTXTR` whose object is longer than its buffer or whose class byte stores over the jump table (241, 247); the stale bytes behind a one-byte sync (the 7 bytes the
+microcode leaves in its output buffer) came from the display list chunk in the input buffer, from the clipper's new vertices and from the triangle setup's scratch: the first is put in DMEM at a switch (251), the others are not kept by the front-end and are zeroed in the stream compare of a task that switched (`hash_r`).
+The oracle (`--oracle`) needs the code of the overlays and the other microcode in the snapshot's RDRAM; a task that did not load them has zeros there, which the JIT executes and the front-end (that takes an overlay for what its build says) does not: `FUZZ_DONOR=<snapshot>` adds those rows to a perturbed set (`tools/rsp2c/make_donor.py` builds the donor from a task and the static rows of the others).
 
 ## Regenerating the microcode oracles
 
