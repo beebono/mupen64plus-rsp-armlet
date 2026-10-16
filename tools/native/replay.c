@@ -15,6 +15,7 @@
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
 #include <inttypes.h>
+#include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -169,6 +170,21 @@ static int replay(const char *path, unsigned bench)
                 ((uint8_t *)before.dmem)[(a & 0xfff) ^ 3] = (uint8_t)v;
                 q += n;
                 if (*q == ',')
+                    q++;
+            }
+        }
+        if (getenv("HLE_PATCH")) {              /* HLE_PATCH=addr:hexbytes;addr:hexbytes (hex): RDRAM bytes written before the task runs (tools/f3d/mksyn.py, tools/hle/mksyn_ex2.py: synthetic display lists; use --oracle) */
+            const char *q = getenv("HLE_PATCH");
+            unsigned a;
+            int n;
+            while (sscanf(q, "%x:%n", &a, &n) == 1) {
+                q += n;
+                while (isxdigit((unsigned char)q[0]) && isxdigit((unsigned char)q[1])) {
+                    char hx[3] = { q[0], q[1], 0 };
+                    W.rdram[(a++ & 0x7fffff) ^ 3] = (uint8_t)strtoul(hx, NULL, 16);
+                    q += 2;
+                }
+                if (*q == ';')
                     q++;
             }
         }
