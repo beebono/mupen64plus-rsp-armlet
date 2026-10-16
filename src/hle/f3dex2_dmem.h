@@ -16,18 +16,57 @@
 #include "hle.h"
 #include "hle_fx.h"
 
-/* the layout: the same in the four builds */
-enum {
-    F2_MV = 0x00, F2_P = 0x40, F2_MVP = 0x80,                  /* the matrices: 16 integer halfwords, then 16 fractions */
-    F2_PERSP_NORM = 0xdc, F2_VIEWPORT_SCALE = 0xe0, F2_VIEWPORT_TRANS = 0xe8,
-    F2_CLIP_RATIO = 0x186, F2_CONST31 = 0x1b0, F2_CONST30 = 0x1c0,
-    F2_FOG_MUL = 0x1e0, F2_FOG_OFS = 0x1e2, F2_TEXTURE = 0x1e4, F2_TEX_SCALE_S = 0x1e8, F2_TEX_SCALE_T = 0x1ea, F2_GEOM = 0x1ec,
-    F2_MVP_VALID = 0x1d9, F2_LIGHTS_VALID = 0x1dc, F2_LIGHTS_SIZE = 0x1dd,
-    F2_LIGHT_RAW = 0x1f8, F2_LIGHT_BASE = 0x200, F2_LIGHT_STRIDE = 24,
-    F2_VTAB = 0x380, F2_VSLOT0 = 0x420, F2_VSTRIDE = 0x28,
-    F2_CLIPMASK = 0x3cc, F2_CULLTAB = 0x3c2,
-    F2_IN = 0x920, F2_IN_END = 0x9c8, F2_IN_REFILL = 168
+/* The layout. The four standard builds share it; a dialect that moved the microcode's DMEM state (F3DEXBG) has its own instance (hle_f3dex2.c sets f2L per task). The members are
+ * DMEM addresses; the F2_ names are the ones the rest of the front-end uses. */
+struct f3;
+struct f2_layout {
+    uint16_t mv, p, mvp;
+    uint16_t persp_norm, viewport_scale, viewport_trans;
+    uint16_t clip_ratio, const31, const30;
+    uint16_t fog_mul, fog_ofs, texture, tex_scale_s, tex_scale_t, geom;
+    uint16_t mvp_valid, lights_valid, lights_size;
+    uint16_t light_raw, light_base;
+    uint16_t tg;                    /* the three texture-generation polynomial constants */
+    uint16_t light_scale, light_scale_zex;
+    uint16_t vtab, clipmask, culltab;
+    uint16_t in, in_end;
+    uint16_t jump_table;
+    uint16_t movemem_tab;           /* halfword table by (w0 & 0xfe): destination, and +2 the second address of G_MTX */
+    uint16_t moveword_adj;          /* the microcode's index arithmetic of G_MOVEWORD: table address = (w0 >> 16) + this, mod 0x1000 */
+    uint16_t desc_light, desc_clip;
+    uint16_t clip_planes, clip_masks;
+    uint16_t out_bytes, out_toggle;
+    uint8_t no_lit;                 /* the build's lighting code is another (F3DEXBG's 48-byte light slots): lit vertex commands do not use the standard lighting */
+    int (*lit_vtx)(struct f3 *f);   /* ... they are run by this instead (the whole G_VTX), or decline when NULL */
 };
+extern const struct f2_layout *f2L;
+
+#define F2_MV (f2L->mv)
+#define F2_P (f2L->p)
+#define F2_MVP (f2L->mvp)
+#define F2_PERSP_NORM (f2L->persp_norm)
+#define F2_VIEWPORT_SCALE (f2L->viewport_scale)
+#define F2_VIEWPORT_TRANS (f2L->viewport_trans)
+#define F2_CLIP_RATIO (f2L->clip_ratio)
+#define F2_CONST31 (f2L->const31)
+#define F2_CONST30 (f2L->const30)
+#define F2_FOG_MUL (f2L->fog_mul)
+#define F2_FOG_OFS (f2L->fog_ofs)
+#define F2_TEXTURE (f2L->texture)
+#define F2_TEX_SCALE_S (f2L->tex_scale_s)
+#define F2_TEX_SCALE_T (f2L->tex_scale_t)
+#define F2_GEOM (f2L->geom)
+#define F2_MVP_VALID (f2L->mvp_valid)
+#define F2_LIGHTS_VALID (f2L->lights_valid)
+#define F2_LIGHTS_SIZE (f2L->lights_size)
+#define F2_LIGHT_RAW (f2L->light_raw)
+#define F2_LIGHT_BASE (f2L->light_base)
+#define F2_VTAB (f2L->vtab)
+#define F2_CLIPMASK (f2L->clipmask)
+#define F2_CULLTAB (f2L->culltab)
+#define F2_IN (f2L->in)
+#define F2_IN_END (f2L->in_end)
+enum { F2_LIGHT_STRIDE = 24, F2_VSTRIDE = 0x28, F2_IN_REFILL = 168 };
 
 static inline uint16_t f2_bswap16(uint16_t v) { return (uint16_t)(v >> 8 | v << 8); }
 
@@ -167,7 +206,7 @@ static inline void f2_ld_vctx(const struct hle_task *t, struct fx2_vctx *c)
     c->c31_3 = hle_dm16(t, F2_CONST31 + 6);
     c->c31_7 = (int16_t)hle_dm16(t, F2_CONST31 + 14);
     for (k = 0; k < 3; k++)
-        c->tg[k] = (int16_t)hle_dm16(t, 0x1d0 + 2 * k);
+        c->tg[k] = (int16_t)hle_dm16(t, f2L->tg + 2 * k);
     c->mode = hle_dm16(t, F2_GEOM) & 15u;
 }
 

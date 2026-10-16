@@ -261,7 +261,7 @@ unsigned fx2_tri_attrs_neon(const struct fx2_tri_in *in, const struct fx2_tri_st
         ze.f = (uint16_t)(dE7.f * 32);
         a = (hle_acc)(((uint32_t)v10 * 32) >> 16) + (hle_acc)st7.f * 32 + (((hle_acc)st7.i * 32) << 16);
         zst.i = hle_sclamp(a);
-        zst.f = hle_uclamp(a);
+        zst.f = hle_uclamp(a - (((hle_acc)st7.i * 32) << 16));      /* before the integer product (see f3dex2_fx.c) */
         {
             uint16_t zv[8] = { (uint16_t)zst.i, zst.f, (uint16_t)zx.i, zx.f, (uint16_t)ze.i, ze.f, (uint16_t)zy.i, zy.f };
             vst1q_u16((uint16_t *)((uint8_t *)cmd + o), vrev32q_u16(vld1q_u16(zv)));

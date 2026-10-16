@@ -17,3 +17,9 @@
 /tools/ucodemap/rspdis
 __pycache__/
 /tools/hle/out/
+
+# generated microcode oracles: tools/rsp2c.py translations and the instruction-level references (ROM-derived; docs/testing.md, "Regenerating the microcode oracles")
+*_gen.inc
+gen_*.inc
+oracle/
+/tools/hle/oracle/

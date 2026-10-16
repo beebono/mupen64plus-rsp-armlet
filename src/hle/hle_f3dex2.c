@@ -54,6 +54,8 @@ static void prof_dump(void)
 }
 
 /* ---- the builds ------------------------------------------------------------------------------------------------------------------------------------------------------------------ */
+struct f3;
+struct f2_pcs;
 struct f3dex2_build {
     uint16_t head;                  /* the command loop: mfc0 at (the fetch of the next command) */
     uint16_t copy, sync, segcopy;   /* handlers: copy a command to the RDP buffer / copy only its first word / resolve the segment address, then copy */
@@ -63,21 +65,44 @@ struct f3dex2_build {
     uint16_t mvp;                   /* a handler that concatenates the matrices now (G_SPECIAL_1 of F3DEX.NoN 2.08H), or 0 */
     unsigned zex;                   /* F3DZEX: other lanes of the constant vectors, no mask on the slope fractions */
     uint32_t reject_mask;           /* a triangle whose three clip-flag words have a common bit in this mask is rejected */
+    uint16_t tri4;                  /* G_TRI4 (F3DEXBG): four triangles in one command, or 0 */
+    const struct f2_layout *lay;    /* the DMEM layout when it is not the standard one */
+    const struct f2_pcs *pcs;       /* the handlers of the commands below 0x170 when they are not at the standard pcs (S2DEX), or NULL */
+    const uint16_t (*ext)[2];       /* dialect commands: { handler pc, kind (>= K_EXT) } pairs ending in { 0xffff, 0 }, run by ext_cmd */
+    int (*ext_cmd)(struct f3 *f, unsigned kind);
 };
 
 /* The handlers below 0x170 sit at the same pcs in all the builds: the display list stack, the state words the other handlers read, the other-mode registers */
 enum { PC_DL = 0x000, PC_TEXTURE = 0x028, PC_TEXRECT = 0x02c, PC_HALF1 = 0x030, PC_MOVEWORD = 0x038, PC_POPMTX = 0x04c, PC_MOVEMEM = 0x120, PC_OMH = 0x13c, PC_OML = 0x140 };
 
+/* the handler pcs of the commands the standard builds share (PC_*), for a build that has them elsewhere; 0xffff: the build has no such command */
+struct f2_pcs {
+    uint16_t dl, texture, texrect, half1, moveword, popmtx, movemem, omh, oml;
+};
+enum { K_EXT = 0x40 };                                  /* kinds from here on belong to a dialect (ext_cmd) */
+
 enum { K_BAD = 0, K_NOP, K_DL, K_ENDDL, K_TEXTURE, K_TEXRECT, K_HALF1, K_HALF2, K_MOVEWORD, K_MOVEMEM, K_OMH, K_OML, K_GEOM, K_COPY, K_SYNC, K_SEGCOPY, K_EF, K_ED, K_VTX, K_MTX, K_POPMTX,
-       K_TRI1, K_TRI2, K_MODVTX, K_CULLDL, K_BRANCHZ, K_MVP };
+       K_TRI1, K_TRI2, K_MODVTX, K_CULLDL, K_BRANCHZ, K_MVP, K_TRI4, K_LOADUCODE };
 
 /* DMEM layout (the same in all the builds): jump table at 0x36e by opcode; segments at 0xf8; RDP FIFO pointer 0xf0, FIFO bounds 0xfe8 / 0xfec; the display list stack depth at 222 (x4) and
  * the stack at 0x138; the RDP buffers: two of 344 bytes, s7 the write pointer, s6 the end of the current one (xor 0x208 toggles) */
-enum { JUMP_TABLE = 0x36e, SEGMENTS = 0xf8, FIFO_PTR = 0xf0, FIFO_START = 0xfe8, FIFO_END = 0xfec, OUT_BYTES = 344, OUT_TOGGLE = 0x208, DL_DEPTH = 222, DL_STACK = 0x138,
+enum { SEGMENTS = 0xf8, FIFO_PTR = 0xf0, FIFO_START = 0xfe8, FIFO_END = 0xfec, DL_DEPTH = 222, DL_STACK = 0x138,
        SIG0 = 0x80, DPC_BUSY_BIT = 0x400, POLL_LIMIT = 30000 };
 
+/* the standard layout: F3DEX2, F3DEX2.NoN, F3DZEX in all their versions (the offsets in docs/ucode-f3dex2.md) */
+static const struct f2_layout l_lay_std = {
+    .mv = 0x00, .p = 0x40, .mvp = 0x80, .persp_norm = 0xdc, .viewport_scale = 0xe0, .viewport_trans = 0xe8, .clip_ratio = 0x186, .const31 = 0x1b0, .const30 = 0x1c0,
+    .fog_mul = 0x1e0, .fog_ofs = 0x1e2, .texture = 0x1e4, .tex_scale_s = 0x1e8, .tex_scale_t = 0x1ea, .geom = 0x1ec, .mvp_valid = 0x1d9, .lights_valid = 0x1dc, .lights_size = 0x1dd,
+    .light_raw = 0x1f8, .light_base = 0x200, .tg = 0x1d0, .light_scale = 0x1c6, .light_scale_zex = 0x1ce, .vtab = 0x380, .clipmask = 0x3cc, .culltab = 0x3c2, .in = 0x920, .in_end = 0x9c8,
+    .jump_table = 0x36e, .movemem_tab = 0x2f0, .moveword_adj = 10238, .desc_light = 0x410, .desc_clip = 0x418, .clip_planes = 0x180, .clip_masks = 0x3f8, .out_bytes = 344, .out_toggle = 0x208 };
+const struct f2_layout *f2L = &l_lay_std;
+
 enum { OV_CLIP = 0, OV_LIGHT = 1, OV_UNKNOWN = 2 };
-enum { DESC_LIGHT = 0x410, DESC_CLIP = 0x418, OV_LO = 0x2d0 };
+#define JUMP_TABLE (f2L->jump_table)
+#define OUT_BYTES (f2L->out_bytes)
+#define OUT_TOGGLE (f2L->out_toggle)
+#define DESC_LIGHT (f2L->desc_light)
+#define DESC_CLIP (f2L->desc_clip)
 
 struct f3 {
     struct hle_task *t;
@@ -93,6 +118,8 @@ struct f3 {
     int lean;                       /* the external-effects mode: no DMA the effects do not need (the display list and the vertices are read from RDRAM, the overlays are loaded once at the end) */
     int ov0;                        /* the overlay IMEM held at the start */
     int trace, watch;
+    uint32_t uc0;                   /* OSTask.ucode at the start (the text this run is for) */
+    unsigned ho_pc;                 /* where the interpreter takes over when the loop hands the task back: the G_ENDDL handler, or 0xfac (G_LOAD_UCODE) */
     uint16_t wval;
     unsigned ncmd;
     uint32_t total;
@@ -132,7 +159,7 @@ static int flush(struct f3 *f)
         hle_rdram_write(t, cur, &t->dmem[(f->s6 - OUT_BYTES) >> 2], n);
     else
         hle_dma_write(t, f->s6 - OUT_BYTES, cur, n - 1);
-    f->s6 ^= MUT(3, OUT_TOGGLE, 0x200);
+    f->s6 ^= MUT(3, OUT_TOGGLE, OUT_TOGGLE ^ 8);
     f->s7 = f->s6 - OUT_BYTES;
     return HLE_OK;
 }
@@ -215,10 +242,19 @@ static int cmd_vtx(struct f3 *f)
 
     if (n == 0 || n > 32)
         return hle_decline(t, "G_VTX with an unusual count");
+    if (lit && f2L->no_lit) {
+        if (!f2L->lit_vtx)
+            return hle_decline(t, "lit vertices of a build with another light layout");
+        return f2L->lit_vtx(f);
+    }
     if (lit) {
         unsigned lb = hle_dm8(t, F2_LIGHTS_SIZE);
         if (!(lb >= F2_LIGHT_STRIDE && lb % F2_LIGHT_STRIDE == 0 && lb <= 7 * F2_LIGHT_STRIDE))
-            return hle_decline(t, "light count");
+        {
+            static char why[48];
+            snprintf(why, sizeof(why), "light count %u", lb);
+            return hle_decline(t, why);
+        }
         if (f->ov == OV_UNKNOWN)
             return hle_decline(t, "unknown overlay");
         if (!hle_dm8(t, F2_LIGHTS_VALID)) {             /* the lights have changed since the last lit vertex command: the lighting overlay's setup code */
@@ -229,7 +265,7 @@ static int cmd_vtx(struct f3 *f)
             for (m = 0; m <= nl + 1; m++)
                 for (j = 0; j < 3; j++)
                     raw[m][j] = (int8_t)hle_dm8(t, F2_LIGHT_RAW + F2_LIGHT_STRIDE * m + j);
-            fx2_light_setup(&mv, raw, nl, (int16_t)hle_dm16(t, f->b->zex ? 0x1ce : 0x1c6), o);
+            fx2_light_setup(&mv, raw, nl, (int16_t)hle_dm16(t, f->b->zex ? f2L->light_scale_zex : f2L->light_scale), o);
             hle_st8(t, F2_LIGHTS_VALID, (uint8_t)w0);
             for (m = 0; m <= nl + 1; m++)
                 for (j = 0; j < 3; j++) {
@@ -275,7 +311,7 @@ static int cmd_mtx(struct f3 *f)
 {
     struct hle_task *t = f->t;
     uint32_t w0 = f->w0, w1 = f->w1;
-    unsigned at = w0 & 0xfe, len = (w0 >> 16) & 0xff, dst = hle_dm16(t, 0x2f0 + at), k;
+    unsigned at = w0 & 0xfe, len = (w0 >> 16) & 0xff, dst = hle_dm16(t, f2L->movemem_tab + at), k;
     if (!((w0 & 0xfe) < 8 && ((w0 >> 5) & 0x1fff) == 0))
         return hle_decline(t, "G_MTX with an unusual index");
     if ((w0 & 5) == 0) {                                /* push: the current modelview matrix goes to the matrix stack in RDRAM (pointer at 0xf4, which moves up by 64) */
@@ -287,7 +323,7 @@ static int cmd_mtx(struct f3 *f)
         hle_st8(t, F2_MVP_VALID + k, 0);                /* the MVP matrix and the lights are stale */
     dma_rd(f, dst, seg_addr(t, w1), len);
     if (!(w0 & 2)) {                                    /* multiply: new x current */
-        unsigned d = hle_dm16(t, 0x2f2 + at);
+        unsigned d = hle_dm16(t, f2L->movemem_tab + 2 + at);
         struct fx2_mtx a, b, r;
         f2_ld_mtx(t, MUT(16, dst, d), &a);
         f2_ld_mtx(t, MUT(16, d, dst), &b);
@@ -311,7 +347,7 @@ static int cmd_popmtx(struct f3 *f)
         return hle_decline(t, "G_POPMTX with an unusual index");
     for (k = 0; k < 4; k++)
         hle_st8(t, F2_MVP_VALID + k, 0);
-    dma_rd(f, hle_dm16(t, 0x2f0 + at), ns, (w0 >> 16) & 0xff);
+    dma_rd(f, hle_dm16(t, f2L->movemem_tab + at), ns, (w0 >> 16) & 0xff);
     return HLE_OK;
 }
 
@@ -400,8 +436,8 @@ static int do_clip(struct f3 *f, const struct fx2_vtx *const v[3])
     for (p = 0; p < 6; p++) {
         unsigned a1 = 20 - 4 * p;
         for (k = 0; k < 4; k++)
-            cc.plane[p][k] = (int16_t)hle_dm16(t, 0x180 + 2 * a1 + 2 * k);
-        cc.mask[p] = hle_dm32(t, 0x3f8 + a1);
+            cc.plane[p][k] = (int16_t)hle_dm16(t, f2L->clip_planes + 2 * a1 + 2 * k);
+        cc.mask[p] = hle_dm32(t, f2L->clip_masks + a1);
     }
     if (fx2_clip_tri(&cc, v, co))
         return hle_decline(t, "clipper: too many vertices");
@@ -445,6 +481,22 @@ static int do_tri(struct f3 *f, uint32_t word)
     return do_clip(f, vp);
 }
 
+/* G_DL: w1 resolved through the segment table; a call (bit 16 of w0 clear) pushes the address of the next command on the display list stack, a branch does not; then the list is refilled from the target */
+static void do_dl(struct f3 *f, uint32_t w0, uint32_t w1)
+{
+    struct hle_task *t = f->t;
+    unsigned d = hle_dm8(t, DL_DEPTH);
+    uint32_t ret = f->k0 + f->k1, target = seg_addr(t, w1);
+    if (f->trace)
+        fprintf(stderr, "  DL depth=%u ret=%08x target=%08x\n", d, ret, target);
+    if ((int32_t)(w0 << 15) >= 0) {
+        hle_st32(t, DL_STACK + d, ret);
+        hle_st8(t, DL_DEPTH, (uint8_t)(d + 4));
+    }
+    f->k0 = target;
+    refill(f);
+}
+
 static int run_loop(struct f3 *f, int *handover)
 {
     struct hle_task *t = f->t;
@@ -478,22 +530,26 @@ static int run_loop(struct f3 *f, int *handover)
         switch (kd) {
         case K_NOP:
             break;
-        case K_DL: {
-            unsigned d = hle_dm8(t, DL_DEPTH);
-            uint32_t ret = f->k0 + f->k1, target = seg_addr(t, w1);
-            if ((int32_t)(w0 << 15) >= 0) {             /* a call: the return address goes on the stack (bit 16 set: a branch) */
-                hle_st32(t, DL_STACK + d, ret);
-                hle_st8(t, DL_DEPTH, (uint8_t)(d + 4));
-            }
-            f->k0 = target;
-            refill(f);
+        case K_DL:
+            do_dl(f, w0, w1);
             break;
-        }
         case K_ENDDL:
             rc = do_enddl(f, handover);
             if (*handover)
                 return rc;
             break;
+        case K_LOADUCODE: {                             /* the microcode's own code (on the interpreter) loads a ucode text and data and starts it; the same text is a re-initialisation, any other declines */
+            uint32_t src = w1 & 0x7ffff8, cur = f->uc0 & 0x7ffff8;
+            if (src + 0xf48 > 0x800000 || cur + 0xf48 > 0x800000 || memcmp(t->rdram + src, t->rdram + cur, 0xf48))
+                return hle_decline(t, "G_LOAD_UCODE of another ucode");
+            f->ho_pc = 0xfac;
+            if (f->lean) {                              /* the stub reads the command's second word from the input buffer */
+                hle_st32(t, F2_IN_END + f->k1 - 8, w0);
+                hle_st32(t, F2_IN_END + f->k1 - MUT(66, 4, 8), w1);
+            }
+            *handover = 1;
+            return HLE_OK;
+        }
         case K_GEOM:
             hle_st32(t, F2_GEOM, (hle_dm32(t, F2_GEOM) & w0) | w1);
             break;
@@ -517,14 +573,14 @@ static int run_loop(struct f3 *f, int *handover)
             rc = after_emit(f);
             break;
         case K_MOVEWORD:
-            addr = (hle_dm8(t, ((w0 >> 16) + 10238) & 0xfff) << 8 | hle_dm8(t, ((w0 >> 16) + 10239) & 0xfff)) + w0;
+            addr = (hle_dm8(t, ((w0 >> 16) + f2L->moveword_adj) & 0xfff) << 8 | hle_dm8(t, ((w0 >> 16) + f2L->moveword_adj + 1) & 0xfff)) + w0;
             hle_st8(t, addr, (uint8_t)(w1 >> 24));
             hle_st8(t, addr + 1, (uint8_t)(w1 >> 16));
             hle_st8(t, addr + 2, (uint8_t)(w1 >> 8));
             hle_st8(t, addr + 3, (uint8_t)w1);
             break;
         case K_MOVEMEM: {
-            unsigned dst = hle_dm16(t, 0x2f0 + (w0 & 0xfe)) + (w0 >> 5);
+            unsigned dst = hle_dm16(t, f2L->movemem_tab + (w0 & 0xfe)) + (w0 >> 5);
             dma_rd(f, dst, seg_addr(t, w1), (w0 >> 16) & 0xff);
             break;
         }
@@ -584,6 +640,17 @@ static int run_loop(struct f3 *f, int *handover)
         case K_MVP:
             do_mtx_mul_mvp(f, w0);
             break;
+        case K_TRI4: {                                  /* four triangles: vertex numbers x 2 in 6-bit fields; the last one's third is split between the words */
+            uint32_t g = w1, tw[4];
+            tw[0] = ((g >> 24) & 62) << 16 | ((g >> 19) & 62) << 8 | ((g >> 14) & 62);
+            tw[1] = ((g >> 9) & 62) << 16 | ((g >> 4) & 62) << 8 | ((g << 1) & 62);
+            tw[2] = ((w0 >> 9) & 62) << 16 | ((w0 >> 4) & 62) << 8 | ((w0 << 1) & 62);
+            tw[3] = ((w0 >> 22) & 62) << 16 | ((w0 >> 17) & 62) << 8 | (((w0 >> 12) & 56) | ((g >> MUT(65, 29, 28)) & 6));
+            tri_consts(f);
+            for (at = 0; at < 4 && rc == HLE_OK; at++)
+                rc = do_tri(f, tw[at]);
+            break;
+        }
         case K_MODVTX:
             at = ((w0 >> 16) & 0xff) + hle_dm16(t, F2_VTAB + (w0 & 0xfff));       /* (the slot address is the delay slot's lhu) */
             hle_st8(t, at, (uint8_t)(w1 >> 24));
@@ -617,6 +684,10 @@ static int run_loop(struct f3 *f, int *handover)
             break;
         }
         default: {
+            if (kd >= K_EXT && b->ext_cmd) {
+                rc = b->ext_cmd(f, kd);
+                break;
+            }
             static char why[8][48];
             static unsigned wn;
             char *w = why[wn++ & 7];
@@ -640,6 +711,8 @@ static int run_loop(struct f3 *f, int *handover)
 
 static unsigned classify(const struct f3dex2_build *b, unsigned h)
 {
+    const struct f2_pcs *p = b->pcs;
+    unsigned i;
     if (h == b->head || h == (unsigned)b->head - 4)
         return K_NOP;
     if (h == b->copy)
@@ -652,28 +725,47 @@ static unsigned classify(const struct f3dex2_build *b, unsigned h)
         return K_EF;
     if (h == b->ed)
         return K_ED;
-    if (h == b->tri1)
+    if (b->tri1 && h == b->tri1)
         return K_TRI1;
-    if (h == b->tri2)
+    if (b->tri2 && h == b->tri2)
         return K_TRI2;
-    if (h == b->vtx)
+    if (b->vtx && h == b->vtx)
         return K_VTX;
-    if (h == b->mtx)
+    if (b->mtx && h == b->mtx)
         return K_MTX;
-    if (h == b->geom)
+    if (b->geom && h == b->geom)
         return K_GEOM;
     if (h == b->enddl)
         return K_ENDDL;
     if (h == b->half2)
         return K_HALF2;
-    if (h == b->modvtx)
+    if (b->modvtx && h == b->modvtx)
         return K_MODVTX;
-    if (h == b->culldl)
+    if (b->culldl && h == b->culldl)
         return K_CULLDL;
-    if (h == b->branchz)
+    if (b->branchz && h == b->branchz)
         return K_BRANCHZ;
+    if (h == 0xfac)
+        return K_LOADUCODE;
     if (b->mvp && h == b->mvp)
         return K_MVP;
+    if (b->tri4 && h == b->tri4)
+        return K_TRI4;
+    for (i = 0; b->ext && b->ext[i][0] != 0xffff; i++)
+        if (b->ext[i][0] == h)
+            return b->ext[i][1];
+    if (p) {
+        if (h == p->dl) return K_DL;
+        if (h == p->texture) return K_TEXTURE;
+        if (h == p->texrect) return K_TEXRECT;
+        if (h == p->half1) return K_HALF1;
+        if (h == p->moveword) return K_MOVEWORD;
+        if (h == p->popmtx) return K_POPMTX;
+        if (h == p->movemem) return K_MOVEMEM;
+        if (h == p->omh) return K_OMH;
+        if (h == p->oml) return K_OML;
+        return K_BAD;
+    }
     switch (h) {
     case PC_DL: return K_DL;
     case PC_TEXTURE: return K_TEXTURE;
@@ -701,6 +793,7 @@ static int f3dex2_run(struct hle_task *t, const struct hle_ucode *u)
         if (g_prof)
             atexit(prof_dump);
     }
+    f2L = b->lay ? b->lay : &l_lay_std;
     hle_cpu_init(t, &c, t->start_pc, 1u << 22);
     c.stop_pc = b->head + 4;                            /* the first fetch has polled SP_STATUS already */
     rc = hle_rsp_run(t, &c);
@@ -717,40 +810,64 @@ static int f3dex2_run(struct hle_task *t, const struct hle_ucode *u)
     f.s7 = c.r[HLE_REG_S7];
     f.polls = 1;
     f.trace = getenv("HLE_F3_TRACE") != NULL;
+    if (f.trace)
+        fprintf(stderr, "START k0=%08x k1=%08x s6=%04x s7=%04x\n", f.k0, f.k1, f.s6, f.s7);
     f.watch = getenv("HLE_F3_WATCH") ? (int)strtoul(getenv("HLE_F3_WATCH"), NULL, 16) : -1;
     f.wval = f.watch >= 0 ? hle_dm16(t, f.watch) : 0;
     f.total = 0;
+    f.ho_pc = b->enddl;
     f.lean = !hle_exact();
     f.ov = overlay_match(t, DESC_CLIP) ? OV_CLIP : overlay_match(t, DESC_LIGHT) ? OV_LIGHT : OV_UNKNOWN;
     f.ov0 = f.ov;
     for (op = 0; op < 256; op++)
         f.kind[op] = (uint8_t)classify(b, hle_dm16(t, JUMP_TABLE + 2 * (int)(int8_t)op) & 0xfff);
-    /* the loop head starts at the instruction after the poll: lw t9 */
-    rc = run_loop(&f, &handover);
-    if (rc != HLE_OK)
-        return rc;
-    if (getenv("HLE_DUMP_IMEM")) {
-        FILE *fp = fopen(getenv("HLE_DUMP_IMEM"), "wb");
-        if (fp) {
-            fwrite(t->imem, 4, 1024, fp);
-            fclose(fp);
+    f.uc0 = hle_dm32(t, 0xfd0);
+    for (;;) {
+        rc = run_loop(&f, &handover);
+        if (rc != HLE_OK)
+            return rc;
+        if (getenv("HLE_DUMP_IMEM")) {
+            FILE *fp = fopen(getenv("HLE_DUMP_IMEM"), "wb");
+            if (fp) {
+                fwrite(t->imem, 4, 1024, fp);
+                fclose(fp);
+            }
         }
+        if (f.lean && f.ov != f.ov0 && f.ov != OV_UNKNOWN) {   /* the overlay the microcode would have left in IMEM */
+            unsigned desc = f.ov == OV_LIGHT ? DESC_LIGHT : DESC_CLIP;
+            hle_dma_read(t, hle_dm16(t, desc + 6), hle_dm32(t, desc), hle_dm16(t, desc + 4));
+        }
+        /* the outermost G_ENDDL (or a G_LOAD_UCODE): the microcode's own code. The registers as the loop head leaves them for the handler. */
+        c.r[HLE_REG_K0] = f.k0;
+        c.r[HLE_REG_K1] = f.k1;
+        c.r[HLE_REG_S6] = f.s6;
+        c.r[HLE_REG_S7] = f.s7;
+        c.r[HLE_REG_AT] = 0;
+        c.r[HLE_REG_T9] = f.w0;
+        c.r[HLE_REG_T8] = f.w1;
+        c.r[HLE_REG_T4] = (uint32_t)((int32_t)f.w0 >> 24);
+        c.r[HLE_REG_T3] = f.ho_pc;
+        c.pc = f.ho_pc;
+        if (f.ho_pc != 0xfac)
+            break;
+        c.stop_pc = b->head + 4;                        /* the reloaded microcode starts again: run its initialisation up to the first fetch */
+        rc = hle_rsp_run(t, &c);
+        if (rc != HLE_STOP)
+            return rc;
+        if (*t->cr[4] & SIG0)
+            return hle_decline(t, "the task yields");
+        handover = 0;
+        f.k0 = c.r[HLE_REG_K0];
+        f.k1 = c.r[HLE_REG_K1];
+        f.s6 = c.r[HLE_REG_S6];
+        f.s7 = c.r[HLE_REG_S7];
+        f.polls = 1;
+        f.ho_pc = b->enddl;
+        f.ov = overlay_match(t, DESC_CLIP) ? OV_CLIP : overlay_match(t, DESC_LIGHT) ? OV_LIGHT : OV_UNKNOWN;
+        f.ov0 = f.ov;
+        for (op = 0; op < 256; op++)
+            f.kind[op] = (uint8_t)classify(b, hle_dm16(t, JUMP_TABLE + 2 * (int)(int8_t)op) & 0xfff);
     }
-    if (f.lean && f.ov != f.ov0 && f.ov != OV_UNKNOWN) {   /* the overlay the microcode would have left in IMEM */
-        unsigned desc = f.ov == OV_LIGHT ? DESC_LIGHT : DESC_CLIP;
-        hle_dma_read(t, hle_dm16(t, desc + 6), hle_dm32(t, desc), hle_dm16(t, desc + 4));
-    }
-    /* the outermost G_ENDDL: the microcode's own end. The registers as the loop head leaves them for the handler. */
-    c.r[HLE_REG_K0] = f.k0;
-    c.r[HLE_REG_K1] = f.k1;
-    c.r[HLE_REG_S6] = f.s6;
-    c.r[HLE_REG_S7] = f.s7;
-    c.r[HLE_REG_AT] = 0;
-    c.r[HLE_REG_T9] = f.w0;
-    c.r[HLE_REG_T8] = f.w1;
-    c.r[HLE_REG_T4] = (uint32_t)((int32_t)f.w0 >> 24);
-    c.r[HLE_REG_T3] = b->enddl;
-    c.pc = b->enddl;
     c.stop_pc = 0x1000;
 
     if (g_prof) {
@@ -788,5 +905,7 @@ HLE_UCODE(l_dk64) = { .id = 0x48c7e653a6adcda8ull, .name = "F3DEX 2.07 (Donkey K
 HLE_UCODE(l_snap) = { .id = 0xd576cfcfed9d9c18ull, .name = "F3DEX.NoN 2.08H (Pokemon Snap)", .fam = &l_fam, .fam_data = &l_b_snap, DEAD };
 HLE_UCODE(l_pm) = { .id = 0xc734403d56034719ull, .name = "F3DEX 2.08 (Paper Mario)", .fam = &l_fam, .flags = HLE_F_NEAR_CLIP, .fam_data = &l_b_pm, DEAD };
 HLE_UCODE(l_oot) = { .id = 0x0d3f849c8dd309c4ull, .name = "F3DZEX.NoN 2.06H (Ocarina of Time)", .fam = &l_fam, .flags = HLE_F_ZEX, .fam_data = &l_b_oot, DEAD };
+
+#include "hle_f3dex2_dialects.inc"
 
 #endif

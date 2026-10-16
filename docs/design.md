@@ -323,6 +323,26 @@ the state a native front-end computes and the interpreter does not need to repro
 after every command that changes it), `HLE_DUMP_IMEM=<file>`, `HLE_DUMP_STREAM=<file>` (the native side's RDP stream), `HLE_DMEM_ALL` (list every differing DMEM byte), `HLE_RSP_TRIPC=<pc>` (the interpreter prints the three vertex slots at a triangle entry), `HLE_RSP_DEBUG=<n>` (the first n interpreted instructions), `HLE_RSP_TRACE` (every interpreted instruction with the vector register it wrote), `HLE_RSP_WATCH=<addr>` (every change of
 a DMEM byte, with the pc), `HLE_RSP_PROFILE` (executions per pc, `PROF pc count` lines on stderr at the end of every task).
 
+**Dialects of the F3DEX2 front-end** (`hle_f3dex2_dialects.inc`, `hle_s2dex2.inc`; the microcode semantics and the builds are in [ucode-f3dex2-dialects.md](ucode-f3dex2-dialects.md) and [ucode-s2dex2.md](ucode-s2dex2.md)). Builds
+that share the F3DEX2 skeleton (the display list refill, the DL stack, the RDP command copies, the flush) but differ in details are table entries of the same front-end, parameterised instead of copied:
+
+- **`struct f2_layout`** (`f3dex2_dmem.h`): the DMEM addresses the front-end uses, by name; the standard instance is what the four original builds share, a dialect that moved its state has one of its own, selected per task
+  (`f2L`, set by `f3dex2_run` from `f3dex2_build.lay`). The code reads `F2_GEOM` etc. through it, so the standard path costs a pointer load, not a copy of the code.
+- **`struct f2_pcs`** and **`ext` / `ext_cmd`** (`f3dex2_build`): handlers below 0x170 at other pcs (S2DEX), and dialect commands (kinds from `K_EXT`) run by a hook that sees the whole per-task state (`struct f3`).
+  `G_TRI4` (F3DEXBG) is a command of the loop itself.
+- **`G_LOAD_UCODE`** (handler 0xfac in every build): when the text it loads is byte-identical to the task's own (Conker ends every task this way), the interpreter runs the microcode's stub and the initialisation of the
+  reloaded text up to the first command fetch and the native loop continues from there (state re-read, kinds re-classified); another text declines the task.
+- **Overlays.** The S2DEX 2.x code overlays take the slots of the F3DEX2 clip / light overlays (`OV_CLIP` = A, `OV_LIGHT` = B); the end-of-task fix-up of the resident overlay is the same.
+- **Kernels.** Nothing in the production path is a transliteration of the microcode any more. The three routines that once were (S2DEX's sprite rectangle and background, F3DEXBG's lit vertices; `tools/rsp2c.py` made or drafted
+  them, one statement per instruction on the exact vector-unit library `tools/hle/ref_vu.h`) are closed forms: S2DEX `G_OBJ_RECTANGLE` in `s2dex2_rect.c`, `G_BG_1CYC` in `s2dex2_bg.c` (sections 3a and 3b of
+  [ucode-s2dex2.md](ucode-s2dex2.md); shared DMEM access, saturation and constants in `s2dex2_int.h`) and the lighting stage of F3DEXBG in `f3dexbg_fx.[ch]` (a pass over the records of the standard vertex pipeline; DMEM adapters
+  and the whole command in `f3dexbg_dmem.h`; [ucode-f3dex2-dialects.md](ucode-f3dex2-dialects.md) 2.4). All plain scalar C: the S2DEX ones work on two lanes (x and y) of a vector, and a NEON form that loads eight to use two
+  does not pay (the rectangle is about sixty integer operations; on x86 the closed form takes 0.4 times the old instruction-level kernel's time, section 3b); the lighting is a few 32-bit chains per vertex and light, and the vertex
+  pipeline under it is the NEON one. On x86 the front-end runs at 1.6 to 3.4 times the JIT's speed (Worms tasks) and 3.4 to 3.9 (Conker's lit tasks), so lit vertices are native by default. A closed form declines (nothing written, the task
+  goes to the JIT) what its derivation does not cover: another set of vector constants, a scale of 0 or negative, a loop that would not end. `tools/rsp2c.py` stays as the generator of the references the closed forms are checked
+  against ([testing.md](testing.md), "Regenerating the microcode oracles"); the generated files are not part of the tree.
+- **Mutation numbers** (`MUT(n, ...)`, `scripts/build.sh native --tools --hmut=N`, `tools/hle/mutcheck_dialects.sh`): 30 to 39 and 44 the S2DEX front-end and the rectangle's tile/command part, 150 to 166 the rectangle closed form, 65 / 66 `G_TRI4` / `G_LOAD_UCODE`, 70 to 93 the background routine, 100 to 120 the F3DEXBG lighting.
+
 ## Native handler contract (superseded)
 
 `armlet_gfx_try_native` still accepts a task only when `GfxMode = hle`; boot size <= 0x1000 (a task, not a bare RSP program); type 1; fresh (`SP_PC` 0 and the yield flag

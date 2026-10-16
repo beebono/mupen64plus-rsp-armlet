@@ -326,3 +326,66 @@ continues with the block at the new pc if there is one (the cost of a hooked cal
 **The probe finds what is dead.** `ARMLET_DMEM_POISON=all` (DMEM [0, 0xfc0) after every task, whoever ran it) must change nothing the CPU or the RDP can see; where it does, the ranges that matter are
 found by bisecting the list (`ARMLET_DMEM_POISON=<lo>-<hi>,...`). The result for a family is the evidence of its mask (design.md "DMEM masks"): events, RDP stream, pictures, audio, on both devices
 over gameplay windows.
+
+## F3DEX2 dialects, G_LOAD_UCODE and S2DEX 2.x (docs/design.md, "Dialects of the F3DEX2 front-end")
+
+Builds: F3DEX 2.08 `ac31` (Dr. Mario 64) and `d2d1` (WinBack), F3DEX 2.03 `33dc` (F-Zero X), F3DEXBG.NoN 2.08 (Conker's Bad Fur Day), S2DEX fifo 2.08 (Worms Armageddon). Desktop (x86_64), `GfxMode=hle`, against the reference pairing.
+Task snapshots: `ARMLET_HLE_CAPTURE` (every n-th task start of a JIT run; `ARMLET_UCODES=0000000000000001` keeps the native path out of the run), replayed by `armlet-native-replay`.
+
+| check | result |
+|---|---|
+| offline replay of captured task starts, x86_64 | Dr. Mario 64 (ac31) 56 of 56, WinBack (d2d1) 41 of 41, Conker 289 of 289 and 313 of 313 (about 75 % of them with lit vertices, native by default now), Worms 60 of 60; the four original builds (DK64) 60 of 60 after the layout refactor |
+| the same with the aarch64 build (NEON vector-unit backend, `scripts/build.sh aarch64 --tools`) under `qemu-aarch64-static` | 157 of 157 (Worms, Dr. Mario, WinBack d2d1), Conker 289 of 289 and 313 of 313, Worms 60 of 60 (the closed forms; the lit pass is scalar, the vertex pipeline under it NEON) |
+| `ARMLET_HLE_VERIFY=1` equivalence runs, 600 to 3000 frames | WinBack (d2d1 tasks) PASS 600 f; Dr. Mario PASS 600 f; Conker PASS 1500 f (430 tasks native, 0 differences, 145 lit tasks declined by the transliteration then) and 2500 f with the transliteration enabled (895 tasks, 0 differences); Worms PASS 2000 f (1343 tasks, 0 differences); F-Zero X PASS 3000 f (33dc registered, but 1277 of its 1280 tasks decline: `G_LOAD_UCODE` of the Rej text) |
+| `ARMLET_HLE_VERIFY=1`, 3700 frames (the 62 s of the other results), after the fixes below | WinBack 1471 tasks, Paper Mario 3583, Donkey Kong 64 1663, Worms 2879, Dr. Mario 3263, Conker with the transliteration enabled 1215: 0 differences, equivalence PASS each (Conker without it: 486 of 1216 tasks native, the rest lit and declined) |
+| the same with the closed forms (S2DEX background, F3DEXBG lighting), 3700 f, `ARMLET_HLE_VERIFY=1` | Worms 2879 of 2880 tasks native, Conker **1215 of 1216 native, 0 declined**, 0 differences, equivalence PASS each (hash, state stream, 6 screenshots, audio identical); the same without verify: PASS each |
+| `tools/hle/build_test_s2dex2.sh` (rectangle: NEON against scalar; background: closed form against the microcode, `S2BG_ORACLE`), `tools/hle/build_test_f3dexbg.sh` (the lit pass after the NEON and the scalar vertex forms), under qemu-aarch64 | 20 000 cases each, 0 failures |
+| closed forms against the microcode's transliteration on the whole DMEM (one-off differential harnesses of the development, since removed; "Regenerating the microcode oracles" below for what is kept) | F3DEXBG lit commands: 12 676 captured (odd and even counts, 1 to 11 lights, positional or not, texgen) + 300 000 mutated, 0 differences; S2DEX backgrounds: 1 002 captured + 100 000 mutated (random object, scale, flip, formats, tables, scissor, segment table), 0 differences, 99.7 % of the lines of `s2dex2_bg.c` and all of `f3dexbg_fx.c` executed (a model decline where the microcode's loop would not end, sizes of 0 or less, is not a difference) |
+| production runs (no verify), 1500 f and (Worms, Conker, WinBack, Dr. Mario) 3700 f | Worms, Conker, WinBack, Dr. Mario: hash stream, state stream, 6 screenshots and audio identical to the reference |
+| `ARMLET_DMEM_POISON=mask` and `all`, 900 f | `mask`: Worms, WinBack, Dr. Mario, Conker PASS (hash included). `all`: state stream, pictures and audio identical (the hash stream differs by design) in Worms, Dr. Mario, WinBack |
+| `tools/hle/build_test_s2dex2.sh` with `S2RECT_ORACLE` (rsp2c translation of overlay A), `S2RECT_VU=1` (the old instruction-level kernel) and `S2BG_ORACLE`: random DMEM images, the closed forms against the microcode | 500 000 cases on x86_64 (125 785 rectangles drawn, 226 967 outside the scissor, 21 859 declined, 45 765 backgrounds), 150 000 under qemu-aarch64 (37 876 drawn), 0 failures on both oracles for the rectangle |
+| x86 front-end time against the JIT (`armlet-native-replay --bench`) | ac31 4.0 to 4.3 times faster, d2d1 3.0 to 3.5, Conker unlit 2.6 to 3.3, **Conker lit 3.4 to 3.9** (the transliteration: 0.8), **Worms 1.6 to 3.4** (the transliteration: 0.96 to 1.5; tasks of 3 to 11 us, one trivial task 0.85); the lit command alone takes about 125 ns per vertex |
+| the rectangle closed form against the instruction-level kernel it replaced (x86_64, scalar vector-unit backend; `--bench 400` over the 60 Worms snapshots, 3 alternating runs) | front-end time of the 60 tasks 364 us (old) to 298 us (new), i.e. 2.64 times the JIT's speed becomes 3.22; one call of the kernel alone (a 32 x 32 unscaled sprite, copy of the DMEM image subtracted) 158 ns to 28 ns. No NEON timing: there is no device access in this work; the old kernel's NEON backend is the same dataflow on the 8-lane vector, the closed form has ~60 integer operations |
+
+**Mutation check** (`tools/hle/mutcheck_dialects.sh`, deliberate error N, replay of the captured tasks of the game; "caught" = a mismatch, a decline the unmutated build does not have, or a hang):
+
+| N | where | Worms / Conker snapshots |
+|---|---|---|
+| 30, 31 | rectangle closed form: the shift and the offset of the render-mode bit 0x20 | not caught by Worms (it never sets the bit); caught by the random test against the microcode (2472 and 2491 failures in 20 000 cases) |
+| 32, 33, 34 | rectangle closed form: tile toggle, sync advance, the SET_TILE field shift | caught (17 snapshots each) |
+| 150 .. 166 | rectangle closed form (`s2dex2_rect.c`): the reciprocal refinement, the position bias and mask, the trim, the width shift, the scissor cut and its sign, the mirrored first texel and step, the flip flag of y, the bias of s, the cut's rounding, the sub-pixel part of t, the SET_TILE_SIZE field mask | Worms snapshots catch 150, 151, 153, 154, 155, 157, 160, 161, 162, 164, 165 (6 to 17 of 60); 152 (scissor boundary), 156 (rounding of the cut), 158 (y flip flag), 159 (SET_TILE_SIZE field mask), 163 (position mask), 166 (trim) not (unscaled, unflipped, inside the screen), caught by the random test against the microcode (41 to 4286 failures in 20 000 cases each; `mutcheck_dialects.sh` with `S2RECT_ORACLE` runs both) |
+| 35, 36, 37, 38, 39, 44 | LOADTXTR, RENDERMODE table, RDPHALF_2 order, SETSCISSOR decode | caught (17, 17, 2, 60, 6, 60 snapshots) |
+| 70 .. 93 | the background routine (`s2dex2_bg.c`): reciprocal shift, extent mask, loop step, flip, scissor, scale, line size, quotient compare / mask, strip commands, ... | 70, 75, 78, 80, 81, 84, 86 .. 93 caught by Worms snapshots (16 to 59 of 60); 71, 72, 73, 74, 76, 77, 79, 82, 83, 85 not (Worms uses unit scales, no flip, no scissor cut), caught by the random test against the microcode (49 to 1105 failures in 6000 cases each; 79 also by the 1 002 captured backgrounds) |
+| 100 .. 120 | the F3DEXBG lighting (`f3dexbg_fx.c`, `f3dexbg_dmem.h`): attenuation nibble, min / max, view-space constants, ambient, lambert masks, non-positional sum, vertex colour, texgen, flag, group, scratch words, light setup stride | all caught by the Conker snapshots (17 to 256 of 313 + 289) except 111 (lane group swapped: the two halves hold equal data in the captured tasks) and 114 (the w lane of the distance: zero in them), caught by the random test (including the point-light constants the old routine's mutants 62 to 64 could not reach) |
+| 65, 66 | `G_TRI4` decode, `G_LOAD_UCODE` input buffer | caught (211 snapshots + 74 declined; all 289 declined: every task ends with the command) |
+
+(A mutation that makes the routine loop forever is counted as caught: the replay is killed after 100 s.)
+
+**A bug found by the longer runs, in the shared triangle code.** WinBack (3700 frames, `ARMLET_HLE_VERIFY=1`) had 120 tasks with a different RDP stream: the z block of a triangle read the fraction of the start value after adding the integer product, so a
+saturated integer part (0x7fff) took the fraction to 0xffff where the microcode leaves the low bits (`fx2_tri_attrs`, scalar and NEON; the fraction is read before the integer product, as everywhere else). The four original games never hit it. After the fix all 201 captured WinBack tasks are equal.
+The F3DEXBG lit routine's longer run (Conker, 3700 frames) showed 60 tasks whose light slot pad bytes beyond the ninth slot differed: the dead list now covers 13 slots.
+
+**Closed forms replace the transliterations.** S2DEX's background (`s2dex2_bg.c`) and F3DEXBG's lit vertices (`f3dexbg_fx.c`) were first transliterations of the microcode (generated, exact, 0.8 to 1.5 times the JIT); they are hand-derived
+closed forms now, checked against those transliterations first ("Regenerating the microcode oracles" below) and then against the JIT by the runs above. Not bit-exact corners are declined, not emulated: a background whose wrap loop would not end, an even number of
+lights (the microcode's lighting loop never ends on it), more than 11 lights, DMEM vector constants other than S2DEX 2.08's.
+
+## Regenerating the microcode oracles
+
+The closed forms of S2DEX 2.08 (`s2dex2_bg.c`, `s2dex2_rect.c`) and of F3DEXBG's lit vertices (`f3dexbg_fx.c`) were derived from the microcode and are checked against the microcode itself, besides the replays and verify runs above.
+`tools/rsp2c.py` translates the instructions of a handler (from an IMEM image, one C statement per instruction, on the exact vector-unit library `tools/hle/ref_vu.h`) into a function that does what the RSP interpreter
+does. Those translations are ROM-derived and **not** part of the tree (`*_gen.inc`, `gen_*.inc` and `tools/hle/oracle*/` are git-ignored); they are regenerated from an IMEM image taken with `HLE_DUMP_IMEM=<file>` (the front-end writes
+IMEM at the end of a task; for S2DEX the overlay that the handler lives in must be resident: A for the sprites, B for the backgrounds; for F3DEXBG the lighting overlay):
+
+```
+# S2DEX 2.08 sprite rectangle (Worms Armageddon): overlay A is IMEM [0x6c8, 0xe00); entered after the DMA of the sprite, done at 0x648, outside the scissor at 0x1ac
+tools/rsp2c.py --name rect_gen --entry 0xba8 --stop 0x648 --stop 0x1ac --seg s2_ovA.img 0x6c8 0xe00 --out rect_gen.inc
+# S2DEX 2.08 background: overlay B is IMEM [0x6c8, 0xe00)
+tools/rsp2c.py --name bg1cyc_gen --entry 0x6fc --stop 0x154 --stop 0x1ac --stop 0x64c --stop 0xfc8 --seg s2_ovB.img 0x6c8 0xe00 --out bg1cyc_gen.inc
+# F3DEXBG.NoN 2.08 lit G_VTX (Conker): matrix concatenation 0x080, lighting overlay 0x2d8, vertex handler 0x6d8, DMA and wait code 0xfc8
+tools/rsp2c.py --name bg_vtx_gen --entry 0x6d8 --stop 0x194 --stop 0x224 --seg mtx.imem 0x080 0x0f4 --seg ov.imem 0x2d8 0x6d8 --seg ov.imem 0x6d8 0x994 --seg ov.imem 0xfc8 0x1000 --out bg_vtx_gen.inc
+```
+
+`tools/hle/build_test_s2dex2.sh` takes them as `S2RECT_ORACLE=rect_gen.inc` and `S2BG_ORACLE=bg1cyc_gen.inc`: random DMEM images, the closed form against the translation (the whole DMEM, the output pointer, drawn / outside the
+scissor), also under qemu-aarch64 (without `HOST=1`). `S2RECT_VU=1` adds the instruction-by-instruction kernel that `s2dex2_rect.c` replaced as a second oracle (`tools/hle/oracle/s2dex2_rect_vu.c`, kept locally, ignored by git). A mutation
+of a closed form that the replays do not catch must be caught by this test (`tools/hle/mutcheck_dialects.sh` with `S2RECT_ORACLE` set does both). The lit-vertex translation was compared with `f3dexbg_fx.c` by one-off harnesses on
+captured and mutated command-entry states (results in the table above); they are not kept, the corpora being ROM-derived.
