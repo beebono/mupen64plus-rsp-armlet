@@ -30,7 +30,7 @@
 static void *h;
 static FILE *lg, *hl, *sl;
 static int hash_rdram;
-#define MAX_MASK_UCODES 32
+#define MAX_MASK_UCODES 64
 #define MAX_MASK_RANGES 64
 static struct {
     unsigned long long id;

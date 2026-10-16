@@ -16,6 +16,7 @@
          bad     commands whose vertex numbers, indices or offsets no game writes (past the 32 slots, odd, past the tables): a triangle, G_MODIFYVTX, G_CULLDL, G_BRANCH_Z, G_MOVEWORD, G_MOVEMEM; the front-ends decline them
          lit     lit vertices (1 to 5 lights, look-at vectors, texture generation linear or not, fog), the triangles between them
          mtx     matrices whose halfwords are random 16-bit values (any integer and fraction part, the saturating corners of the product): G_MTX load, multiply and push, modelview and projection, then vertices
+         s2      a task that starts with S2DEX (Resident Evil 2's; MKSYN_S2DATA = its data address + 0x180): the S2DEX commands of the stage below, then G_ENDDL
          load    a task that loads another microcode in the middle and back (Kirby 64's: F3DEX2 2.04H -> S2DEX 2.08 -> F3DEX2 2.04H): triangles, G_RDPHALF_1 + G_LOAD_UCODE, S2DEX commands (scissor, render mode, sprite
                  rectangles, backgrounds in 1-cycle and COPY mode, texture loads, display list selection), G_LOAD_UCODE back, triangles again. The addresses of the texts and data in RDRAM are the game's
                  (MKSYN_S2TEXT, MKSYN_S2DATA, MKSYN_F2TEXT, MKSYN_F2DATA override them; a data address is that of the data row, the one G_LOAD_UCODE copies to DMEM 0x180); the snapshot must hold those rows (any captured Kirby 64 task does)
@@ -81,6 +82,75 @@ def common(r, geom, trans_z, tex):
     if tex:
         d.cmd(0xd7000002 | (r.randrange(8) << 8), r.choice([0x80008000, 0xffffffff, 0x20004000, 0x00010001]))
     return d, {0x400: vp}
+
+
+def tame_sprite(r):
+    """a sprite on the screen with scales a game uses (the closed form takes these)"""
+    return struct.pack(">hHHHhHHHHHBBBB", r.randint(0, 1200), r.choice([0x400, 0x400, 0x200, 0x800]), r.randrange(8, 64) * 32, 0, r.randint(0, 900), r.choice([0x400, 0x400, 0x200, 0x800]), r.randrange(8, 64) * 32, 0,
+                       r.randrange(0, 40), r.randrange(0, 0x200), r.randrange(0, 5), r.randrange(0, 4), r.randrange(0, 16), 0)
+
+
+def sprite(r):
+    return struct.pack(">hHHHhHHHHHBBBB", r.randint(-40, 1300), r.choice([0x400, 0x400, 0x200, 0x800, r.randrange(0x100, 0x1000)]), r.randrange(8, 64) * 32, 0,
+                       r.randint(-40, 980), r.choice([0x400, 0x400, 0x200, 0x800, r.randrange(0x100, 0x1000)]), r.randrange(8, 64) * 32, 0,
+                       r.randrange(0, 40), r.randrange(0, 0x200), r.randrange(0, 5), r.randrange(0, 4), r.randrange(0, 16), r.choice([0, 0, 1, 0x10, 0x11]))
+
+def bg(r, copy):
+    sc = 0x400 if not copy else r.choice([0x400, 0x400, 0x53, r.randrange(0x400)])
+    iw = r.choice([0x500, 0x2c0, 0x500, r.randrange(0x40, 0xc00)])
+    ih = r.choice([0xc0, 0x88, r.randrange(0x20, 0x380)])
+    return struct.pack(">8HIHBBBBBBHHiHH", r.choice([0, 0, 0, r.randrange(0, 0x400)]), iw, r.choice([0xa4, 0x1c, 0, r.randrange(0, 0x300)]), r.choice([iw, iw, r.randrange(0x40, 0xc00)]),
+                       r.choice([0, 0, r.randrange(0, 0x300)]), ih, r.choice([0x2e8, 0x2d8, 0, r.randrange(0, 0x300)]), r.choice([ih, ih, r.randrange(0x20, 0x380)]),
+                       0x00100000 + r.randrange(0x4000) * 8, r.choice([0xfff4, 0xfff4, 0x0033, 0]), r.randrange(0, 5), r.randrange(0, 4), r.randrange(0, 2), r.randrange(0, 16),
+                       0, r.choice([0, 0, 1]), sc, sc, r.choice([0, 0x17, r.randrange(0, 0x100)]), r.randrange(0, 0x100), r.randrange(0, 0x200))
+
+def txtr(r):
+    sid = r.randrange(1 << 16)
+    return struct.pack(">IIIIII", 0x00001033, 0x00100000 + r.randrange(0x1000) * 8, r.randrange(0x7ff), 0x100, sid, r.choice([0, sid, 0xffffffff]))      # (the load bits and their mask: a mask that covers the bits makes the second load of the object a no-op)
+
+
+def s2_stage(d, r, data, s2d):
+    d.cmd(0xed000000 | (r.randrange(0, 40) << 14) | r.randrange(0, 40) * 4, ((1280 - r.randrange(0, 40) * 4) << 12) | (960 - r.randrange(0, 40) * 4))
+    d.cmd(0x0b000000 | r.choice([0, 8]), r.randrange(1 << 8) | (r.randrange(0, 4) << 3) | (r.randrange(0, 8) << 4))
+    o = 0x2000
+    if r.random() < 0.15:                                       # G_SELECT_DL twice: the first leaves a byte (the low byte of its w0) that the second takes for the index of the flags word at 0x2b0 + index, which can be an entry
+        at = r.choice([0xc0, 0xc2, 0xc4, 0xbe, 0xd0, 0x80, 0xff, 0x20])        # of the jump table (0x370 ..): rewritten (with zeros here), the commands after it run another handler in the microcode (the front-end declines)
+        d.cmd(0x04000000 | at, r.randrange(1 << 32))
+        d.cmd(0x04000031, 0xffffffff)                           # (a call of the list at 0x310000: segment 0, the offset's high byte)
+        data[0x10000] = struct.pack(">II", 0x01000000, BASE + 0x2f00) + sprite(r)[:0] + struct.pack(">II", 0x00000000, 0) + struct.pack(">II", 0xdf000000, 0)
+        data[0x2f00] = tame_sprite(r)
+    for _ in range(r.randrange(2, 7)):
+        k = r.randrange(8)
+        if k == 7 and r.random() < 0.75:                         # (LDTX_SPRITE / LDTX_RECT_R decline the whole task: rarely)
+            k = 6
+        if k in (0, 1):
+            data[o] = sprite(r)
+            d.cmd(0x01000000, BASE + o)
+        elif k == 2:
+            data[o] = bg(r, False)
+            d.cmd(0x09000000, BASE + o)
+        elif k == 3:
+            data[o] = bg(r, True)
+            d.cmd(0x0a000000, BASE + o)
+        elif k == 4:
+            data[o] = txtr(r)
+            d.cmd(0x05000017, BASE + o)
+            if r.random() < 0.4:                                # the same object again: its bits are loaded already, nothing is written
+                d.cmd(0x05000017, BASE + o)
+        elif k == 6:                                            # LDTX_RECT: the texture object, then the sprite behind it (48 bytes)
+            data[o] = txtr(r) + (tame_sprite(r) if r.random() < 0.6 else sprite(r))
+            d.cmd(0x0700002f | r.choice([0, 0x100]), BASE + o)
+        elif k == 7:                                            # LDTX_SPRITE and the rotated LDTX_RECT_R (the front-end declines them)
+            data[o] = txtr(r) + sprite(r)
+            d.cmd(r.choice([0x06, 0x08]) << 24 | 0x2f, BASE + o)
+        elif k == 5 and r.random() < 0.15:                 # an opcode nobody defined, whose jump table entry is 0x0fff (the data row is patched): the build declines it (the marker of a missing handler is 0xffff)
+            op = r.choice([0x30, 0x20, 0x4a, 0x10])
+            data[s2d + 0x250 + 2 * (op - 0x30) - BASE] = b"\x0f\xff"
+            d.cmd(op << 24 | r.randrange(1 << 24), r.randrange(1 << 32))
+        else:
+            d.cmd(0x04000000 | r.randrange(0x10000), r.randrange(1 << 32))
+            d.cmd(0xe6000000, 0)
+        o += 0x80
 
 
 def case(name, seed):
@@ -314,52 +384,10 @@ def case(name, seed):
                     a, b2, c = r.sample(range(v0, v0 + n), 3)
                     d.cmd((0x05 << 24) | (a * 2 << 16) | (b2 * 2 << 8) | c * 2)
 
-        def u16(v): return v & 0xffff
-
-        def sprite():
-            return struct.pack(">hHHHhHHHHHBBBB", r.randint(-40, 1300), r.choice([0x400, 0x400, 0x200, 0x800, r.randrange(0x100, 0x1000)]), r.randrange(8, 64) * 32, 0,
-                               r.randint(-40, 980), r.choice([0x400, 0x400, 0x200, 0x800, r.randrange(0x100, 0x1000)]), r.randrange(8, 64) * 32, 0,
-                               r.randrange(0, 40), r.randrange(0, 0x200), r.randrange(0, 5), r.randrange(0, 4), r.randrange(0, 16), r.choice([0, 0, 1, 0x10, 0x11]))
-
-        def bg(copy):
-            sc = 0x400 if not copy else r.choice([0x400, 0x400, 0x53, r.randrange(0x400)])
-            iw = r.choice([0x500, 0x2c0, 0x500, r.randrange(0x40, 0xc00)])
-            ih = r.choice([0xc0, 0x88, r.randrange(0x20, 0x380)])
-            return struct.pack(">8HIHBBBBBBHHiHH", r.choice([0, 0, 0, r.randrange(0, 0x400)]), iw, r.choice([0xa4, 0x1c, 0, r.randrange(0, 0x300)]), r.choice([iw, iw, r.randrange(0x40, 0xc00)]),
-                               r.choice([0, 0, r.randrange(0, 0x300)]), ih, r.choice([0x2e8, 0x2d8, 0, r.randrange(0, 0x300)]), r.choice([ih, ih, r.randrange(0x20, 0x380)]),
-                               0x00100000 + r.randrange(0x4000) * 8, r.choice([0xfff4, 0, r.randrange(1 << 16)]), r.randrange(0, 5), r.randrange(0, 4), r.randrange(0, 2), r.randrange(0, 16),
-                               0, r.choice([0, 0, 1]), sc, sc, r.choice([0, 0x17, r.randrange(0, 0x100)]), r.randrange(0, 0x100), r.randrange(0, 0x200))
-
-        def s2_stage(d):
-            d.cmd(0xed000000 | (r.randrange(0, 40) << 14) | r.randrange(0, 40) * 4, ((1280 - r.randrange(0, 40) * 4) << 12) | (960 - r.randrange(0, 40) * 4))
-            d.cmd(0x0b000000 | r.choice([0, 8]), r.randrange(1 << 8) | (r.randrange(0, 4) << 3) | (r.randrange(0, 8) << 4))
-            o = 0x2000
-            for _ in range(r.randrange(2, 7)):
-                k = r.randrange(6)
-                if k in (0, 1):
-                    data[o] = sprite()
-                    d.cmd(0x01000000, BASE + o)
-                elif k == 2:
-                    data[o] = bg(False)
-                    d.cmd(0x09000000, BASE + o)
-                elif k == 3:
-                    data[o] = bg(True)
-                    d.cmd(0x0a000000, BASE + o)
-                elif k == 4:
-                    data[o] = struct.pack(">IIIIIHH", 0x00001033, 0x00100000 + r.randrange(0x1000) * 8, r.randrange(0x7ff), 0x100, r.randrange(1 << 16), 0, 0)[:24]
-                    d.cmd(0x05000017, BASE + o)
-                elif k == 5 and r.random() < 0.15:                 # an opcode nobody defined, whose jump table entry is 0x0fff (the data row is patched): the build declines it (the marker of a missing handler is 0xffff)
-                    op = r.choice([0x30, 0x20, 0x4a, 0x10])
-                    data[s2d + 0x250 + 2 * (op - 0x30) - BASE] = b"\x0f\xff"
-                    d.cmd(op << 24 | r.randrange(1 << 24), r.randrange(1 << 32))
-                else:
-                    d.cmd(0x04000000 | r.randrange(0x10000), r.randrange(1 << 32))
-                    d.cmd(0xe6000000, 0)
-                o += 0x80
         f2_stage(d)
         d.cmd(0xe1000000, s2d - 0x180)
         d.cmd(0xdd0007ff, s2t)
-        s2_stage(d)
+        s2_stage(d, r, data, s2d)
         d.cmd(0xe1000000, f2d - 0x180)
         d.cmd(0xdd0007ff, f2t)
         setup(d, r, geom, 0x1ff)
@@ -367,6 +395,12 @@ def case(name, seed):
         d.cmd(0xda380007, BASE + 0x540)
         d.cmd(0xda380003, BASE + 0x700)
         f2_stage(d)
+        d.cmd(0xdf000000, 0)
+    elif name == "s2":
+        import os
+        s2d = int(os.environ.get("MKSYN_S2DATA", "0xbb800"), 0)          # a task that starts with S2DEX (Resident Evil 2's): the data row at DMEM 0x180 is the task's data + 0x180
+        d = DL()
+        s2_stage(d, r, data, s2d)
         d.cmd(0xdf000000, 0)
     else:
         sys.exit("unknown case " + name)

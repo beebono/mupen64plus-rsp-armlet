@@ -484,17 +484,25 @@ void f3_do_dl(struct f3 *f, uint32_t w0, uint32_t w1)
     refill(f);
 }
 
-/* Tasks that load another ucode text in the middle (Kirby 64's every task: S2DEX; F-Zero X's: F3DLX.Rej) decline when the command comes, after the native work before it. The text and data pointers of the
- * task are remembered; the next tasks with the same pair decline at once, and every 64th runs again in case the game changed. */
-static struct { uint32_t uc, data; unsigned n; } l_loads[8];
+/* Tasks that load another ucode text in the middle (F-Zero X's every task: F3DLX.Rej; one in three of Resident Evil 2's S2DEX tasks: F3DEX.Rej) decline when the command comes, after the native work before it. The text and data pointers of the
+ * task are remembered with the number of tasks that ran with them and the number that declined at the load: when more than half of them did, the next tasks with the same pair decline at once, and every 64th runs again in case the game changed
+ * (a pair that is mostly not a loader runs natively, the loading minority declines late and the counts, halved from 1024 runs on, follow the game). */
+static struct { uint32_t uc, data; unsigned runs, loads, skip; } l_loads[8];
 static unsigned l_nloads;
 
 static int load_known(const struct hle_task *t)
 {
     unsigned i;
     for (i = 0; i < l_nloads; i++)
-        if (l_loads[i].uc == hle_dm32(t, 0xfd0) && l_loads[i].data == hle_dm32(t, 0xfd8))
-            return l_loads[i].n++ % 64 != 0;
+        if (l_loads[i].uc == hle_dm32(t, 0xfd0) && l_loads[i].data == hle_dm32(t, 0xfd8)) {
+            if (MUT(306, l_loads[i].loads * 2 > l_loads[i].runs, 1) && ++l_loads[i].skip % 64 != 0)
+                return 1;
+            if (++l_loads[i].runs >= 1024) {
+                l_loads[i].runs /= 2;
+                l_loads[i].loads /= 2;
+            }
+            return 0;
+        }
     return 0;
 }
 
@@ -502,12 +510,15 @@ static void load_note(const struct hle_task *t)
 {
     unsigned i;
     for (i = 0; i < l_nloads; i++)
-        if (l_loads[i].uc == hle_dm32(t, 0xfd0) && l_loads[i].data == hle_dm32(t, 0xfd8))
+        if (l_loads[i].uc == hle_dm32(t, 0xfd0) && l_loads[i].data == hle_dm32(t, 0xfd8)) {
+            l_loads[i].loads++;
             return;
+        }
     if (l_nloads < sizeof(l_loads) / sizeof(l_loads[0])) {
         l_loads[l_nloads].uc = hle_dm32(t, 0xfd0);
         l_loads[l_nloads].data = hle_dm32(t, 0xfd8);
-        l_loads[l_nloads++].n = 1;
+        l_loads[l_nloads].runs = 1;
+        l_loads[l_nloads++].loads = 1;
     }
 }
 
@@ -892,8 +903,11 @@ static void f3_bind(struct f3 *f, const struct f3dex2_build *b)
         f->ov0 = f->ov;
     }
     if (MUT(253, 1, !sw))
-        for (op = 0; op < 256; op++)
-            f->kind[op] = (uint8_t)classify_op(b, op, hle_dm16(t, JUMP_TABLE + 2 * (int)(int8_t)op) & 0xfff);
+        for (op = 0; op < 256; op++) {
+            unsigned ea = (JUMP_TABLE + 2 * (int)(int8_t)op) & 0xfff;
+            /* (S2DEX's display list buffer lies behind its jump table: the entries of the undefined opcodes 0x54 .. 0x7f are bytes of the display list, which the microcode reads when the command comes) */
+            f->kind[op] = MUT(310, ea + 1 >= F2_IN && ea < F2_IN_END, 0) ? (uint8_t)K_BAD : (uint8_t)classify_op(b, op, hle_dm16(t, ea) & 0xfff);
+        }
 }
 
 static int f3dex2_run(struct hle_task *t, const struct hle_ucode *u)

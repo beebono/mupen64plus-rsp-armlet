@@ -21,6 +21,22 @@
 #include "hle.h"
 #include "s2dex2_fx.h"
 
+/* the build under test: the size of its RDP output buffers (800 bytes in S2DEX 2.06 / 2.08, 792 in the "Safe" 2.05 of Ocarina of Time: -DS2_OUT=792) and whether every flush check is preceded by a G_RDPPIPESYNC (-DS2_SYNC=1) */
+#ifndef S2_OUT
+#define S2_OUT 800
+#endif
+#ifndef S2_SYNC
+#define S2_SYNC 0
+#endif
+#ifndef S2RECT_ENTRY                                        /* the rectangle code after the object's DMA, the pc it leaves at when it has drawn (the flush entry) and when the sprite is outside the scissor (the loop head): Worms' (2.08) values */
+#define S2RECT_ENTRY 0xba8
+#define S2RECT_DONE 0x648
+#define S2RECT_CLIP 0x1ac
+#endif
+#ifndef S2BG_ENTRY
+#define S2BG_ENTRY 0x6fc
+#define S2BG_END 0x1ac
+#endif
 #if defined(S2BG_ORACLE) || defined(S2RECT_ORACLE) || defined(S2BGC_ORACLE)
 #define VU_FORCE_SCALAR 1
 #include "ref_vu.h"
@@ -47,7 +63,17 @@ struct rctx {
 #define S2BGC_END 0x1a4
 #endif
 static int bgc_seg(struct rctx *x, uint32_t *r) { (void)x; r[24] = (r[24] & 0xffffff) + 0x1000; return 0; }
-static int bgc_flush(struct rctx *x, uint32_t *r) { (void)x; if ((int32_t)(r[23] - r[22]) > 0) { r[22] ^= 0xc00; r[23] = r[22] - 800; } return 0; }
+static int bgc_flush(struct rctx *x, uint32_t *r)
+{
+#if S2_SYNC
+    ((uint8_t *)x->u.dmem)[(r[23] & 0xfff) ^ 3] = 0xe7;           /* the pipe sync in front of the buffer check */
+    r[23] += 8;
+#else
+    (void)x;
+#endif
+    if ((int32_t)(r[23] - r[22]) > 0) { r[22] ^= 0xc00; r[23] = r[22] - S2_OUT; }
+    return 0;
+}
 #include S2BGC_ORACLE
 #endif
 #ifdef S2RECT_VU
@@ -211,15 +237,27 @@ static uint32_t bg_seg(void *ctx, uint32_t a) { (void)ctx; return (a & 0xffffff)
 static int bg_flush(void *ctx, uint32_t *s7, uint32_t *s6)
 {
     (void)ctx;
+#if S2_SYNC
+    st8(ctx, *s7, 0xe7);
+    *s7 += 8;
+#endif
     if ((int32_t)(*s7 - *s6) > 0) {
         *s6 ^= 0xc00;
-        *s7 = *s6 - 800;
+        *s7 = *s6 - S2_OUT;
     }
     return 0;
 }
 #ifdef S2BG_ORACLE
 static int or_seg(void *ctx, uint32_t *r) { (void)ctx; r[24] = (r[24] & 0xffffff) + 0x1000; return 0; }
-static int or_flush(void *ctx, uint32_t *r) { (void)ctx; if ((int32_t)(r[23] - r[22]) > 0) { r[22] ^= 0xc00; r[23] = r[22] - 800; } return 0; }
+static int or_flush(void *ctx, uint32_t *r)
+{
+#if S2_SYNC
+    st8(ctx, r[23], 0xe7);
+    r[23] += 8;
+#endif
+    if ((int32_t)(r[23] - r[22]) > 0) { r[22] ^= 0xc00; r[23] = r[22] - S2_OUT; }
+    return 0;
+}
 #endif
 
 int main(int argc, char **argv)
@@ -267,8 +305,8 @@ int main(int argc, char **argv)
                     x.r[20] = 0x3c0;
                     x.r[30] = 0x1c0;
                     x.r[23] = sb_;
-                    rect_gen(&x, 0xba8);
-                    orc = x.pc == 0x648 ? S2_DONE : x.pc == 0x1ac ? S2_CLIPPED : -1;
+                    rect_gen(&x, S2RECT_ENTRY);
+                    orc = x.pc == S2RECT_DONE ? S2_DONE : x.pc == S2RECT_CLIP ? S2_CLIPPED : -1;
                     if (orc != ra || (ra == S2_DONE && x.r[23] != sa_) || (orc == S2_CLIPPED ? memcmp(o, b, sizeof o) : memcmp(o, a, sizeof o))) {
                         if (fails++ < 5)
                             printf("rect %u: closed form %d, microcode %d (pc %x), s7 %x / %x, dmem %s\n", i, ra, orc, x.pc, sa_, x.r[23], memcmp(o, ra == S2_CLIPPED ? b : a, sizeof o) ? "differs" : "equal");
@@ -292,7 +330,7 @@ int main(int argc, char **argv)
         } else if (kind == 2) {
 #ifdef S2BGC_ORACLE
             struct s2_ctx c = { b, bg_seg, bg_flush };
-            unsigned s7 = 0x4c0 + 8 * (rnd() % 8), s6 = 0x4c0 + 800, s7i = s7;
+            unsigned s7 = 0x4c0 + 8 * (rnd() % 8), s6 = 0x4c0 + S2_OUT, s7i = s7;
             bgc_dmem(a);
             memcpy(b, a, sizeof a);
             if (sigsetjmp(jb, 1)) {
@@ -314,7 +352,7 @@ int main(int argc, char **argv)
                 memset(&x, 0, sizeof x);
                 memset(r1, 0, sizeof r1);
                 memcpy(o, a, sizeof o);
-                r1[20] = 0x3b0; r1[30] = 0x1c0; r1[23] = s7i; r1[22] = 0x4c0 + 800;
+                r1[20] = 0x3b0; r1[30] = 0x1c0; r1[23] = s7i; r1[22] = 0x4c0 + S2_OUT;
                 x.u.dmem = o;
                 LQV(&x.u, 31, 0, 0x180); LQV(&x.u, 30, 0, 0x190); LQV(&x.u, 29, 0, 0x1a0); LQV(&x.u, 28, 0, 0x1b0);
                 VXOR(&x.u, 0, 0, 0, 0); VSUB(&x.u, 1, 0, 31, 11);
@@ -340,7 +378,7 @@ int main(int argc, char **argv)
 #endif
         } else {
             struct s2_ctx c = { b, bg_seg, bg_flush };
-            unsigned k, s7 = 0x4c0, s6 = 0x4c0 + 800;
+            unsigned k, s7 = 0x4c0, s6 = 0x4c0 + S2_OUT;
             for (k = 0; k < 16; k++)                    /* the microcode's vector constants (the kernel declines any others) */
                 a[0x180 / 4 + k] = bg_consts[k];
             for (k = 0; k < 40; k++)
@@ -368,7 +406,7 @@ int main(int argc, char **argv)
                 r1[20] = 0x3b0;
                 r1[30] = 0x1c0;
                 r1[23] = 0x4c0;
-                r1[22] = 0x4c0 + 800;
+                r1[22] = 0x4c0 + S2_OUT;
                 x.u.dmem = a;
                 LQV(&x.u, 31, 0, 0x180); LQV(&x.u, 30, 0, 0x190); LQV(&x.u, 29, 0, 0x1a0); LQV(&x.u, 28, 0, 0x1b0);
                 VXOR(&x.u, 0, 0, 0, 0); VADD(&x.u, 1, 0, 0, 0); VSUB(&x.u, 1, 0, 31, 11);
@@ -381,9 +419,9 @@ int main(int argc, char **argv)
                     continue;
                 }
                 ualarm(150000, 0);
-                bg1cyc_gen(&x, 0x6fc);
+                bg1cyc_gen(&x, S2BG_ENTRY);
                 ualarm(0, 0);
-                if (x.pc != 0x1ac || memcmp(a, b, sizeof a) || x.r[23] != s7 || x.r[22] != s6) {
+                if (x.pc != S2BG_END || memcmp(a, b, sizeof a) || x.r[23] != s7 || x.r[22] != s6) {
                     if (fails++ < 5)
                         printf("bg %u: microcode pc %x, dmem %s, s7 %x / %x\n", i, x.pc, memcmp(a, b, sizeof a) ? "differs" : "equal", x.r[23], s7);
                 }

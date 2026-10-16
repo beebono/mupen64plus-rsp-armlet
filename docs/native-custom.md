@@ -9,7 +9,7 @@ was tested and what is left on the JIT.
 The survey counts eight texts for Resident Evil 2 and calls six of them custom. They are not graphics microcodes: the 31 + 5 tasks with `ucode_size` 0x1000 and a 0x80-byte or 4-byte data segment are
 the game's **video** (HVQM-style decode), **resize** and **fill** programs, which rsp-hle already runs as HLE (`ucode ... -> Resident Evil 2 (video)`, `(resize)`, `(fill)` in the log; they never reach
 `HleForwardTask`). The two graphics texts, 99.6 % of its graphics tasks, are **S2DEX 2.06** (`5f33af89e713878b`, banner "S2DEX fifo 2.06", 75 %) and **F3DEX.Rej 2.06** (`95129dc7d307dd43`,
-"F3DEX.Rej fifo / xbus 2.06", 25 %): standard families, the S2DEX and F3DEX2-Rej work of the other branch. Nothing of Resident Evil 2 is registered here.
+"F3DEX.Rej fifo / xbus 2.06", 25 %): standard families. Its S2DEX text is Kirby 64's (S2DEX 2.06) and is registered in `hle_s2dex2.c` (task-start entry `l_s2_re2`; [ucode-f3dex2-dialects.md](ucode-f3dex2-dialects.md) section 5.7); the F3DEX.Rej text and the six custom texts are not claimed.
 
 ## How they run
 
