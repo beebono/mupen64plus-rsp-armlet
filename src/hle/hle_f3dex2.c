@@ -17,17 +17,9 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "f3dex2_dmem.h"
-#include "f3dex2_fx.h"
-#include "hle.h"
+#include "hle_f3dex2_int.h"
 
 #ifdef ARMLET_NATIVE
-
-#ifdef ARMLET_HLE_MUTATE
-#define MUT(n, ok, bad) (ARMLET_HLE_MUTATE == (n) ? (bad) : (ok))
-#else
-#define MUT(n, ok, bad) (ok)
-#endif
 
 /* development: HLE_F3_PROF=1 sums the time of each command kind over all tasks and prints it at exit */
 static uint64_t g_pt[40], g_pn[40];
@@ -54,41 +46,6 @@ static void prof_dump(void)
 }
 
 /* ---- the builds ------------------------------------------------------------------------------------------------------------------------------------------------------------------ */
-struct f3;
-struct f2_pcs;
-struct f3dex2_build {
-    uint16_t head;                  /* the command loop: mfc0 at (the fetch of the next command) */
-    uint16_t copy, sync, segcopy;   /* handlers: copy a command to the RDP buffer / copy only its first word / resolve the segment address, then copy */
-    uint16_t ef, ed;                /* G_RDPSETOTHERMODE and G_SETSCISSOR: remember the command, then copy */
-    uint16_t tri1, tri2;            /* G_TRI1; G_TRI2 and G_QUAD */
-    uint16_t vtx, mtx, geom, enddl, half2, modvtx, culldl, branchz;
-    uint16_t mvp;                   /* a handler that concatenates the matrices now (G_SPECIAL_1 of F3DEX.NoN 2.08H), or 0 */
-    unsigned zex;                   /* F3DZEX: other lanes of the constant vectors, no mask on the slope fractions */
-    uint32_t reject_mask;           /* a triangle whose three clip-flag words have a common bit in this mask is rejected */
-    uint16_t tri4;                  /* G_TRI4 (F3DEXBG): four triangles in one command, or 0 */
-    const struct f2_layout *lay;    /* the DMEM layout when it is not the standard one */
-    const struct f2_pcs *pcs;       /* the handlers of the commands below 0x170 when they are not at the standard pcs (S2DEX), or NULL */
-    const uint16_t (*ext)[2];       /* dialect commands: { handler pc, kind (>= K_EXT) } pairs ending in { 0xffff, 0 }, run by ext_cmd */
-    int (*ext_cmd)(struct f3 *f, unsigned kind);
-};
-
-/* The handlers below 0x170 sit at the same pcs in all the builds: the display list stack, the state words the other handlers read, the other-mode registers */
-enum { PC_DL = 0x000, PC_TEXTURE = 0x028, PC_TEXRECT = 0x02c, PC_HALF1 = 0x030, PC_MOVEWORD = 0x038, PC_POPMTX = 0x04c, PC_MOVEMEM = 0x120, PC_OMH = 0x13c, PC_OML = 0x140 };
-
-/* the handler pcs of the commands the standard builds share (PC_*), for a build that has them elsewhere; 0xffff: the build has no such command */
-struct f2_pcs {
-    uint16_t dl, texture, texrect, half1, moveword, popmtx, movemem, omh, oml;
-};
-enum { K_EXT = 0x40 };                                  /* kinds from here on belong to a dialect (ext_cmd) */
-
-enum { K_BAD = 0, K_NOP, K_DL, K_ENDDL, K_TEXTURE, K_TEXRECT, K_HALF1, K_HALF2, K_MOVEWORD, K_MOVEMEM, K_OMH, K_OML, K_GEOM, K_COPY, K_SYNC, K_SEGCOPY, K_EF, K_ED, K_VTX, K_MTX, K_POPMTX,
-       K_TRI1, K_TRI2, K_MODVTX, K_CULLDL, K_BRANCHZ, K_MVP, K_TRI4, K_LOADUCODE };
-
-/* DMEM layout (the same in all the builds): jump table at 0x36e by opcode; segments at 0xf8; RDP FIFO pointer 0xf0, FIFO bounds 0xfe8 / 0xfec; the display list stack depth at 222 (x4) and
- * the stack at 0x138; the RDP buffers: two of 344 bytes, s7 the write pointer, s6 the end of the current one (xor 0x208 toggles) */
-enum { SEGMENTS = 0xf8, FIFO_PTR = 0xf0, FIFO_START = 0xfe8, FIFO_END = 0xfec, DL_DEPTH = 222, DL_STACK = 0x138,
-       SIG0 = 0x80, DPC_BUSY_BIT = 0x400, POLL_LIMIT = 30000 };
-
 /* the standard layout: F3DEX2, F3DEX2.NoN, F3DZEX in all their versions (the offsets in docs/ucode-f3dex2.md) */
 static const struct f2_layout l_lay_std = {
     .mv = 0x00, .p = 0x40, .mvp = 0x80, .persp_norm = 0xdc, .viewport_scale = 0xe0, .viewport_trans = 0xe8, .clip_ratio = 0x186, .const31 = 0x1b0, .const30 = 0x1c0,
@@ -97,40 +54,12 @@ static const struct f2_layout l_lay_std = {
     .jump_table = 0x36e, .movemem_tab = 0x2f0, .moveword_adj = 10238, .desc_light = 0x410, .desc_clip = 0x418, .clip_planes = 0x180, .clip_masks = 0x3f8, .out_bytes = 344, .out_toggle = 0x208 };
 const struct f2_layout *f2L = &l_lay_std;
 
-enum { OV_CLIP = 0, OV_LIGHT = 1, OV_UNKNOWN = 2 };
-#define JUMP_TABLE (f2L->jump_table)
-#define OUT_BYTES (f2L->out_bytes)
-#define OUT_TOGGLE (f2L->out_toggle)
-#define DESC_LIGHT (f2L->desc_light)
-#define DESC_CLIP (f2L->desc_clip)
-
-struct f3 {
-    struct hle_task *t;
-    const struct f3dex2_build *b;
-    uint32_t k0, k1, s6, s7;        /* the microcode's registers */
-    unsigned polls;                 /* SP_STATUS polls the microcode would have made (the JIT halts a task at 32767) */
-    int ov;                         /* which overlay IMEM holds at [0x2d0, ...) */
-    uint8_t kind[256];
-    uint32_t w0, w1;
-    struct fx2_clip_out co;
-    struct fx2_tri_in tin;          /* the constants of the triangle setup */
-    uint32_t clip_mask;
-    int lean;                       /* the external-effects mode: no DMA the effects do not need (the display list and the vertices are read from RDRAM, the overlays are loaded once at the end) */
-    int ov0;                        /* the overlay IMEM held at the start */
-    int trace, watch;
-    uint32_t uc0;                   /* OSTask.ucode at the start (the text this run is for) */
-    unsigned ho_pc;                 /* where the interpreter takes over when the loop hands the task back: the G_ENDDL handler, or 0xfac (G_LOAD_UCODE) */
-    uint16_t wval;
-    unsigned ncmd;
-    uint32_t total;
-};
-
 /* ---- the RDP buffer --------------------------------------------------------------------------------------------------------------------------------------------------------- */
 /* The flush of the RDP buffer (the microcode's code after every command that writes to it): the buffer holds s7 - (s6 - 344) bytes; the FIFO pointer in DMEM says where in RDRAM they
  * go; DPC_END is moved up to the end of the chunk written before this one (the RDP is always one chunk behind); when the chunk does not fit before the end of the FIFO the pointer wraps to
  * the start (DPC_START) first. The microcode would wait for the RDP; with the video plugin synchronous there is nothing to wait for, and a state in which it would wait forever (it would
  * hang the JIT too) declines. */
-static int flush(struct f3 *f)
+int f3_flush(struct f3 *f)
 {
     struct hle_task *t = f->t;
     uint32_t cur = hle_dm32(t, FIFO_PTR);
@@ -164,19 +93,9 @@ static int flush(struct f3 *f)
     return HLE_OK;
 }
 
-/* after a command that wrote to the buffer */
-static inline int after_emit(struct f3 *f)
-{
-    if ((int32_t)(f->s7 - f->s6) > 0)
-        return flush(f);
-    return HLE_OK;
-}
-
-static inline uint32_t seg_addr(const struct hle_task *t, uint32_t w) { return (w & 0xffffff) + hle_dm32(t, SEGMENTS + ((w >> 22) & 0x3c)); }
-
 /* the display list refill that G_DL and G_ENDDL jump into, and the loop's own: the next 168 bytes from k0 */
 /* a DMA read into DMEM as the microcode makes it: in the lean mode a plain copy (one row, to DMEM) with the DMA's rounding and clipping, else through the framework */
-static void dma_rd(struct f3 *f, unsigned mem, uint32_t dram, uint32_t len)
+void f3_dma_rd(struct f3 *f, unsigned mem, uint32_t dram, uint32_t len)
 {
     struct hle_task *t = f->t;
     if (f->lean && !(mem & 0x1000) && !(len >> 12)) {
@@ -211,7 +130,7 @@ static int overlay_match(const struct hle_task *t, unsigned desc)
     return memcmp((const uint8_t *)t->imem + imem, t->rdram + (dram & 0x7ffff8), len) == 0;
 }
 
-static void overlay_load(struct f3 *f, int which)
+void f3_overlay_load(struct f3 *f, int which)
 {
     unsigned desc = which == OV_LIGHT ? DESC_LIGHT : DESC_CLIP;
     struct hle_task *t = f->t;
@@ -287,7 +206,7 @@ static int cmd_vtx(struct f3 *f)
     } else
         hle_dma_read(t, s4, seg_addr(t, w1), n * 16 - 1);
     if (lit && f->ov == OV_CLIP)                        /* the code at 0x2d0 (the clipping overlay's) loads the lighting overlay */
-        overlay_load(f, OV_LIGHT);
+        f3_overlay_load(f, OV_LIGHT);
 
     f2_ld_vctx(t, &c);
     if (lit)
@@ -321,7 +240,7 @@ static int cmd_mtx(struct f3 *f)
     }
     for (k = 0; k < MUT(15, 4, 3); k++)
         hle_st8(t, F2_MVP_VALID + k, 0);                /* the MVP matrix and the lights are stale */
-    dma_rd(f, dst, seg_addr(t, w1), len);
+    f3_dma_rd(f, dst, seg_addr(t, w1), len);
     if (!(w0 & 2)) {                                    /* multiply: new x current */
         unsigned d = hle_dm16(t, f2L->movemem_tab + 2 + at);
         struct fx2_mtx a, b, r;
@@ -347,7 +266,7 @@ static int cmd_popmtx(struct f3 *f)
         return hle_decline(t, "G_POPMTX with an unusual index");
     for (k = 0; k < 4; k++)
         hle_st8(t, F2_MVP_VALID + k, 0);
-    dma_rd(f, hle_dm16(t, f2L->movemem_tab + at), ns, (w0 >> 16) & 0xff);
+    f3_dma_rd(f, hle_dm16(t, f2L->movemem_tab + at), ns, (w0 >> 16) & 0xff);
     return HLE_OK;
 }
 
@@ -430,7 +349,7 @@ static int do_clip(struct f3 *f, const struct fx2_vtx *const v[3])
     if (f->ov == OV_UNKNOWN)
         return hle_decline(t, "unknown overlay");
     if (f->ov == OV_LIGHT)                              /* the lighting overlay's entry loads the clipping overlay */
-        overlay_load(f, OV_CLIP);
+        f3_overlay_load(f, OV_CLIP);
     f2_ld_vctx(t, &vc);
     cc.v = &vc;
     for (p = 0; p < 6; p++) {
@@ -482,7 +401,7 @@ static int do_tri(struct f3 *f, uint32_t word)
 }
 
 /* G_DL: w1 resolved through the segment table; a call (bit 16 of w0 clear) pushes the address of the next command on the display list stack, a branch does not; then the list is refilled from the target */
-static void do_dl(struct f3 *f, uint32_t w0, uint32_t w1)
+void f3_do_dl(struct f3 *f, uint32_t w0, uint32_t w1)
 {
     struct hle_task *t = f->t;
     unsigned d = hle_dm8(t, DL_DEPTH);
@@ -531,7 +450,7 @@ static int run_loop(struct f3 *f, int *handover)
         case K_NOP:
             break;
         case K_DL:
-            do_dl(f, w0, w1);
+            f3_do_dl(f, w0, w1);
             break;
         case K_ENDDL:
             rc = do_enddl(f, handover);
@@ -581,7 +500,7 @@ static int run_loop(struct f3 *f, int *handover)
             break;
         case K_MOVEMEM: {
             unsigned dst = hle_dm16(t, f2L->movemem_tab + (w0 & 0xfe)) + (w0 >> 5);
-            dma_rd(f, dst, seg_addr(t, w1), (w0 >> 16) & 0xff);
+            f3_dma_rd(f, dst, seg_addr(t, w1), (w0 >> 16) & 0xff);
             break;
         }
         case K_OMH:
@@ -878,20 +797,27 @@ static int f3dex2_run(struct hle_task *t, const struct hle_ucode *u)
     return hle_rsp_run(t, &c);
 }
 
-static const struct hle_family l_fam = { .name = "f3dex2", .run = f3dex2_run };
+const struct hle_family f3dex2_fam = { .name = "f3dex2", .run = f3dex2_run };
 
-/* head, copy, sync, segcopy, ef, ed, tri1, tri2, vtx, mtx, geom, enddl, half2, modvtx, culldl, branchz, zex, reject mask */
-static const struct f3dex2_build l_b_dk64 = { 0x18c, 0x208, 0x20c, 0x218, 0x238, 0x244, 0x7b4, 0x7ac, 0x4f0, 0x0f0, 0x1d0, 0x1e4, 0x1f8, 0xc78, 0xc38, 0xc60, 0, 0, 0x7070 };
-static const struct f3dex2_build l_b_oot = { 0x18c, 0x208, 0x20c, 0x218, 0x238, 0x244, 0x7b4, 0x7ac, 0x4f0, 0x0f0, 0x1d0, 0x1e4, 0x1f8, 0xc74, 0xc34, 0xc5c, 0, 1, 0x7030 };
-static const struct f3dex2_build l_b_pm = { 0x194, 0x210, 0x214, 0x220, 0x240, 0x24c, 0xa44, 0xa3c, 0x780, 0x0f0, 0x1d8, 0x1ec, 0x200, 0xf08, 0xec8, 0xef0, 0, 0, 0x7070 };
-static const struct f3dex2_build l_b_snap = { 0x194, 0x228, 0x22c, 0x238, 0x258, 0x264, 0x7d4, 0x7cc, 0x510, 0x0f0, 0x1f0, 0x204, 0x218, 0xc98, 0xc58, 0xc80, 0x1c0, 0, 0x7030 };
+static const struct f3dex2_build l_b_dk64 = {
+    .head = 0x18c, .copy = 0x208, .sync = 0x20c, .segcopy = 0x218, .ef = 0x238, .ed = 0x244, .tri1 = 0x7b4, .tri2 = 0x7ac, .vtx = 0x4f0,
+    .mtx = 0x0f0, .geom = 0x1d0, .enddl = 0x1e4, .half2 = 0x1f8, .modvtx = 0xc78, .culldl = 0xc38, .branchz = 0xc60, .reject_mask = 0x7070 };
+static const struct f3dex2_build l_b_oot = {
+    .head = 0x18c, .copy = 0x208, .sync = 0x20c, .segcopy = 0x218, .ef = 0x238, .ed = 0x244, .tri1 = 0x7b4, .tri2 = 0x7ac, .vtx = 0x4f0,
+    .mtx = 0x0f0, .geom = 0x1d0, .enddl = 0x1e4, .half2 = 0x1f8, .modvtx = 0xc74, .culldl = 0xc34, .branchz = 0xc5c, .zex = 1, .reject_mask = 0x7030 };
+static const struct f3dex2_build l_b_pm = {
+    .head = 0x194, .copy = 0x210, .sync = 0x214, .segcopy = 0x220, .ef = 0x240, .ed = 0x24c, .tri1 = 0xa44, .tri2 = 0xa3c, .vtx = 0x780,
+    .mtx = 0x0f0, .geom = 0x1d8, .enddl = 0x1ec, .half2 = 0x200, .modvtx = 0xf08, .culldl = 0xec8, .branchz = 0xef0, .reject_mask = 0x7070 };
+static const struct f3dex2_build l_b_snap = {
+    .head = 0x194, .copy = 0x228, .sync = 0x22c, .segcopy = 0x238, .ef = 0x258, .ed = 0x264, .tri1 = 0x7d4, .tri2 = 0x7cc, .vtx = 0x510,
+    .mtx = 0x0f0, .geom = 0x1f0, .enddl = 0x204, .half2 = 0x218, .modvtx = 0xc98, .culldl = 0xc58, .branchz = 0xc80, .mvp = 0x1c0, .reject_mask = 0x7030 };
 
 /* DMEM dead at the end of a task (docs/design.md, "The F3DEX2 table of dead ranges"; docs/testing.md has the evidence): the display list input buffer (0x920 .. 0x9c8: the microcode's last refill;
  * a lean run reads the list from RDRAM), the clipper's polygon lists (0x3ca .. 0x408) and new vertices (12 records from 0x9c8; the clipper makes them anew for every triangle), the two RDP output buffers
  * with their slack (0xba8..0xd00 + 0xb0 slack, 0xdb0..0xf08 + 0xb0): the command handlers write the commands there, the flush DMAs [buffer start, write pointer) to the FIFO, and the bytes beyond the
  * pointer are scratch of the triangle setup (it writes its shade, texture and z blocks whether or not the command has them; their values depend on vector registers left by earlier commands) and the
  * stale second words of sync commands, which the RDP ignores (the verify stream zeroes them). At the end of a task everything below the pointer has been flushed. */
-static const struct hle_dead_range l_dead_out[] = { { 0x3ca, 0x408 }, { 0x920, 0xfb8 },
+const struct hle_dead_range f3dex2_dead_out[] = { { 0x3ca, 0x408 }, { 0x920, 0xfb8 },
     /* the word at 0xfc8 (OSTask.ucode_boot): the initialisation stores register a0 there (sw a0, 0xfc8), which holds whatever the previous task left in it; nothing reads it */
     { 0xfc8, 0xfcc },
     /* the padding byte of each colour of the light slots (struct Light_t: col[3] pad, colc[3] pad, dir[3] pad; 24 bytes from 0x200): the lighting code stores whole vector lanes and the
@@ -900,12 +826,10 @@ static const struct hle_dead_range l_dead_out[] = { { 0x3ca, 0x408 }, { 0x920, 0
     { 0x263, 0x264 }, { 0x267, 0x268 }, { 0x27b, 0x27c }, { 0x27f, 0x280 }, { 0x293, 0x294 }, { 0x297, 0x298 }, { 0x2ab, 0x2ac }, { 0x2af, 0x2b0 }, { 0x2c3, 0x2c4 },
     { 0x2c7, 0x2c8 } };
 
-#define DEAD .ring_off = 0xfe8, .dead = l_dead_out, .n_dead = sizeof(l_dead_out) / sizeof(l_dead_out[0])
-HLE_UCODE(l_dk64) = { .id = 0x48c7e653a6adcda8ull, .name = "F3DEX 2.07 (Donkey Kong 64)", .fam = &l_fam, .flags = HLE_F_NEAR_CLIP, .fam_data = &l_b_dk64, DEAD };
-HLE_UCODE(l_snap) = { .id = 0xd576cfcfed9d9c18ull, .name = "F3DEX.NoN 2.08H (Pokemon Snap)", .fam = &l_fam, .fam_data = &l_b_snap, DEAD };
-HLE_UCODE(l_pm) = { .id = 0xc734403d56034719ull, .name = "F3DEX 2.08 (Paper Mario)", .fam = &l_fam, .flags = HLE_F_NEAR_CLIP, .fam_data = &l_b_pm, DEAD };
-HLE_UCODE(l_oot) = { .id = 0x0d3f849c8dd309c4ull, .name = "F3DZEX.NoN 2.06H (Ocarina of Time)", .fam = &l_fam, .flags = HLE_F_ZEX, .fam_data = &l_b_oot, DEAD };
-
-#include "hle_f3dex2_dialects.inc"
+_Static_assert(sizeof(f3dex2_dead_out) / sizeof(f3dex2_dead_out[0]) == F3DEX2_N_DEAD_OUT, "F3DEX2_N_DEAD_OUT (hle_f3dex2_int.h)");
+HLE_UCODE(l_dk64) = { .id = 0x48c7e653a6adcda8ull, .name = "F3DEX 2.07 (Donkey Kong 64)", .fam = &f3dex2_fam, .flags = HLE_F_NEAR_CLIP, .fam_data = &l_b_dk64, F3DEX2_DEAD };
+HLE_UCODE(l_snap) = { .id = 0xd576cfcfed9d9c18ull, .name = "F3DEX.NoN 2.08H (Pokemon Snap)", .fam = &f3dex2_fam, .fam_data = &l_b_snap, F3DEX2_DEAD };
+HLE_UCODE(l_pm) = { .id = 0xc734403d56034719ull, .name = "F3DEX 2.08 (Paper Mario)", .fam = &f3dex2_fam, .flags = HLE_F_NEAR_CLIP, .fam_data = &l_b_pm, F3DEX2_DEAD };
+HLE_UCODE(l_oot) = { .id = 0x0d3f849c8dd309c4ull, .name = "F3DZEX.NoN 2.06H (Ocarina of Time)", .fam = &f3dex2_fam, .flags = HLE_F_ZEX, .fam_data = &l_b_oot, F3DEX2_DEAD };
 
 #endif

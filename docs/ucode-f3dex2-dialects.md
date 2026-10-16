@@ -2,8 +2,8 @@
 
 [ucode-f3dex2.md](ucode-f3dex2.md) describes the four builds the F3DEX2 front-end was written from (Donkey Kong 64, Paper Mario, Ocarina of Time, Pokemon Snap). This page is what was found when
 the survey's other F3DEX2 texts ([ucode-survey.md](ucode-survey.md)) were put through the same front-end, which builds are claimed, which are not and why. Each build is a table entry in
-`src/hle/hle_f3dex2_dialects.inc` (included at the end of `hle_f3dex2.c`); a build that moved the microcode's DMEM state has a `struct f2_layout` of its own (`f3dex2_dmem.h`), a build with other
-handler pcs for the commands below 0x170 a `struct f2_pcs`, and commands the standard front-end does not have are run by the build's `ext_cmd` hook (`hle_f3dex2.c`, `K_EXT`).
+`src/hle/hle_f3dex2_dialects.c` (its own translation unit; the types it shares with `hle_f3dex2.c` are in `hle_f3dex2_int.h`); a build that moved the microcode's DMEM state has a `struct f2_layout` of its own (`f3dex2_dmem.h`), a build with other
+handler pcs for the commands below 0x170 a `struct f2_pcs`, and commands the standard front-end does not have are run by the build's `ext_cmd` hook (`hle_f3dex2_int.h`, `K_EXT`).
 
 ## 1. Claimed
 
@@ -18,7 +18,7 @@ handler pcs for the commands below 0x170 a `struct f2_pcs`, and commands the sta
 The code of F3DEX2.NoN 2.08 with the DMEM state moved, a smaller output-buffer threshold, `G_TRI4`, and its own lighting.
 
 **2.1 Layout.** The structures between 0x1d0 and 0x2e0 moved up by 0x60 (the constant vectors, the matrix-valid flag) or 0x68 (fog, the texture words, the geometry mode), everything above by
-0x260 / 0x298. `f2_layout` holds them by name; `l_lay_bg` in `hle_f3dex2_dialects.inc`:
+0x260 / 0x298. `f2_layout` holds them by name; `l_lay_bg` in `hle_f3dex2_dialects.c`:
 
 | | standard | F3DEXBG |
 |---|---|---|

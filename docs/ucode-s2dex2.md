@@ -2,7 +2,7 @@
 
 S2DEX is the 2D microcode: sprites (`uObjSprite`), backgrounds (`uObjBg`) and texture loads (`uObjTxtr`) turned into RDP texture rectangles. Builds known: S2DEX fifo 2.08 (Worms Armageddon, id `b228360be43c0447`,
 claimed), fifo 2.06 (Resident Evil 2, `5f33af89e713878b`, not claimed: the background routine and the front-end tables are for 2.08's pcs) and the 1.06 / 1.07 builds of Yoshi's Story and Pokemon Puzzle League ([section 6](#6-s2dex-1x)).
-The front-end is a dialect of the F3DEX2 one (`src/hle/hle_s2dex2.inc`, included by `hle_f3dex2_dialects.inc`): S2DEX 2.x is built on the F3DEX2 skeleton, so the display list refill, the DL stack, the segment table, the other-mode
+The front-end is a dialect of the F3DEX2 one (`src/hle/hle_s2dex2.c`, built on the shared header `hle_f3dex2_int.h`): S2DEX 2.x is built on the F3DEX2 skeleton, so the display list refill, the DL stack, the segment table, the other-mode
 commands, the RDP command copies and the flush of the output buffer are the F3DEX2 ones at other pcs and DMEM addresses; the sprite and background commands are its own. Addresses are DMEM byte addresses.
 
 ## 1. Layout (2.08)

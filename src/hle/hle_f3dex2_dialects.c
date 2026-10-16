@@ -1,21 +1,29 @@
 /*
- * arMLEt - hle_f3dex2_dialects.inc: further builds of the F3DEX2 family and its dialects, as DATA for hle_f3dex2.c (included at its end; the tables above are in scope)
+ * arMLEt - hle_f3dex2_dialects.c: further builds of the F3DEX2 family and its dialects, as DATA for the front-end of hle_f3dex2.c
  *
  * Copyright (C) 2026 arMLEt contributors
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
+#include <stdint.h>
 
-/* head, copy, sync, segcopy, ef, ed, tri1, tri2, vtx, mtx, geom, enddl, half2, modvtx, culldl, branchz, mvp, zex, reject mask */
-static const struct f3dex2_build l_b_ex2_208 = { 0x194, 0x210, 0x214, 0x220, 0x240, 0x24c, 0x7bc, 0x7b4, 0x4f8, 0x0f0, 0x1d8, 0x1ec, 0x200, 0xc80, 0xc40, 0xc68, 0, 0, 0x7070 };
-static const struct f3dex2_build l_b_ex2_203 = { 0x18c, 0x208, 0x20c, 0x218, 0x238, 0x244, 0x794, 0x78c, 0x4e8, 0x0f0, 0x1d0, 0x1e4, 0x1f8, 0xc54, 0xc14, 0xc3c, 0, 0, 0x7070 };
+#include "f3dexbg_dmem.h"
+#include "hle_f3dex2_int.h"
 
-HLE_UCODE(l_ex2_ac31) = { .id = 0xac310503c83b23eaull, .name = "F3DEX 2.08 (Dr. Mario 64, RR64)", .fam = &l_fam, .flags = HLE_F_NEAR_CLIP, .fam_data = &l_b_ex2_208, DEAD };
-HLE_UCODE(l_ex2_d2d1) = { .id = 0xd2d1f9f2e7dfe1abull, .name = "F3DEX 2.08 (WinBack, Mario Golf, Hydro Thunder ...)", .fam = &l_fam, .flags = HLE_F_NEAR_CLIP, .fam_data = &l_b_ex2_208, DEAD };
-HLE_UCODE(l_ex2_33dc) = { .id = 0x33dc705a5e4d39aeull, .name = "F3DEX 2.03 (F-Zero X)", .fam = &l_fam, .flags = HLE_F_NEAR_CLIP, .fam_data = &l_b_ex2_203, DEAD };
+#ifdef ARMLET_NATIVE
+
+static const struct f3dex2_build l_b_ex2_208 = {
+    .head = 0x194, .copy = 0x210, .sync = 0x214, .segcopy = 0x220, .ef = 0x240, .ed = 0x24c, .tri1 = 0x7bc, .tri2 = 0x7b4, .vtx = 0x4f8,
+    .mtx = 0x0f0, .geom = 0x1d8, .enddl = 0x1ec, .half2 = 0x200, .modvtx = 0xc80, .culldl = 0xc40, .branchz = 0xc68, .reject_mask = 0x7070 };
+static const struct f3dex2_build l_b_ex2_203 = {
+    .head = 0x18c, .copy = 0x208, .sync = 0x20c, .segcopy = 0x218, .ef = 0x238, .ed = 0x244, .tri1 = 0x794, .tri2 = 0x78c, .vtx = 0x4e8,
+    .mtx = 0x0f0, .geom = 0x1d0, .enddl = 0x1e4, .half2 = 0x1f8, .modvtx = 0xc54, .culldl = 0xc14, .branchz = 0xc3c, .reject_mask = 0x7070 };
+
+HLE_UCODE(l_ex2_ac31) = { .id = 0xac310503c83b23eaull, .name = "F3DEX 2.08 (Dr. Mario 64, RR64)", .fam = &f3dex2_fam, .flags = HLE_F_NEAR_CLIP, .fam_data = &l_b_ex2_208, F3DEX2_DEAD };
+HLE_UCODE(l_ex2_d2d1) = { .id = 0xd2d1f9f2e7dfe1abull, .name = "F3DEX 2.08 (WinBack, Mario Golf, Hydro Thunder ...)", .fam = &f3dex2_fam, .flags = HLE_F_NEAR_CLIP, .fam_data = &l_b_ex2_208, F3DEX2_DEAD };
+HLE_UCODE(l_ex2_33dc) = { .id = 0x33dc705a5e4d39aeull, .name = "F3DEX 2.03 (F-Zero X)", .fam = &f3dex2_fam, .flags = HLE_F_NEAR_CLIP, .fam_data = &l_b_ex2_203, F3DEX2_DEAD };
 
 /* F3DEXBG.NoN 2.08 (Conker's Bad Fur Day): the F3DEX2 code with the state moved (the structures between 0x1d0 and 0x2e0 by 0x60 / 0x68, everything above by 0x260 / 0x298), a 16-byte output buffer
  * threshold (two buffers 320 bytes apart), a reject mask with the w lane instead of z, and G_TRI4 (opcodes 0x10 .. 0x1f). */
-#include "f3dexbg_dmem.h"
 
 /* the lit G_VTX of F3DEXBG: the standard vertex pipeline with the build's own lighting (f3dexbg_fx.h) */
 static int bg_lit_vtx(struct f3 *f)
@@ -27,7 +35,7 @@ static int bg_lit_vtx(struct f3 *f)
     if (f->ov == OV_UNKNOWN)
         return hle_decline(t, "unknown overlay");
     if (f->ov == OV_CLIP)                               /* the code at 0x2d8 (the clipping overlay's) loads the lighting overlay */
-        overlay_load(f, OV_LIGHT);
+        f3_overlay_load(f, OV_LIGHT);
     if (f->lean) {
         if (va & 7)
             return hle_decline(t, "unaligned vertices");
@@ -44,11 +52,13 @@ static const struct f2_layout l_lay_bg = {
     .fog_mul = 0x248, .fog_ofs = 0x24a, .texture = 0x24c, .tex_scale_s = 0x250, .tex_scale_t = 0x252, .geom = 0x254, .mvp_valid = 0x239, .lights_valid = 0x23c, .lights_size = 0x23f,
     .light_raw = 0x268, .light_base = 0x278, .tg = 0x230, .light_scale = 0x226, .light_scale_zex = 0x22e, .vtab = 0x618, .clipmask = 0x664, .culltab = 0x65a, .in = 0xbb8, .in_end = 0xc60,
     .jump_table = 0x5d6, .movemem_tab = 0x550, .moveword_adj = 10848, .desc_light = 0x6a8, .desc_clip = 0x6b0, .clip_planes = 0x180, .clip_masks = 0x690, .out_bytes = 16, .out_toggle = 0x140, .no_lit = 1, .lit_vtx = bg_lit_vtx };
-static const struct f3dex2_build l_b_bg = { 0x194, 0x210, 0x214, 0x220, 0x240, 0x24c, 0xa70, 0xa68, 0x6d8, 0x0f0, 0x1d8, 0x1ec, 0x200, 0xf34, 0xef4, 0xf1c, 0, 0, 0x70b0, 0x994, &l_lay_bg };
+static const struct f3dex2_build l_b_bg = {
+    .head = 0x194, .copy = 0x210, .sync = 0x214, .segcopy = 0x220, .ef = 0x240, .ed = 0x24c, .tri1 = 0xa70, .tri2 = 0xa68, .vtx = 0x6d8,
+    .mtx = 0x0f0, .geom = 0x1d8, .enddl = 0x1ec, .half2 = 0x200, .modvtx = 0xf34, .culldl = 0xef4, .branchz = 0xf1c, .reject_mask = 0x70b0, .tri4 = 0x994, .lay = &l_lay_bg };
 /* dead at the end of a task, the standard table moved with the layout: the input buffer 0xbb8 .. 0xc60, the clipper's new vertices 0xc60 .. 0xe40, the two output buffers (16 bytes each, 0xe40 and 0xf00, with 0xb0 of
  * slack: up to 0xfb8), the clipper's polygon lists (0x662 .. 0x6a0), the OSTask word the initialisation stores, and the pad bytes of the light slots (13 slots of 48 bytes from 0x278: the lighting code stores whole vector lanes, the pad lane holds what the vector registers had) */
 static const struct hle_dead_range l_dead_bg[] = { { 0x662, 0x6a0 }, { 0xbb8, 0xfb8 }, { 0xfc8, 0xfcc },
     { 0x27b, 0x27c }, { 0x27f, 0x280 }, { 0x2ab, 0x2ac }, { 0x2af, 0x2b0 }, { 0x2db, 0x2dc }, { 0x2df, 0x2e0 }, { 0x30b, 0x30c }, { 0x30f, 0x310 }, { 0x33b, 0x33c }, { 0x33f, 0x340 }, { 0x36b, 0x36c }, { 0x36f, 0x370 }, { 0x39b, 0x39c }, { 0x39f, 0x3a0 }, { 0x3cb, 0x3cc }, { 0x3cf, 0x3d0 }, { 0x3fb, 0x3fc }, { 0x3ff, 0x400 }, { 0x42b, 0x42c }, { 0x42f, 0x430 }, { 0x45b, 0x45c }, { 0x45f, 0x460 }, { 0x48b, 0x48c }, { 0x48f, 0x490 }, { 0x4bb, 0x4bc }, { 0x4bf, 0x4c0 } };
-HLE_UCODE(l_bg) = { .id = 0xe80e52925f70b674ull, .name = "F3DEXBG.NoN 2.08 (Conker's Bad Fur Day)", .fam = &l_fam, .fam_data = &l_b_bg, .ring_off = 0xfe8, .dead = l_dead_bg, .n_dead = sizeof(l_dead_bg) / sizeof(l_dead_bg[0]) };
+HLE_UCODE(l_bg) = { .id = 0xe80e52925f70b674ull, .name = "F3DEXBG.NoN 2.08 (Conker's Bad Fur Day)", .fam = &f3dex2_fam, .fam_data = &l_b_bg, .ring_off = 0xfe8, .dead = l_dead_bg, .n_dead = sizeof(l_dead_bg) / sizeof(l_dead_bg[0]) };
 
-#include "hle_s2dex2.inc"
+#endif

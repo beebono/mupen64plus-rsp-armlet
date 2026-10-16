@@ -1,5 +1,5 @@
 /*
- * arMLEt - hle_s2dex2.inc: S2DEX 2.x (fifo 2.06 / 2.08: 2D sprites and backgrounds) as a dialect of the F3DEX2 front-end (included by hle_f3dex2_dialects.inc)
+ * arMLEt - hle_s2dex2.c: S2DEX 2.x (fifo 2.06 / 2.08: 2D sprites and backgrounds) as a dialect of the F3DEX2 front-end (hle_f3dex2.c)
  *
  * The microcode is built on the F3DEX2 skeleton (display list refill, flush of the RDP buffer, DL stack, the RDP command copies); the handlers sit at other pcs, there is
  * no vertex, matrix or triangle code, and the sprite / background commands are its own. docs/ucode-s2dex2.md has the semantics.
@@ -8,7 +8,13 @@
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
+#include <stdint.h>
+#include <stdio.h>
+
+#include "hle_f3dex2_int.h"
 #include "s2dex2_fx.h"
+
+#ifdef ARMLET_NATIVE
 
 enum { K_S2_SELDL = K_EXT, K_S2_LOADTXTR, K_S2_BG1CYC, K_S2_BGCOPY, K_S2_RENDERMODE, K_S2_RECT, K_S2_SPRITE, K_S2_MOVEMEM, K_S2_SCISSOR, K_S2_HALF2 };
 
@@ -52,7 +58,7 @@ static int s2_loadtxtr(struct f3 *f, unsigned *cont, int *neg)
     *cont = (unsigned)c & 0xffc;
     *neg = c < 0;
     t8 = seg_addr(t, w1);
-    dma_rd(f, 0x3a8, t8, w0 & 255);
+    f3_dma_rd(f, 0x3a8, t8, w0 & 255);
     at = (int8_t)hle_dm8(t, 0x2ae);
     v1 = hle_dm8(t, 0x3a8 + 15);
     a3 = s2_lw(t, 0x3a8 + 20);
@@ -110,9 +116,9 @@ static int s2_rect(struct f3 *f, uint32_t w1, int fresh)
     if (f->ov == OV_UNKNOWN)
         return hle_decline(t, "unknown overlay");
     if (f->ov != S2_OV_A)
-        overlay_load(f, S2_OV_A);
+        f3_overlay_load(f, S2_OV_A);
     if (fresh)
-        dma_rd(f, 0x3c0, seg_addr(t, w1), 23);
+        f3_dma_rd(f, 0x3c0, seg_addr(t, w1), 23);
     s7 = f->s7;
     rc = s2dex2_obj_rect(t->dmem, &s7);
     if (rc != S2_DONE)
@@ -186,7 +192,7 @@ static int s2_ext_cmd(struct f3 *f, unsigned kind)
             return HLE_OK;
         a2 = (v0 & ~w1) | a0;
         s2_sw(t, 0x2b0 + at, a2);
-        do_dl(f, w0, hle_dm32(t, 0xd0));
+        f3_do_dl(f, w0, hle_dm32(t, 0xd0));
         return HLE_OK;
     }
     case K_S2_LOADTXTR: {
@@ -212,8 +218,8 @@ static int s2_ext_cmd(struct f3 *f, unsigned kind)
         if (f->ov == OV_UNKNOWN)
             return hle_decline(t, "unknown overlay");
         if (f->ov != S2_OV_B)
-            overlay_load(f, S2_OV_B);                                 /* G_BG_1CYC: the uObjBg (40 bytes) to DMEM 0x3b0, then the background is drawn as strips of texture rectangles */
-        dma_rd(f, 0x3b0, seg_addr(t, w1), 39);
+            f3_overlay_load(f, S2_OV_B);                                 /* G_BG_1CYC: the uObjBg (40 bytes) to DMEM 0x3b0, then the background is drawn as strips of texture rectangles */
+        f3_dma_rd(f, 0x3b0, seg_addr(t, w1), 39);
         if (s2dex2_obj_bg1cyc(t->dmem, &s7, &s6, &c) != S2_DONE)
             return hle_decline(t, "S2DEX BG_1CYC routine");
         f->s7 = s7;
@@ -221,7 +227,7 @@ static int s2_ext_cmd(struct f3 *f, unsigned kind)
         return HLE_OK;
     }
     case K_S2_MOVEMEM:                                  /* G_OBJ_MOVEMEM: size from bits 16..23, the DMEM address from the table at 0x388 indexed by the low bits of w0 */
-        dma_rd(f, hle_dm16(t, w0 + 904), seg_addr(t, w1), (w0 >> 16) & 0xff);
+        f3_dma_rd(f, hle_dm16(t, w0 + 904), seg_addr(t, w1), (w0 >> 16) & 0xff);
         return HLE_OK;
     default: {
         static char why[8][48];
@@ -233,11 +239,14 @@ static int s2_ext_cmd(struct f3 *f, unsigned kind)
     }
 }
 
-/* head, copy, sync, segcopy, ef, ed, tri1, tri2, vtx, mtx, geom, enddl, half2, modvtx, culldl, branchz, mvp, zex, reject mask, tri4, layout, pcs, ext, ext_cmd */
-static const struct f3dex2_build l_b_s2_208 = { 0x1ac, 0x140, 0x144, 0x150, 0x170, 0xfff, 0, 0, 0, 0, 0, 0x07c, 0xfff, 0, 0, 0, 0, 0, 0, 0, &l_lay_s2, &l_pcs_s2, l_ext_s2, s2_ext_cmd };
+static const struct f3dex2_build l_b_s2_208 = {
+    .head = 0x1ac, .copy = 0x140, .sync = 0x144, .segcopy = 0x150, .ef = 0x170, .ed = 0xfff, .tri1 = 0, .tri2 = 0, .vtx = 0,
+    .mtx = 0, .geom = 0, .enddl = 0x07c, .half2 = 0xfff, .modvtx = 0, .culldl = 0, .branchz = 0, .reject_mask = 0, .tri4 = 0, .lay = &l_lay_s2, .pcs = &l_pcs_s2, .ext = l_ext_s2, .ext_cmd = s2_ext_cmd };
 
 /* dead at the end of a task: the display list input buffer (0x418 .. 0x4c0; a lean run reads the list from RDRAM) and the two RDP output buffers with their slack (0x4c0 .. 0x890 and 0x8c0 .. 0xc90: 800 bytes each,
  * 0xc00 apart, 0xb0 of slack for the longest command): the handlers write the commands there and the flush DMAs them to the FIFO. */
 static const struct hle_dead_range l_dead_s2[] = { { 0x418, 0x890 }, { 0x8c0, 0xc90 }, { 0xfc8, 0xfcc } };
 #define S2DEAD .ring_off = 0xfe8, .dead = l_dead_s2, .n_dead = sizeof(l_dead_s2) / sizeof(l_dead_s2[0])
-HLE_UCODE(l_s2_208) = { .id = 0xb228360be43c0447ull, .name = "S2DEX fifo 2.08 (Worms Armageddon)", .fam = &l_fam, .fam_data = &l_b_s2_208, S2DEAD };
+HLE_UCODE(l_s2_208) = { .id = 0xb228360be43c0447ull, .name = "S2DEX fifo 2.08 (Worms Armageddon)", .fam = &f3dex2_fam, .fam_data = &l_b_s2_208, S2DEAD };
+
+#endif

@@ -310,7 +310,7 @@ The **lean mode** (default; `ARMLET_HLE_EXACT=1` turns it off) does only the SP 
 vertices from RDRAM instead of through a DMA to the slots (the 40-byte records written over them cover the range), the matrices, lights and viewport are copied, the RDP buffer is written to the ring with
 `hle_rdram_write`, the lighting and clipping overlays are tracked and the one that the microcode would have left is loaded once at the end. The decisions that the microcode makes per chunk (where the ring wraps, whether the RDP
 would have to catch up) are still made chunk by chunk, so DPC_START / END and the FIFO pointer end where the microcode's do. The ranges that this leaves different from the JIT's are the F3DEX2 table's
-(`l_dead_out`, below).
+(`f3dex2_dead_out`, below).
 
 **The F3DEX2 table of dead ranges** (cited where it is declared): the display list input buffer 0x920 .. 0x9c8 (the last refill), the clipper's polygon lists 0x3ca .. 0x408 and new vertices 0x9c8 .. 0xba8, the RDP output buffers
 and their slack up to 0xfb8, the padding byte of each colour / direction of the light slots, and the word at 0xfc8 (OSTask.ucode_boot: the initialisation stores register a0 there, `sw a0, 0xfc8`, which holds what the
@@ -323,7 +323,7 @@ the state a native front-end computes and the interpreter does not need to repro
 after every command that changes it), `HLE_DUMP_IMEM=<file>`, `HLE_DUMP_STREAM=<file>` (the native side's RDP stream), `HLE_DMEM_ALL` (list every differing DMEM byte), `HLE_RSP_TRIPC=<pc>` (the interpreter prints the three vertex slots at a triangle entry), `HLE_RSP_DEBUG=<n>` (the first n interpreted instructions), `HLE_RSP_TRACE` (every interpreted instruction with the vector register it wrote), `HLE_RSP_WATCH=<addr>` (every change of
 a DMEM byte, with the pc), `HLE_RSP_PROFILE` (executions per pc, `PROF pc count` lines on stderr at the end of every task).
 
-**Dialects of the F3DEX2 front-end** (`hle_f3dex2_dialects.inc`, `hle_s2dex2.inc`; the microcode semantics and the builds are in [ucode-f3dex2-dialects.md](ucode-f3dex2-dialects.md) and [ucode-s2dex2.md](ucode-s2dex2.md)). Builds
+**Dialects of the F3DEX2 front-end** (`hle_f3dex2_dialects.c`, `hle_s2dex2.c`, sharing `hle_f3dex2_int.h` with `hle_f3dex2.c`; the microcode semantics and the builds are in [ucode-f3dex2-dialects.md](ucode-f3dex2-dialects.md) and [ucode-s2dex2.md](ucode-s2dex2.md)). Builds
 that share the F3DEX2 skeleton (the display list refill, the DL stack, the RDP command copies, the flush) but differ in details are table entries of the same front-end, parameterised instead of copied:
 
 - **`struct f2_layout`** (`f3dex2_dmem.h`): the DMEM addresses the front-end uses, by name; the standard instance is what the four original builds share, a dialect that moved its state has one of its own, selected per task
