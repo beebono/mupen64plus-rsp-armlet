@@ -205,9 +205,9 @@ static int s2_ext_cmd(struct f3 *f, unsigned kind)
         hle_st16(t, 0xd0, (uint16_t)w0);
         if ((v0 & w1) == v1)
             return HLE_OK;
-        if (MUT(311, f3_store_unmodelled(f, 0x2b0 + at, 3), 0))   /* the flags word is picked by a byte of the command: past the two a game uses it is the microcode's own state (the jump table ...) */
-            return hle_decline(t, "S2DEX flags word outside the state words");
         a2 = (v0 & ~w1) | a0;
+        if (MUT(315, f3_store_unmodelled(f, 0x2b0 + at, 4), 0))     /* the flags word is addressed by a byte of w0 (a game's are the first few): 0x2b0 + 0xbe is the jump table's entry of opcode 0, whose classification the loop caches */
+            return hle_decline(t, "G_SELECT_DL flags word over the microcode's own state");
         s2_sw(t, 0x2b0 + at, a2);
         f3_do_dl(f, w0, hle_dm32(t, 0xd0));
         return HLE_OK;
