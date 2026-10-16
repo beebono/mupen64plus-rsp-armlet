@@ -40,6 +40,7 @@ struct f2_layout {
     uint16_t desc_light, desc_clip;
     uint16_t clip_planes, clip_masks;
     uint16_t out_bytes, out_toggle;
+    uint8_t pipe_sync;              /* every flush check of the build is preceded by a G_RDPPIPESYNC written at the output pointer (S2DEX 2.05 [Safe]: the entry 0x640 / 0x644 of its flush routine): 8 bytes, one of them written */
     uint8_t no_lit;                 /* the build's lighting code is another (F3DEXBG's 48-byte light slots): lit vertex commands do not use the standard lighting */
     int (*lit_vtx)(struct f3 *f);   /* ... they are run by this instead (the whole G_VTX), or decline when NULL */
 };

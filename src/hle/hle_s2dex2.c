@@ -1,5 +1,5 @@
 /*
- * arMLEt - hle_s2dex2.c: S2DEX 2.x (fifo 2.06 / 2.08: 2D sprites and backgrounds) as a dialect of the F3DEX2 front-end (hle_f3dex2.c)
+ * arMLEt - hle_s2dex2.c: S2DEX 2.x (fifo 2.05 [Safe] / 2.06 / 2.08: 2D sprites and backgrounds) as a dialect of the F3DEX2 front-end (hle_f3dex2.c)
  *
  * The microcode is built on the F3DEX2 skeleton (display list refill, flush of the RDP buffer, DL stack, the RDP command copies); the handlers sit at other pcs, there is
  * no vertex, matrix or triangle code, and the sprite / background commands are its own. docs/ucode-s2dex2.md has the semantics.
@@ -73,7 +73,7 @@ static int s2_loadtxtr(struct f3 *f, unsigned *cont, int *neg)
     a2 = a1 & a3;
     t1 = a0 & a3;
     if (t1 == a1)                                       /* the bits are loaded already */
-        return HLE_OK;
+        return MUT(309, HLE_OK, after_emit(f));
     t1 = (a0 & t0) | a2;
     s2_sw(t, 0x2b0 + v1, t1);
     hle_st8(t, 0x2ae, (uint8_t)MUT(37, -127, -126));
@@ -127,7 +127,7 @@ static int s2_rect(struct f3 *f, uint32_t w1, int fresh)
     s7 = f->s7;
     rc = s2dex2_obj_rect(t->dmem, &s7);
     if (rc != S2_DONE)
-        return rc == S2_CLIPPED ? HLE_OK : hle_decline(t, "S2DEX rectangle");
+        return rc == S2_CLIPPED ? MUT(308, HLE_OK, after_emit(f)) : hle_decline(t, "S2DEX rectangle");
     f->s7 = s7;
     return after_emit(f);
 }
@@ -148,6 +148,16 @@ static int s2_cb_flush(void *ctx, uint32_t *s7, uint32_t *s6)
     *s7 = f->s7;
     *s6 = f->s6;
     return rc != HLE_OK;
+}
+
+/* the handler pc of a dialect command in the build's table */
+static unsigned s2_pc(const struct f3dex2_build *b, unsigned kind)
+{
+    unsigned i;
+    for (i = 0; b->ext[i][0] != 0xffff; i++)
+        if (b->ext[i][1] == kind)
+            return b->ext[i][0];
+    return 0xffff;
 }
 
 static int s2_ext_cmd(struct f3 *f, unsigned kind)
@@ -195,21 +205,23 @@ static int s2_ext_cmd(struct f3 *f, unsigned kind)
         hle_st16(t, 0xd0, (uint16_t)w0);
         if ((v0 & w1) == v1)
             return HLE_OK;
+        if (MUT(311, f3_store_unmodelled(f, 0x2b0 + at, 3), 0))   /* the flags word is picked by a byte of the command: past the two a game uses it is the microcode's own state (the jump table ...) */
+            return hle_decline(t, "S2DEX flags word outside the state words");
         a2 = (v0 & ~w1) | a0;
         s2_sw(t, 0x2b0 + at, a2);
         f3_do_dl(f, w0, hle_dm32(t, 0xd0));
         return HLE_OK;
     }
-    case K_S2_LOADTXTR: {                               /* (the continuation pcs are the 2.08 ones less the build's shift: Kirby 64's text has its handlers from 0x184 on 8 bytes lower) */
-        unsigned cont, sh = MUT(258, 0x1ac - f->b->head, 0);
+    case K_S2_LOADTXTR: {                               /* (the continuation pcs are the build's: the loop head, and the sprite and rectangle code 0x20 behind the handlers of those commands; Kirby 64's text has its handlers from 0x184 on 8 bytes lower than Worms', Ocarina of Time's 0x10 higher from 0x644 on) */
+        unsigned cont, loop = MUT(258, f->b->head, 0x1ac), spr = MUT(258, s2_pc(f->b, K_S2_SPRITE) + 0x20, 0x6e8), rct = MUT(258, s2_pc(f->b, K_S2_RECT) + MUT(304, 0x20, 0x28), 0xba8);
         int neg, rc;
         int32_t c = s2_lh(t, 0x202 + (w0 >> 23));
-        if (((unsigned)c & 0xffc) == 0x6e8 - sh || (((unsigned)c & 0xffc) == 0xba8 - sh && c < 0))
+        if (((unsigned)c & 0xffc) == spr || (((unsigned)c & 0xffc) == rct && c < 0))
             return hle_decline(t, "S2DEX LDTX_SPRITE / LDTX_RECT_R");
         rc = s2_loadtxtr(f, &cont, &neg);
-        if (rc != HLE_OK || cont == 0x1ac - sh)
+        if (rc != HLE_OK || cont == loop)
             return rc;
-        if (cont != 0xba8 - sh)
+        if (cont != rct)
             return hle_decline(t, "S2DEX LOADTXTR continuation");
         return s2_rect(f, w1, 0);
     }
@@ -282,19 +294,38 @@ static const struct f3dex2_build l_b_s2_208 = {
     .head = 0x1ac, .copy = 0x140, .sync = 0x144, .segcopy = 0x150, .ef = 0x170, .ed = MUT(248, 0xffff, 0xfff), .tri1 = 0, .tri2 = 0, .vtx = 0,
     .mtx = 0, .geom = 0, .enddl = 0x07c, .half2 = MUT(248, 0xffff, 0xfff), .modvtx = 0, .culldl = 0, .branchz = 0, .reject_mask = 0, .tri4 = 0, .lay = &l_lay_s2, .pcs = &l_pcs_s2, .ext = l_ext_s2, .ext_cmd = s2_ext_cmd, .load_key = 0xe81031ed857b6664ull };
 
-/* dead at the end of a task: the display list input buffer (0x418 .. 0x4c0; a lean run reads the list from RDRAM) and the two RDP output buffers with their slack (0x4c0 .. 0x890 and 0x8c0 .. 0xc90: 800 bytes each,
+/* dead at the end of a task: the display list input buffer (0x418 .. 0x4c0; a lean run reads the list from RDRAM) and the two RDP output buffers with their slack (0x4c0 .. 0x890 and 0x8c0 .. 0xc90: 800 bytes each (792 in the 2.05 build),
  * 0xc00 apart, 0xb0 of slack for the longest command): the handlers write the commands there and the flush DMAs them to the FIFO. */
 static const struct hle_dead_range l_dead_s2[] = { { 0x418, 0x890 }, { 0x8c0, 0xc90 }, { 0xfc8, 0xfcc } };
 #define S2DEAD .ring_off = 0xfe8, .dead = l_dead_s2, .n_dead = sizeof(l_dead_s2) / sizeof(l_dead_s2[0])
-/* Kirby 64's S2DEX (loaded by G_LOAD_UCODE in the middle of the F3DEX2 2.04H tasks: docs/ucode-f3dex2-dialects.md section 5.6): the same microcode as Worms' with its handlers from 0x184 on 8 bytes lower (one
- * initialisation instruction less, a nop less), the same DMEM layout, constants and overlay code; the continuation pcs of G_OBJ_LOADTXTR are shifted with them (s2_ext_cmd). */
+/* The S2DEX 2.06 text (Kirby 64's, loaded by G_LOAD_UCODE in the middle of the F3DEX2 2.04H tasks: docs/ucode-f3dex2-dialects.md section 5.6; Resident Evil 2's, which starts tasks with it): Worms' 2.08 with its
+ * handlers from 0x184 on 8 bytes lower (one initialisation instruction less, a nop less), the same DMEM layout, constants and overlay code; the continuation pcs of G_OBJ_LOADTXTR are shifted with them (s2_ext_cmd). */
 static const uint16_t l_ext_s2k[][2] = {
     { 0x024, K_S2_SELDL }, { 0x550, K_S2_LOADTXTR }, { 0xb74, K_S2_BG1CYC }, { 0x208, K_S2_BGCOPY }, { 0x0e8, K_S2_RENDERMODE }, { 0xb80, K_S2_RECT }, { 0x6c0, K_S2_SPRITE },
     { 0x0a4, K_S2_MOVEMEM }, { 0x1d0, K_S2_SCISSOR }, { 0x128, K_S2_HALF2 }, { 0xffff, 0 } };
 static const struct f3dex2_build l_b_s2_kirby = {
     .head = 0x1a4, .copy = 0x140, .sync = 0x144, .segcopy = 0x150, .ef = 0x170, .ed = MUT(248, 0xffff, 0xfff), .tri1 = 0, .tri2 = 0, .vtx = 0,
     .mtx = 0, .geom = 0, .enddl = 0x07c, .half2 = MUT(248, 0xffff, 0xfff), .modvtx = 0, .culldl = 0, .branchz = 0, .reject_mask = 0, .tri4 = 0, .lay = &l_lay_s2, .pcs = &l_pcs_s2, .ext = l_ext_s2k, .ext_cmd = s2_ext_cmd, .load_key = 0x9748556461d85ab3ull };
-HLE_UCODE(l_s2_kirby) = { .id = 0x569252e49c5c6d3bull, .name = "S2DEX fifo 2.08 (Kirby 64, loaded by G_LOAD_UCODE)", .fam = &f3dex2_fam, .fam_data = &l_b_s2_kirby, S2DEAD };
+HLE_UCODE(l_s2_kirby) = { .id = 0x569252e49c5c6d3bull, .name = "S2DEX fifo 2.06 (Kirby 64, loaded by G_LOAD_UCODE)", .fam = &f3dex2_fam, .fam_data = &l_b_s2_kirby, S2DEAD };
+
+/* Resident Evil 2's S2DEX (fifo 2.06 in its banner; 75 % of its graphics tasks start with it) is the same text as Kirby 64's, the first 0xf48 bytes word for word (the key is the same), and runs as a task of its own: the same build. */
+HLE_UCODE(l_s2_re2) = { .id = 0x5f33af89e713878bull, .name = "S2DEX fifo 2.06 (Resident Evil 2)", .fam = &f3dex2_fam, .fam_data = &l_b_s2_kirby, S2DEAD };
+
+/* The text Ocarina of Time's F3DZEX loads (928 declines in 1500 frames before this build; the banner in its data says "Gfx[Safe] S2DEX fifo 2.05", the survey called it 2.06): the 2.06 text with a G_RDPPIPESYNC written in front of the flush
+ * check (three instructions at 0x644, and a nop at 0x6cc, so the code behind 0x650 sits 0xc, behind 0x6cc 0x10 higher than in Kirby 64's text) and output buffers of 792 bytes instead of 800 (the threshold, the toggled pointer, the byte count
+ * of the flush; `s6` starts at 0x7d8: the interpreter's initialisation). Every handler that writes to the output buffer ends in the flush routine at 0x640 / 0x644, so a sync follows each of them (f2_layout.pipe_sync, after_emit).
+ * docs/ucode-s2dex2.md section 7. */
+static const struct f2_layout l_lay_s2_safe = {
+    .jump_table = 0x370, .mw_max = 14, .geom_def = F2_GEOM_DEF, .in = 0x418, .in_end = 0x4c0, .moveword_adj = 10374, .out_bytes = MUT(302, 792, 800), .out_toggle = 0xc00, .pipe_sync = MUT(303, 1, 0),
+    .desc_clip = 0x314, .desc_light = 0x31c };
+static const uint16_t l_ext_s2o[][2] = {
+    { 0x024, K_S2_SELDL }, { 0x550, K_S2_LOADTXTR }, { 0xb84, K_S2_BG1CYC }, { 0x208, K_S2_BGCOPY }, { 0x0e8, K_S2_RENDERMODE }, { 0xb90, K_S2_RECT }, { 0x6d0, K_S2_SPRITE },
+    { 0x0a4, K_S2_MOVEMEM }, { 0x1d0, K_S2_SCISSOR }, { 0x128, K_S2_HALF2 }, { 0xffff, 0 } };
+static const struct f3dex2_build l_b_s2_oot = {
+    .head = 0x1a4, .copy = 0x140, .sync = 0x144, .segcopy = 0x150, .ef = 0x170, .ed = MUT(248, 0xffff, 0xfff), .tri1 = 0, .tri2 = 0, .vtx = 0,
+    .mtx = 0, .geom = 0, .enddl = 0x07c, .half2 = MUT(248, 0xffff, 0xfff), .modvtx = 0, .culldl = 0, .branchz = 0, .reject_mask = 0, .tri4 = 0, .lay = &l_lay_s2_safe, .pcs = &l_pcs_s2, .ext = l_ext_s2o, .ext_cmd = s2_ext_cmd, .load_key = 0xaf535d1683a57fcbull };
+/* (never a task's own microcode: the id is the key of the loaded text) */
+HLE_UCODE(l_s2_oot) = { .id = 0xaf535d1683a57fcbull, .name = "S2DEX fifo 2.05 [Safe] (Ocarina of Time, loaded by G_LOAD_UCODE)", .fam = &f3dex2_fam, .fam_data = &l_b_s2_oot, S2DEAD };
 
 HLE_UCODE(l_s2_208) = { .id = 0xb228360be43c0447ull, .name = "S2DEX fifo 2.08 (Worms Armageddon)", .fam = &f3dex2_fam, .fam_data = &l_b_s2_208, S2DEAD };
 

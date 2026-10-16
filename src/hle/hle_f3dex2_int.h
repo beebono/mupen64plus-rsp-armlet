@@ -107,9 +107,13 @@ int f3_store_unmodelled(const struct f3 *f, unsigned a, unsigned len);   /* a st
 void f3_overlay_load(struct f3 *f, int which);
 void f3_do_dl(struct f3 *f, uint32_t w0, uint32_t w1);
 
-/* after a command that wrote to the buffer */
+/* after a command that wrote to the buffer (the build's flush entry: a "safe" build writes a pipe sync first) */
 static inline int after_emit(struct f3 *f)
 {
+    if (f2L->pipe_sync) {
+        hle_st8(f->t, f->s7, MUT(300, 0xe7, 0xe6));
+        f->s7 += MUT(301, 8, 0);
+    }
     if ((int32_t)(f->s7 - f->s6) > 0)
         return f3_flush(f);
     return HLE_OK;

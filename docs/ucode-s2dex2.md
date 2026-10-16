@@ -1,7 +1,14 @@
 # S2DEX 2.x microcode semantics (as the native front-end reproduces them)
 
-S2DEX is the 2D microcode: sprites (`uObjSprite`), backgrounds (`uObjBg`) and texture loads (`uObjTxtr`) turned into RDP texture rectangles. Builds known: S2DEX fifo 2.08 (Worms Armageddon, id `b228360be43c0447`,
-claimed; Kirby 64's, which is loaded in the middle of its F3DEX2 2.04H tasks by `G_LOAD_UCODE`, claimed: its handlers from 0x184 on are 8 bytes lower, [ucode-f3dex2-dialects.md](ucode-f3dex2-dialects.md) section 5.6), fifo 2.06 (Resident Evil 2, `5f33af89e713878b`, and the text Ocarina of Time loads: not claimed: the background routine and the front-end tables are for 2.08's pcs, and its output buffers and flush differ, section 5.7 of the dialects page) and the 1.06 / 1.07 builds of Yoshi's Story and Pokemon Puzzle League ([section 6](#6-s2dex-1x)).
+S2DEX is the 2D microcode: sprites (`uObjSprite`), backgrounds (`uObjBg`) and texture loads (`uObjTxtr`) turned into RDP texture rectangles. Builds known (three texts of the 2.x generation, all claimed):
+
+| text | games | key / id | what it is |
+|---|---|---|---|
+| fifo 2.08 | Worms Armageddon (task start, id `b228360be43c0447`) | | the reference of the closed forms below |
+| fifo 2.06 | Kirby 64 (loaded by `G_LOAD_UCODE` in the middle of its F3DEX2 2.04H tasks, id `569252e49c5c6d3b`); Resident Evil 2 (task start, id `5f33af89e713878b`, 75 % of its graphics tasks) | `9748556461d85ab3` | one text: the handlers from 0x184 on are 8 bytes lower than Worms' ([ucode-f3dex2-dialects.md](ucode-f3dex2-dialects.md) sections 5.6 and 5.7) |
+| fifo 2.05 [Safe] | Ocarina of Time (loaded by `G_LOAD_UCODE` in the middle of its F3DZEX tasks) | `af535d1683a57fcb` | the 2.06 text with a pipe sync in front of every flush check, 792-byte output buffers, the handlers behind 0x650 0xc..0x10 higher ([section 7](#7-the-safe-build-s2dex-205-ocarina-of-time)) |
+
+The 1.06 / 1.07 builds of Yoshi's Story and Pokemon Puzzle League are not claimed ([section 6](#6-s2dex-1x)).
 The front-end is a dialect of the F3DEX2 one (`src/hle/hle_s2dex2.c`, built on the shared header `hle_f3dex2_int.h`): S2DEX 2.x is built on the F3DEX2 skeleton, so the display list refill, the DL stack, the segment table, the other-mode
 commands, the RDP command copies and the flush of the output buffer are the F3DEX2 ones at other pcs and DMEM addresses; the sprite and background commands are its own. Addresses are DMEM byte addresses.
 
@@ -21,6 +28,9 @@ commands, the RDP command copies and the flush of the output buffer are the F3DE
 | sync state | bytes 0x2ae (the last load state) and 0x2af (the tile toggle 0 / 2); the loaded-texture words at 0x2b0 + class |
 | scratch for vector-to-scalar moves | DMEM 0x1c0 .. (`SSV` / `SLV` then `lw`) |
 
+The layout above is 2.08's; the 2.06 text (Kirby 64, Resident Evil 2) has the same DMEM layout and the handlers from 0x184 on 8 bytes lower (loop head 0x1a4, `G_OBJ_LOADTXTR` 0x550, `G_BG_1CYC` 0xb74, `G_BG_COPY` 0x208, `G_OBJ_RECTANGLE` 0xb80, `G_SETSCISSOR` 0x1d0, overlays at IMEM 0x6c0), and the 2.05 text
+(Ocarina of Time) 792-byte output buffers and the handlers behind 0x650 higher by 0xc to 0x10 (loop head 0x1a4, `G_BG_1CYC` 0xb84, `G_OBJ_RECTANGLE` 0xb90, overlays at IMEM 0x6d0; [section 7](#7-the-safe-build-s2dex-205-ocarina-of-time)).
+
 Two code overlays share IMEM 0x6c8 (descriptors at DMEM 0x314 and 0x31c: RDRAM offset from the text, length, IMEM address; the offsets point beyond the 4 KiB the survey saw): **A** (sprites and rectangles, at text + 0x648)
 and **B** (backgrounds, at text + 0x1198). Each starts with stubs that load the other and return. The front-end tracks which is resident like the F3DEX2 one tracks its clip / light overlays (`OV_CLIP` = A, `OV_LIGHT` = B).
 
@@ -37,7 +47,7 @@ and **B** (backgrounds, at text + 0x1198). Each starts with stubs that load the 
 | `G_OBJ_LOADTXTR` 0x05, `LDTX_SPRITE` 0x06, `LDTX_RECT` 0x07, `LDTX_RECT_R` 0x08 | 0x558 | the object to 0x3a8; when its bits are not in the loaded-texture word yet: (SYNC_TILE when 0x2ae says so), SET_TEXTURE_IMAGE, SET_TILE (tile 7), SYNC_LOAD, the load command; then the halfword at `0x202 + (w0 >> 23)` is the pc the microcode continues at (the loop head, the sprite code at 0x6e8, the rectangle code at 0xba8, negative: the rotated rectangle) |
 | `G_OBJ_RECTANGLE` 0x01, `_R` 0xda | overlay A 0xb88 | SET_TILE, SET_TILE_SIZE and TEXTURE_RECTANGLE (+ a sync before them when the tile toggles); `s2dex2_obj_rect` in `s2dex2_rect.c` (section 3b) |
 | `G_BG_1CYC` 0x09 | overlay B 0x6f4 | the background as strips of texture rectangles; `s2dex2_obj_bg1cyc` (`s2dex2_bg.c`, section 3a) |
-| `G_BG_COPY` 0x0a | 0x210 (Kirby 64's build: 0x208) | the background in the COPY cycle type; `s2dex2_obj_bgcopy` (`s2dex2_bg.c`, section 3c) |
+| `G_BG_COPY` 0x0a | 0x210 (the 2.06 and 2.05 builds: 0x208) | the background in the COPY cycle type; `s2dex2_obj_bgcopy` (`s2dex2_bg.c`, section 3c) |
 | `G_OBJ_SPRITE` 0x02 / 0xd9 | | not implemented (the front-end declines the task); neither Worms nor Kirby 64 uses them |
 
 ## 3. Kernels
@@ -109,7 +119,7 @@ Checked against the microcode itself (the rsp2c translation of Kirby 64's 0x224 
 
 ## 4. Dead ranges
 
-0x418 .. 0x890 and 0x8c0 .. 0xc90 (input buffer, the two output buffers with their slack), 0xfc8 .. 0xfcc; Kirby 64's build has the same ranges, and they are in the F3DEX2 2.04H entry too (the task starts with that text). Poison runs: `ARMLET_DMEM_POISON=mask` and `all` on Worms, 900 frames, state / pictures / audio identical.
+0x418 .. 0x890 and 0x8c0 .. 0xc90 (input buffer, the two output buffers with their slack), 0xfc8 .. 0xfcc; the 2.06 and 2.05 builds have the same ranges (the 792-byte buffers and the sync's 8 bytes fit in the slack), and they are in the F3DEX2 2.04H entry too (the task starts with that text). Poison runs: `ARMLET_DMEM_POISON=mask` and `all` on Worms, 900 frames, state / pictures / audio identical.
 
 ## 5. What was measured
 
@@ -124,3 +134,13 @@ loads the overlay of descriptor 0x3d0). Yoshi's Story executes nearly every comm
 the same set at lower rates. The commands are the same ones as in 2.x but other code, so the 2.08 kernels do not apply. The interpreter reproduces all 58 captured Yoshi tasks (so the task-level framework would carry a
 front-end), but a front-end needs its own loop, flush and a kernel per command, and these tasks are small (a few microseconds on the JIT, see the Worms measurement), so it was not written. To start one: the dumps of `tools/ucode_dump_run.sh`,
 the overlay images from the DMA rows of captured task starts (`ARMLET_HLE_CAPTURE`), and `tools/rsp2c/rsp2c.py` to regenerate a reference of a handler (docs/testing.md, "Regenerating the microcode oracles").
+
+## 7. The Safe build (S2DEX 2.05, Ocarina of Time)
+
+The text `G_LOAD_UCODE`d by Ocarina of Time's F3DZEX (banner "Gfx[Safe] S2DEX fifo 2.05" in its data; `l_b_s2_oot` in `hle_s2dex2.c`) is the 2.06 text with, in the flush routine, `addi t3, zero, 0xe7; sb t3, 0(s7); addi s7, s7, 8` in front of the buffer check at 0x644 (entry 0x640 sets the return address
+and falls into it): **every handler that writes to the output buffer is followed by a `G_RDPPIPESYNC`**, one byte written, the other seven what the buffer held (the RDP ignores them; the stream compare zeroes them for a task that switched builds). The output buffers are 792 bytes (`s6` 0x7d8 at the start; the second buffer is 0xc00 higher
+as before). Nothing else changes in the semantics: the overlay code A (sprites, rectangles; resident in the text image) and B (backgrounds; text + 0x1198) are word for word the 2.06 code with the branch offsets and jump targets relocated by the 0xc / 0x10 bytes the inserted instructions move the resident code.
+
+The front-end parameterises that instead of copying: `f2_layout.out_bytes` (792) and `f2_layout.pipe_sync`; `after_emit`, which every handler's emission ends in (the generic RDP copies, `G_SETSCISSOR`, `G_RDPHALF_2`, `G_OBJ_LOADTXTR`, the rectangle, and the flush callback the background routines call after every strip), writes the sync first. A command that
+writes nothing (a sprite outside the scissor, a texture object whose bits are loaded, a background with nothing visible) jumps to the loop head and has none (mutations 308, 309). The kernels are the 2.08 ones, untouched; the continuation pcs of `G_OBJ_LOADTXTR` are derived from the build's own table (the handler of `G_OBJ_SPRITE` / `G_OBJ_RECTANGLE` + 0x20).
+`G_OBJ_SPRITE` and the rotated forms still decline. What Ocarina of Time draws: `G_BG_COPY` only.
