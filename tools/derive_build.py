@@ -186,7 +186,12 @@ def report(reg, fam, res, U, args):
     out = []
     P = out.append
     P("ucode %s  %s" % (uc.stem, uc.banner[:100]))
-    P("games: %s" % ", ".join("%s (%d)" % kv for kv in sorted(uc.games.items(), key=lambda kv: -kv[1])[:8]))
+    gm = collections.Counter()
+    for x in reg.C.by_stem.values():
+        if x.h4k == uc.h4k:
+            for g, n in x.games.items():
+                gm[g] += n
+    P("games (tasks in the survey run): %s" % ", ".join("%s (%d)" % kv for kv in gm.most_common(8)))
     P("family scores (family, aligned fraction, residual words, verdict): %s" % res.family_scores)
     P("best family %s; primary reference %s; also explained by %s" % (fam, res.primary, res.contrib or "-"))
     P("VERDICT %s" % res.verdict)
@@ -217,6 +222,17 @@ def report(reg, fam, res, U, args):
         for n in res.notes:
             P("  note: " + n)
         P("  attribute evidence (pairs, votes): %s" % res.flag_evidence)
+    if fam == "f3dex2":
+        rows, final = F2.handler_table(res, U)
+        P("")
+        P("per handler (the words reachable from its entry; shared code is counted in every handler that reaches it): same = identical word, reloc = pc / DMEM address / derived constant, composite = explained by another reference, pad = nop / overlay slack, X = unexplained")
+        P("  %-34s %5s %6s %6s %6s %6s %6s %5s %5s" % ("handler (opcodes)", "pc", "words", "same", "reloc", "compo", "pad", "near", "X"))
+        for names, pc, n, c in rows:
+            P("  %-34s %5s %6d %6d %6d %6d %6d %5d %5d" % (names[:34], "%03x" % pc, n, c["same"], c["reloc"], c["composite"], c["pad"] + c["pattern"] + c["rule"], c["near"], c["X"]))
+        by_h = {}
+        for names, pc, n, c in rows:
+            if c["X"]:
+                by_h[names] = c["X"]
     P("")
     if res.x:
         P("UNEXPLAINED differences (%d words), by U address:" % len(res.x))

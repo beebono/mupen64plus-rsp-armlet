@@ -2,7 +2,7 @@
 
 Question: could the task-level native path (`src/hle`, one `struct hle_ucode` per exact FNV-1a-64 id, see [design.md](design.md) "Graphics ucode identification" and "Task-level native path"; the
 earlier per-routine `armlet_routine` hooks with `dep` / `hash` ranges are the same idea at routine granularity) match builds by *normalised code* instead, so that a build nobody has hand-registered still
-gets the native front-end? This is an offline survey over 63 games; nothing here changes the tree.
+gets the native front-end? This is an offline survey over 63 games; nothing here changes the tree. Follow-ups: [ucode-coverage.md](ucode-coverage.md) (task and time shares of the same games, per ucode) and [ucode-derive.md](ucode-derive.md) (the derivation of build records that this page recommends, as a tool).
 
 ## Method
 

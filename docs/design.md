@@ -233,6 +233,9 @@ arMLEt: gfx ucode 0d3f849c8dd309c4 F3DEX2: RSP Gfx ucode F3DZEX.NoN fifo 2.06H Y
 
 This is computed only in `GfxMode = hle`. With `lle` (the default) a graphics task goes straight to the JIT with no hashing.
 
+Offline companions: [ucode-survey.md](ucode-survey.md) (which texts exist and how close they are), [ucode-coverage.md](ucode-coverage.md) (how many graphics tasks and how much RSP time of 64 games run native today, and the ranked list of what is left) and
+[ucode-derive.md](ucode-derive.md) (`tools/derive_build.py`: derives the build record of an unregistered text from the registered builds and lists what it cannot explain; validated against the hand-written records).
+
 ## Task-level native path
 
 A graphics task of a ucode that has an `hle_ucode` entry (`src/hle/hle.h`; `GfxMode=hle`, optionally restricted by `GfxHleUcodes`) is run by `armlet_hle_run` (`src/hle/hle_core.c`) instead of

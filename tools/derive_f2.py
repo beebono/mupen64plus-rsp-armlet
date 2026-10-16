@@ -1,5 +1,6 @@
 """The F3DEX2 / S2DEX family of tools/derive_build.py: the build record (src/hle/hle_f3dex2.c, hle_f3dex2_dialects.c, hle_s2dex2.c), the alignment of an
 unknown microcode with the registered builds, the classification of every difference, and the derivation of the record."""
+import collections
 import struct
 
 import derive_lib as L
@@ -822,6 +823,47 @@ def classify_near(res, U, prim):
         res.verdict = "NEAR"
     else:
         res.verdict = "EXACT"
+
+
+OPNAMES = {0x00: "G_SPNOOP", 0x01: "G_VTX", 0x02: "G_MODIFYVTX", 0x03: "G_CULLDL", 0x04: "G_BRANCH_Z", 0x05: "G_TRI1", 0x06: "G_TRI2", 0x07: "G_QUAD", 0x10: "G_TRI4", 0xd5: "G_SPECIAL_1", 0xd6: "G_DMA_IO",
+           0xd7: "G_TEXTURE", 0xd8: "G_POPMTX", 0xd9: "G_GEOMETRYMODE", 0xda: "G_MTX", 0xdb: "G_MOVEWORD", 0xdc: "G_MOVEMEM", 0xdd: "G_LOAD_UCODE", 0xde: "G_DL", 0xdf: "G_ENDDL", 0xe1: "G_RDPHALF_1",
+           0xe2: "G_SETOTHERMODE_L", 0xe3: "G_SETOTHERMODE_H", 0xe4: "G_TEXRECT", 0xe9: "G_RDPFULLSYNC", 0xed: "G_SETSCISSOR", 0xef: "G_RDPSETOTHERMODE", 0xf1: "G_RDPHALF_2", 0xf8: "RDP command (copy)",
+           0xfd: "G_SETTIMG"}
+
+
+def handler_table(res, U):
+    """per handler (a distinct pc of the unknown's jump table): the words reachable from its entry and what became of them. -> [(names, pc, counts dict)]"""
+    img = U.img
+    tab = res.tab
+    by_pc = {}
+    for op, pc in tab.items():
+        if valid_pc(pc):
+            by_pc.setdefault(pc, []).append(op)
+    head = res.rec.pc["head"]
+    stop = [tab.get(OP_LOADER) or 0xfac, head, head - 4]
+    set_active(img, U.data, res.rec.lay)
+    final = {}
+    for j in range(img.n):
+        if j in res.x:
+            final[j] = "X"
+        elif j in res.near:
+            final[j] = "near"
+        elif j in res.waived:
+            final[j] = "rule"
+        else:
+            k = res.prim.status[j][0]
+            final[j] = {"ok": "same", "pc": "reloc", "knob": "reloc", "pad": "pad", "pat": "pattern", "X": "composite"}[k]
+    rows = []
+    for pc, ops in sorted(by_pc.items()):
+        if pc == head or pc == (tab.get(OP_LOADER) or -1) and False:
+            continue
+        r = reach(img, [pc], stop=stop)
+        c = collections.Counter(final[j] for j in r)
+        names = sorted({OPNAMES.get(o, "op%02x" % o) for o in ops if o < 0x80 or o >= 0xb0} or {OPNAMES.get(o, "op%02x" % o) for o in ops})
+        if len(names) > 4:
+            names = names[:3] + ["+%d" % (len(names) - 3)]
+        rows.append((", ".join(names), pc, len(r), c))
+    return rows, final
 
 
 def xr_residual(res):

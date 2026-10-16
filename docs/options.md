@@ -36,6 +36,7 @@ There is nothing to set for the rest of the pairing: `hle_gfx` and `hle_aud` are
 | `HLE_FX2_SCALAR=1` | aarch64: the F3DEX2 front-end uses the scalar forms of its geometry functions instead of the NEON ones (A/B timing) |
 | `ARMLET_HLE_INTERP=1` | `GfxMode=hle`: run the tasks on the interpreter instead of a family's native front-end |
 | `ARMLET_HLE_STATS=1` | the task-level path: tasks, native runs and time, declines and their reasons, verify counts (every 64 graphics tasks) |
+| `ARMLET_UCODE_STATS=<file>` | `GfxMode=hle`: per-ucode counters of the graphics tasks (tasks, native runs, declines with their reasons, JIT time, tasks of ucodes without a handler; the video plugin's callback time left out), rewritten every 128 graphics tasks and at `RomClosed`: the input of `tools/ucode_coverage.py` ([ucode-coverage.md](ucode-coverage.md)) |
 | `ARMLET_HLE_POISON=1` | after a task-level run, fill the scalar and vector registers, accumulator and flags with a pattern |
 | `ARMLET_HLE_ABORT=1`, `ARMLET_HLE_QUIET=1` | verify: `abort()` at the first mismatch; or do not log the mismatches |
 | `ARMLET_HLE_CAPTURE=<dir>` | write snapshot files of the graphics task starts the JIT runs (`hle.task-<ucode>-<n>.snap`) for `armlet-native-replay`; `ARMLET_HLE_CAPTURE_EVERY=n` (16), `_MAX=n` (16). ROM-derived: keep in `test-output/` |
