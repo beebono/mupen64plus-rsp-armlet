@@ -19,6 +19,13 @@
 #include "f3dex_fx.h"
 #include "f3dex_dmem.h"
 
+/* test builds only (scripts/build.sh native --tools --hmut=N, tools/hle/mutcheck_fuzz.sh): a deliberate error N, to show that the tests catch it (docs/testing.md) */
+#ifdef ARMLET_HLE_MUTATE
+#define MUT(n, ok, bad) (ARMLET_HLE_MUTATE == (n) ? (bad) : (ok))
+#else
+#define MUT(n, ok, bad) (ok)
+#endif
+
 #ifdef ARMLET_NATIVE
 
 #include <time.h>
@@ -117,6 +124,7 @@ struct f3dex_task {
     unsigned ncmds;
     int trace;
     uint32_t wp, fstart, fend;           /* the RDRAM write pointer (DMEM 0x128) and the FIFO bounds, kept here */
+    const char *bad;                    /* a reason to decline found where the function could not return one (checked at the head of the loop) */
     uint32_t stage[STAGE_MAX / 4];        /* the staged output as host words holding the big-endian words (the layout of hle_rdram_write) */
     uint32_t pend_ptr, pend_n, vend;      /* the output not yet written (staged in stage[]), and the DPC_END the microcode would have written last */
     int vend_dirty;
@@ -310,9 +318,18 @@ static void load_overlay(struct f3dex_task *f, int k)           /* the DMA table
 
 /* ---- the operand of a class-0 command: the microcode's DMA into 0xae0, or (not exact) the RDRAM itself ----------------------------------------------------------------------- */
 struct src { const uint32_t *img; unsigned base; int ram; };
+/* The RDP output ring is written by the task's own flushes and the compare treats the bytes the RDP ignores (second words of syncs, slack) as don't care: a display list, vertices, a matrix or a light
+ * read from inside it would read those bytes. Not a game's: decline (docs/design.md). */
+static inline int ring_hit(const struct f3dex_task *f, uint32_t a, uint32_t n)
+{
+    a &= 0x7ffff8;
+    return a < (f->fend & 0xffffff) && a + n > (f->fstart & 0x7fffff);
+}
 static struct src fetch(struct f3dex_task *f, uint32_t dram, uint32_t lenreg)
 {
     struct src s;
+    if (MUT(243, ring_hit(f, dram, ((lenreg & 0x3ff) | 7) + 1), 0))
+        f->bad = "a read from inside the RDP output ring";
     if (f->exact) {
         hle_dma_read(f->t, OPERAND, dram, lenreg);
         s.img = f->t->dmem; s.base = OPERAND; s.ram = 0;
@@ -348,6 +365,8 @@ static int cmd_mtx(struct f3dex_task *f, uint32_t w0, uint32_t w1)
     if (!(fl & 1) && (fl & 4)) {
         uint32_t ptr = hle_dm32(t, 0x134), lim = hle_dm32(t, 0x15c);
         if (ptr != lim) {
+            if (MUT(244, ring_hit(f, ptr, dma_bytes(w0)), 0))       /* (the output is staged and written later: a write into the ring now would be ordered differently from the microcode's) */
+                return hle_decline(t, "matrix push into the RDP output ring");
             hle_st32(t, 0x134, ptr + 64);
             hle_dma_write(t, F3DEX_DM_MV, ptr, w0 & 0x3ff);
         }
@@ -407,6 +426,8 @@ static int cmd_vtx(struct f3dex_task *f, uint32_t w0, uint32_t w1)
     uint32_t geom = hle_dm32(t, 0x114);
     if ((v0x2 & 1) || (v0x2 >> 1) + cnt > 32 || dma_bytes(w0) < 16 * cnt)
         return hle_decline(t, "G_VTX slot range or length unusual");
+    if (MUT(239, geom & ~F3DEX_G_DEFINED, 0))               /* (bits the microcode's mode word has no meaning for steer its vertex and triangle code in ways the struct-level functions do not model) */
+        return hle_decline(t, "geometry mode bits the build does not define");
     s = fetch(f, seg(t, w1), w0 & 0x3ff);               /* the class-0 DMA comes first */
     if (geom & F3DEX_G_LIGHTING) {
         uint32_t l = hle_dm32(t, 0x12c);
@@ -458,6 +479,8 @@ static int tri_one(struct f3dex_task *f, unsigned a0, unsigned a1, unsigned a2, 
     uint8_t cmd[0xc0];
     unsigned len = 0, k, ad[3] = { a0, a1, a2 };
     int rc;
+    if (MUT(239, hle_dm32(t, 0x114) & ~F3DEX_G_DEFINED, 0))
+        return hle_decline(t, "geometry mode bits the build does not define");
     for (k = 0; k < 3; k++) {
         if ((ad[k] & 1) || ad[k] >= 64)
             return hle_decline(t, "G_TRI: vertex index outside the buffer");
@@ -617,6 +640,8 @@ static int f3dex_run(struct hle_task *t, const struct hle_ucode *u)
     for (;;) {
         uint32_t w0, w1;
         unsigned op;
+        if (f.bad)
+            return hle_decline(t, f.bad);
         if (++f.ncmds > 30000)
             return hle_decline(t, "more commands than the status polls allow");
         w0 = hle_rd32(t, f.k0);
@@ -688,8 +713,11 @@ static int f3dex_run(struct hle_task *t, const struct hle_ucode *u)
                 break;
             case 0xbc: {
                 unsigned ii = w0 & 0xff;
+                unsigned off = (w0 >> 8) & 0xffff;
                 if ((ii & 1) || ii > (b->v095 ? 0x0c : 0x0e))
                     return hle_decline(t, "G_MOVEWORD index outside the table");
+                if (MUT(238, (off & 3) || off > (ii == 10 ? 0x1fc : 0x3c), 0))     /* a game's offsets are words within the group (segments 0 .. 0x3c, clip ratios, the light colours up to the last light) */
+                    return hle_decline(t, "G_MOVEWORD offset outside what a game writes");
                 st32u(t, (unsigned)(int16_t)hle_dm16(t, 0x30e + ii) + ((w0 >> 8) & 0xffff), w1);
                 break;
             }
@@ -732,6 +760,9 @@ static int f3dex_run(struct hle_task *t, const struct hle_ucode *u)
                 return hle_decline(t, "unsupported class-2 opcode");
             }
         } else if (op < 0x40) {                         /* class 0: a DMA into the operand buffer is started for every one of them; then the handler */
+            /* (the DMA is not issued in the lean mode, and the buffer and the output buffer after it are dead: a length that runs on into the live DMEM past 0xce0 is not a game's) */
+            if (MUT(227, dma_bytes(w0) > OUTBUF - OPERAND, 0))
+                return hle_decline(t, "class-0 operand longer than the operand buffer");
             switch (op) {
             case 0x00: case 0x02: case 0x05: case 0x07: case 0x08: case 0x09:
                 if (f.exact)
@@ -767,6 +798,8 @@ static int f3dex_run(struct hle_task *t, const struct hle_ucode *u)
             if (f.exact)
                 hle_dma_read(t, WINDOW, f.k0, 319);
             f.gp = 320;
+            if (MUT(243, ring_hit(&f, f.k0, 320), 0))
+                f.bad = "the display list is inside the RDP output ring";
         }
     }
 

@@ -12,6 +12,8 @@
          tri     triangles of all sizes, culling modes, flat and smooth shading, textures: the triangle setup
          mix     vertices in batches of odd and even counts up to the end of the vertex buffer, the triangles between them
          misc    the other commands: G_CULLDL, G_BRANCH_Z (with its G_RDPHALF_1), G_MODIFYVTX, G_QUAD, G_SPECIAL_1 (2.04H), G_POPMTX, display list calls and branches, other-mode and texture commands
+         wild    vertices with coordinates over the whole 16-bit range and matrices of large scale (the overflow and saturation paths of the vertex pipeline and the triangle setup), triangles between
+         bad     commands whose vertex numbers, indices or offsets no game writes (past the 32 slots, odd, past the tables): a triangle, G_MODIFYVTX, G_CULLDL, G_BRANCH_Z, G_MOVEWORD, G_MOVEMEM; the front-ends decline them
          lit     lit vertices (1 to 5 lights, look-at vectors, texture generation linear or not, fog), the triangles between them
 """
 import random
@@ -80,12 +82,12 @@ def common(r, geom, trans_z, tex):
 def case(name, seed):
     r = random.Random(seed * 7919 + len(name))
     data = {}
-    if name in ("clip", "zneg", "tri", "mix"):
+    if name in ("clip", "zneg", "tri", "mix", "wild"):
         shade = r.choice([0, 0x4, 0x4 | 0x200000])
         zb = r.choice([0, 1])
         tex = r.choice([0, 2])
         cull = r.choice([0, 0, 0x400, 0x200, 0x600])
-        geom = shade | zb | tex | cull | 0x800000
+        geom = shade | zb | cull | 0x800000                 # (the texture on byte is set by G_TEXTURE below; bit 1 of the geometry mode means nothing to F3DEX2)
         if len(sys.argv) > 3:
             print('INFO', name, seed, 'shade %x zb %d tex %d cull %x' % (shade, zb, tex, cull), file=sys.stderr)
         trans_z = 0 if name == "zneg" else r.choice([0x1ff, 0, 0x100])
@@ -95,6 +97,8 @@ def case(name, seed):
             scale = r.choice([1, 1, 0.5, 0.25, 1 / 16, 1 / 64, 1 / 256, 1 / 1024])
         elif name == "zneg":
             scale = r.choice([1, 0.25])
+        elif name == "wild":
+            scale = r.choice([1, 2, 4, 16, 64, 256])
         else:
             scale = r.choice([1, 0.5, 1 / 8])
         mv = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]
@@ -112,7 +116,7 @@ def case(name, seed):
         for b in range(nbatch):
             n = r.choice([3, 3, 4, 5, 6, 9, 11, 16]) if name != "mix" else r.randrange(1, 12)
             v0 = r.randrange(0, 32 - n + 1) if name != "mix" else (32 - n if r.random() < 0.5 else r.randrange(0, 32 - n + 1))
-            span = r.choice([4, 10, 30, 100, 400]) if name != "zneg" else r.choice([0.5, 1.0])
+            span = r.choice([4, 10, 30, 100, 400]) if name not in ("zneg", "wild") else r.choice([0.5, 1.0]) if name == "zneg" else r.choice([2000, 10000, 32767])
             ctr = [r.uniform(-span, span) for _ in range(3)]
             vs = b""
             for i in range(n):
@@ -122,8 +126,10 @@ def case(name, seed):
                     # z is an integer in the vertex: scale up the whole matrix instead
                     x, y, z = int(p[0]), int(p[1]), r.choice([-1, 0, 0, 1])
                 else:
-                    sp = r.choice([1, 2, 5, 20, 100])
+                    sp = r.choice([1, 2, 5, 20, 100]) if name != "wild" else r.choice([100, 2000, 32768])
                     x, y, z = [max(-32768, min(32767, int(c + r.uniform(-sp, sp)))) for c in ctr]
+                    if name == "wild":                      # some coordinates at the ends of the 16-bit range
+                        x, y, z = [r.choice([-32768, -32767, 32767, 0, 1, -1]) if r.random() < 0.25 else c for c in (x, y, z)]
                 vs += vtx(x, y, z, r.randrange(-1024, 1024), r.randrange(-1024, 1024), (r.randrange(256), r.randrange(256), r.randrange(256), r.randrange(256)))
             data[vaddr] = vs
             d.cmd((0x01 << 24) | (n << 12) | ((v0 + n) << 1), BASE + vaddr)
@@ -194,6 +200,39 @@ def case(name, seed):
                 d.cmd(0xd9000000 | (r.randrange(1 << 24)), 0)
             else:
                 d.cmd((0x05 << 24) | (vi() * 2 << 16) | (vi() * 2 << 8) | vi() * 2)
+        d.cmd(0xdf000000, 0)
+    elif name == "bad":
+        geom = 0x4 | 0x200000 | 1 | 0x800000
+        d, data = common(r, geom, 0x1ff, 2)
+        data[0x500] = mtx([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1])
+        data[0x540] = mtx(rnd_matrix(r, 0.5))
+        d.cmd(0xda380007, BASE + 0x540)
+        d.cmd(0xda380003, BASE + 0x500)
+        n = 12
+        data[0x600] = b"".join(vtx(r.randint(-30, 30), r.randint(-30, 30), r.randint(-30, 30), r.randrange(-512, 512), r.randrange(-512, 512),
+                                   (r.randrange(256), r.randrange(256), r.randrange(256), r.randrange(256))) for _ in range(n))
+        d.cmd((0x01 << 24) | (n << 12) | (n << 1), BASE + 0x600)
+        sub = DL()
+        sub.cmd(0xf7000000, 0x11111111)
+        sub.cmd(0xdf000000, 0)
+        data[0x800] = sub.bytes()
+        bad = lambda: r.choice([r.randrange(0x40, 0x100), r.randrange(0, 0x40) | 1, r.randrange(0x100, 0x1000)])
+        for _ in range(r.randrange(2, 6)):
+            k = r.randrange(6)
+            if k == 0:
+                d.cmd((0x05 << 24) | (bad() & 0xff) << 16 | (r.randrange(n) * 2 << 8) | r.randrange(n) * 2)
+            elif k == 1:
+                d.cmd((0x02 << 24) | (r.choice([0x10, 0x14, 0x18, 0x1c, 0x28, 0x50]) << 16) | bad(), r.randrange(1 << 32))
+            elif k == 2:
+                d.cmd((0x03 << 24) | bad(), r.choice([bad(), 0x16, 0x1e]))
+            elif k == 3:
+                d.cmd(0xe1000000, BASE + 0x800)
+                d.cmd((0x04 << 24) | bad(), r.randrange(1 << 32))
+            elif k == 4:
+                d.cmd(0xdb000000 | (r.choice([0x10, 0x12, 0x20, 0x40, 0x04, 0x06]) << 16) | r.choice([0x41, 0x80, 0x100, 0x3e, 0x44]), r.randrange(1 << 32))
+            else:
+                d.cmd(0xdc000000 | (r.choice([0x08, 0x20, 0x40]) << 16) | (r.choice([0x10, 0x40, 0xfe, 0x7e]) | r.choice([0, 0x20])), BASE + 0x500)
+            d.cmd((0x05 << 24) | (r.randrange(n) * 2 << 16) | (r.randrange(n) * 2 << 8) | r.randrange(n) * 2)
         d.cmd(0xdf000000, 0)
     elif name == "lit":
         shade = 0x4 | 0x200000

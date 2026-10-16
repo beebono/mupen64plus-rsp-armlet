@@ -19,6 +19,13 @@
 #include "f3d_fx.h"
 #include "f3d_dmem.h"
 
+/* test builds only (scripts/build.sh native --tools --hmut=N, tools/hle/mutcheck_fuzz.sh): a deliberate error N, to show that the tests catch it (docs/testing.md) */
+#ifdef ARMLET_HLE_MUTATE
+#define MUT(n, ok, bad) (ARMLET_HLE_MUTATE == (n) ? (bad) : (ok))
+#else
+#define MUT(n, ok, bad) (ok)
+#endif
+
 #ifdef ARMLET_NATIVE
 
 /* F3D_PROF=1: where the time of a task goes (printed at exit), for development */
@@ -41,6 +48,7 @@ static void pr_dump(void)
 struct f3d_build {
     const struct f3d_layout *lay;
     uint16_t cmdbuf, geom, outbuf;      /* the command buffer (320 bytes), the geometry DMA buffer, the RDP output buffer */
+    uint16_t geom_end;                  /* the end of the dead range that starts at the geometry buffer (the operand of a class-0 command may not run past it: the native code does not stage it) */
     uint16_t loop_pc;                   /* the command loop head: where the interpreter hands over */
     uint16_t ov_base;                   /* the IMEM window of the overlays */
     uint16_t clip_mask, reject_mask;    /* G_TRI1: clip request / reject masks over the clip flag word */
@@ -68,12 +76,15 @@ struct f3d_task {
     uint32_t s7;                        /* xbus: the ring write pointer (the microcode's s7) */
     int ov;
     unsigned ncmds;
+    int trace;
     int exact;                          /* issue the DMA reads of the microcode (the SP register writes, DMEM staging) */
     unsigned pend;                      /* bytes of RDP commands collected in the output buffer, not yet written to the FIFO (W is where they go) */
     struct f3d_vctx ctx;                /* the vertex state, valid while ctx_ok (any command that changes it clears the flag) */
     int ctx_ok, ctx_bad;
     struct f3d_vtx vb[32];              /* the vertex records G_VTX made (DMEM has them too), valid per slot in vb_ok */
+    const char *bad;                    /* a reason to decline found where the function could not return one (checked at the head of the loop) */
     uint32_t vb_ok;
+    uint32_t phantom;                   /* slots the microcode's pair store overwrote with the flags of a vertex it computed from stale input (the partner of an odd count): their flags are not the record's */
 };
 
 static inline uint32_t dm32u(struct hle_task *t, unsigned a)    /* unaligned big-endian word */
@@ -203,9 +214,18 @@ static void mtx_recompute(struct hle_task *t, const struct f3d_layout *lay)
 
 /* the source of a DMA read the microcode makes into the geometry buffer: with `exact` the DMA is issued and the data read from DMEM, else from RDRAM */
 struct src { const uint32_t *img; unsigned base; int ram; };
+/* The RDP output ring is written by the task's own flushes and the compare treats the bytes the RDP ignores as don't care: a display list, vertices, a matrix or a light read from inside it would read those
+ * bytes. Not a game's: decline (docs/design.md). */
+static inline int ring_hit(const struct f3d_task *f, uint32_t a, uint32_t n)
+{
+    a &= 0x7ffff8;
+    return a < (f->E & 0xffffff) && a + n > (f->S & 0x7fffff);
+}
 static struct src fetch(struct f3d_task *f, uint32_t dram, uint32_t lenreg)
 {
     struct src s;
+    if (MUT(243, ring_hit(f, dram, ((lenreg & 0x1ff) | 7) + 1), 0))
+        f->bad = "a read from inside the RDP output ring";
     if (f->exact) {
         hle_dma_read(f->t, f->b->geom, dram, lenreg);
         s.img = f->t->dmem; s.base = f->b->geom; s.ram = 0;
@@ -220,13 +240,18 @@ static int cmd_mtx(struct f3d_task *f, uint32_t w0, uint32_t w1)
     struct hle_task *t = f->t;
     const struct f3d_layout *lay = f->b->lay;
     unsigned pp = (w0 >> 16) & 0xff;
-    struct src s = fetch(f, seg(t, w1), w0 & 0x1ff);
+    struct src s;
     struct f3d_mtx N, T, R;
+    if (MUT(229, (((w0 & 0x1ff) + 1 + 7) & ~7u) < 64, 0))   /* a short DMA leaves the rest of the matrix as the geometry buffer was (which the front-end does not keep in DMEM) */
+        return hle_decline(t, "G_MTX operand shorter than a matrix");
+    s = fetch(f, seg(t, w1), w0 & 0x1ff);
     unsigned tbase = (pp & 1) ? lay->mv + 0x40 : lay->mv;
     f3d_load_mtx(&N, s.img, s.base, s.ram);
     hle_st8(t, 0x12c, 0xff);
     if (!(pp & 1) && (pp & 4) && hle_dm32(t, 0x134) != hle_dm32(t, 0x15c)) {
         flush_pending(f);
+        if (MUT(244, ring_hit(f, hle_dm32(t, 0x134), (((w0 & 0x1ff) | 7) + 1)), 0))       /* (the output is staged and written later: a write into the ring now would be ordered differently from the microcode's) */
+            return hle_decline(t, "matrix push into the RDP output ring");
         hle_dma_write(t, lay->mv, hle_dm32(t, 0x134), w0 & 0x1ff);
         hle_st32(t, 0x134, hle_dm32(t, 0x134) + 64);
     }
@@ -338,6 +363,9 @@ static int cmd_vtx(struct f3d_task *f, uint32_t w0, uint32_t w1)
         f3d_load_vin(&in[i], s.img, s.base + 16 * i, s.ram);
     if (f3d_vtx_xform(ctxp, in, n, out))
         return hle_decline(t, "G_VTX: state outside what the native code supports");
+    f->phantom &= ~(((n < 32 ? (1u << n) : 0u) - 1u) << a2);
+    if ((n & 1) && a2 + n < lay->nslots && lay->flags_variant == F3D_FLAGS_SM64)    /* (Pilotwings' flag word is the second vertex's alone) */
+        f->phantom |= 1u << (a2 + n);
     for (i = 0; i < n; i++) {
         unsigned a = lay->vtx_base + lay->vtx_stride * (a2 + i);
         f3d_store_vtx(&out[i], t->dmem, a);
@@ -365,6 +393,8 @@ static int cmd_tri3(struct f3d_task *f, const unsigned idx[3], unsigned flag)
             return hle_decline(t, "G_TRI1: vertex pointer outside the buffer");
         {
             unsigned slot = (a - lay->vtx_base) / lay->vtx_stride;
+            if (MUT(242, f->phantom >> slot & 1, 0))
+                return hle_decline(t, "triangle with the partner slot of an odd G_VTX");
             if (!(f->vb_ok >> slot & 1)) {
                 f3d_load_vtx(&f->vb[slot], t->dmem, a);
                 f->vb_ok |= 1u << slot;
@@ -384,7 +414,14 @@ static int cmd_tri3(struct f3d_task *f, const unsigned idx[3], unsigned flag)
     ti.reject_mask = f->b->reject_mask;
     ti.clip_mask = f->b->clip_mask;
     ti.vco_carry = 0;
+    ti.sort_given = MUT(228, 0, 1);                     /* (Indiana Jones' sort by a table: the other fields of the struct are only read with it) */
     rc = f3d_tri_setup(&ti, cmd, &len);
+    if (f->trace) {
+        fprintf(stderr, "TRI3 rc=%d len=%u g=%08x idx %u %u %u flag %u:", rc, len, ti.geom, idx[0], idx[1], idx[2], flag);
+        for (k = 0; k < 3; k++)
+            fprintf(stderr, " [sx=%04x sy=%04x sz=%04x.%04x w=%04x.%04x fl=%04x s=%04x t=%04x col=%02x%02x%02x%02x]", (uint16_t)v[k].sx, (uint16_t)v[k].sy, (uint16_t)v[k].sz, v[k].szf, (uint16_t)v[k].rwi, v[k].rwf, v[k].flags, (uint16_t)v[k].s, (uint16_t)v[k].t, v[k].col[0], v[k].col[1], v[k].col[2], v[k].col[3]);
+        fprintf(stderr, "\n");
+    }
     if (rc == F3D_TRI_REJECT || rc == F3D_TRI_CULL)
         return HLE_OK;
     if (rc == F3D_TRI_OK) {
@@ -479,6 +516,7 @@ static int f3d_run(struct hle_task *t, const struct hle_ucode *u)
     memset(&f, 0, sizeof(f));
     f.t = t;
     f.b = b;
+    { static int tr = -1; if (tr < 0) tr = getenv("F3D_TRACE") != NULL; f.trace = tr; }
     f.exact = hle_exact();                              /* the exact-events mode: every DMA and every DPC write the microcode makes, in its order */
     t->fam = &f;
     if (hle_dm32(t, 0xfc4) & 1)
@@ -514,6 +552,8 @@ static int f3d_run(struct hle_task *t, const struct hle_ucode *u)
     for (;;) {
         uint32_t w0, w1;
         unsigned op;
+        if (f.bad)
+            return hle_decline(t, f.bad);
         if (++f.ncmds > 30000)
             return hle_decline(t, "more commands than the status polls allow");
         w0 = hle_rd32(t, f.k0);
@@ -521,6 +561,7 @@ static int f3d_run(struct hle_task *t, const struct hle_ucode *u)
         f.k0 += 8;
         f.gp -= 8;
         op = w0 >> 24;
+        if (f.trace) fprintf(stderr, "F3D cmd %u @%06x: %08x %08x\n", f.ncmds, f.k0 - 8, w0, w1);
         if (g_pr.ops) opn[op]++;
         if (op >= 0xc0) {                               /* the RDP commands: copied, the segment address of the image commands resolved */
             if (op >= 0xfd)
@@ -564,8 +605,11 @@ static int f3d_run(struct hle_task *t, const struct hle_ucode *u)
                 break;
             case 0xbc: {
                 unsigned ii = w0 & 0xff;
+                unsigned off = (w0 >> 8) & 0xffff;
                 if (ii > 0x10 || (ii & 1))
                     return hle_decline(t, "G_MOVEWORD index outside the table");
+                if (MUT(238, (off & 3) || off > (ii == 10 ? 0x1fc : 0x3c), 0))     /* a game's offsets are words within the group (segments 0 .. 0x3c, the light colours up to the last light) */
+                    return hle_decline(t, "G_MOVEWORD offset outside what a game writes");
                 {
                     unsigned a = hle_dm16(t, 0x30e + ii) + ((w0 >> 8) & 0xffff);
                     st32u(t, a, w1);
@@ -581,6 +625,8 @@ static int f3d_run(struct hle_task *t, const struct hle_ucode *u)
                 uint32_t v = b->culldl_mask;
                 if (w1 <= a || (w1 - a) % 40)
                     return hle_decline(t, "G_CULLDL range unusual");
+                if (MUT(242, a % 40 == 0 && w1 / 40 < 32 && (f.phantom & (((1u << (w1 / 40)) - 1u) & ~((1u << (a / 40)) - 1u))), 0))
+                    return hle_decline(t, "G_CULLDL over the partner slot of an odd G_VTX");
                 do {
                     v &= hle_dm16(t, b->lay->vtx_base + 36 + a);
                     a += 40;
@@ -601,6 +647,9 @@ static int f3d_run(struct hle_task *t, const struct hle_ucode *u)
                 return hle_decline(t, "unsupported class-2 opcode");
             }
         } else if (op < 0x40) {                         /* class 0: a geometry DMA is started for every one of them; then the handler */
+            /* (not issued in the lean mode; the operand of a game is a matrix or at most 16 vertices (length field 0x100, 264 bytes), and the buffer's dead range reaches past that: a longer one leaves live DMEM different) */
+            if (MUT(236, (((w0 & 0x1ff) | 7) + 1) > (unsigned)(b->geom_end - b->geom), 0))
+                return hle_decline(t, "class-0 operand longer than the geometry buffer's dead range");
             switch (op) {
             case 0x00: case 0x02: case 0x05: case 0x07: case 0x08: case 0x09:
                 if (f.exact)
@@ -634,6 +683,8 @@ static int f3d_run(struct hle_task *t, const struct hle_ucode *u)
             if (f.exact)
                 hle_dma_read(t, b->cmdbuf, f.k0, 319);
             f.gp = 320;
+            if (MUT(243, ring_hit(&f, f.k0, 320), 0))
+                f.bad = "the display list is inside the RDP output ring";
         }
     }
 
@@ -657,7 +708,7 @@ end:
 static const struct hle_family l_fam = { .name = "f3d", .run = f3d_run };
 
 /* SM64 and the builds with its layout */
-static const struct f3d_build l_sm64 = { .lay = &f3d_layout_a, .cmdbuf = 0x6a0, .geom = 0x7e0, .outbuf = 0x9e0, .loop_pc = 0x60, .ov_base = 0x768, .clip_mask = 0x4343, .reject_mask = 0x7070,
+static const struct f3d_build l_sm64 = { .lay = &f3d_layout_a, .cmdbuf = 0x6a0, .geom = 0x7e0, .geom_end = 0x930, .outbuf = 0x9e0, .loop_pc = 0x60, .ov_base = 0x768, .clip_mask = 0x4343, .reject_mask = 0x7070,
                                          .dl_depth = 0x110, .culldl_mask = 0xffff, .vptr_mul = 4 };
 
 /* DMEM dead at the end of a task: scratch and leftovers (docs/ucode-f3d.md 11); the justification of each range is the poison proof (ARMLET_DMEM_POISON, docs/testing.md), the
@@ -706,23 +757,23 @@ static unsigned wr_cmd_size(unsigned first_byte)
 }
 
 /* Tetrisphere (2.0H 02-12-97): the SM64 code with the G_DL depth at 0x15a, G_POPMTX setting the stale flag, op 0xb4 an RDPHALF store (the perspective norm is G_MOVEWORD 0x0e), G_CULLDL mask 0x7070 (10.1, 10.3) */
-static const struct f3d_build l_tt = { .lay = &f3d_layout_a, .cmdbuf = 0x6a0, .geom = 0x7e0, .outbuf = 0x9e0, .loop_pc = 0x60, .ov_base = 0x768, .clip_mask = 0x4343, .reject_mask = 0x7070,
+static const struct f3d_build l_tt = { .lay = &f3d_layout_a, .cmdbuf = 0x6a0, .geom = 0x7e0, .geom_end = 0x930, .outbuf = 0x9e0, .loop_pc = 0x60, .ov_base = 0x768, .clip_mask = 0x4343, .reject_mask = 0x7070,
                                        .dl_depth = 0x15a, .culldl_mask = 0x7070, .vptr_mul = 4, .popmtx_stale = 1, .half_shift = 1 };
 
 /* Pilotwings 64 (3e9b...): the overlays at 0x788, G_TRI1 rejects with 0x7030 and G_CULLDL uses it too, its own clip flag word (10.5.1); the near-plane vector is DMEM data */
-static const struct f3d_build l_pw = { .lay = &f3d_layout_pw, .cmdbuf = 0x6a0, .geom = 0x7e0, .outbuf = 0x9e0, .loop_pc = 0x60, .ov_base = 0x788, .clip_mask = 0x4343, .reject_mask = 0x7030,
+static const struct f3d_build l_pw = { .lay = &f3d_layout_pw, .cmdbuf = 0x6a0, .geom = 0x7e0, .geom_end = 0x930, .outbuf = 0x9e0, .loop_pc = 0x60, .ov_base = 0x788, .clip_mask = 0x4343, .reject_mask = 0x7030,
                                        .dl_depth = 0x110, .culldl_mask = 0x7030, .vptr_mul = 4 };
 
 F3D_UCODE(l_f3d_sm64, 0x94c7cfdd2c872523ull, "Fast3D 2.0D (Super Mario 64)", l_sm64, l_dead_sm64);
 F3D_UCODE(l_f3d_pw, 0x3e9b9c3a6ebde1e0ull, "Fast3D 2.0D (Pilotwings 64)", l_pw, l_dead_sm64);
 /* Wave Race 64 (fb48...): the buffers 0x280 further up, the loop's gp the end address of the buffer, its own vertex and triangle encodings (the index scaled by 5), no front-face culling and
  * no flat shading, the shade block when any of the three low geometry bits is set (10.5.2), G_POPMTX sets the stale flag, op 0xb5 the quad; the overlays at 0x7c8 */
-static const struct f3d_build l_wr = { .lay = &f3d_layout_wr, .cmdbuf = 0x920, .geom = 0xa60, .outbuf = 0xc60, .loop_pc = 0x64, .ov_base = 0x7c8, .clip_mask = 0x4343, .reject_mask = 0x7070,
+static const struct f3d_build l_wr = { .lay = &f3d_layout_wr, .cmdbuf = 0x920, .geom = 0xa60, .geom_end = 0xfc0, .outbuf = 0xc60, .loop_pc = 0x64, .ov_base = 0x7c8, .clip_mask = 0x4343, .reject_mask = 0x7070,
                                        .dl_depth = 0x110, .culldl_mask = 0x7070, .vptr_mul = 8, .vtx_wr = 1, .gp_end = 1, .quad = 1, .tri_wr = 1, .popmtx_stale = 1 };
 
 F3D_UCODE_R(l_f3d_wr, 0xfb483893c5b0ad3dull, "Fast3D 2.0D (Wave Race 64)", l_wr, l_dead_wr, 0xfe8, .rdp_cmd_size = wr_cmd_size);
 /* Mischief Makers (4212d63f): Tetrisphere's code with the XBUS transport (the RDP reads the ring in DMEM; docs/ucode-f3d.md 10.6 4.4) */
-static const struct f3d_build l_mm = { .lay = &f3d_layout_a, .cmdbuf = 0x6a0, .geom = 0x7e0, .outbuf = 0x9e0, .loop_pc = 0x60, .ov_base = 0x768, .clip_mask = 0x4343, .reject_mask = 0x7070,
+static const struct f3d_build l_mm = { .lay = &f3d_layout_a, .cmdbuf = 0x6a0, .geom = 0x7e0, .geom_end = 0x930, .outbuf = 0x9e0, .loop_pc = 0x60, .ov_base = 0x768, .clip_mask = 0x4343, .reject_mask = 0x7070,
                                        .dl_depth = 0x15a, .culldl_mask = 0x7070, .vptr_mul = 4, .popmtx_stale = 1, .half_shift = 1, .xbus = 1 };
 
 /* the lists go through a ring in DMEM (no ring in RDRAM) */

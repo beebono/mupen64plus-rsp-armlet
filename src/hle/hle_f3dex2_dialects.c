@@ -66,7 +66,7 @@ static const struct f2_layout l_lay_bg = {
     .mv = 0x00, .p = 0x40, .mvp = 0x80, .persp_norm = 0xdc, .viewport_scale = 0xe0, .viewport_trans = 0xe8, .clip_ratio = 0x186, .const31 = 0x210, .const30 = 0x220,
     .fog_mul = 0x248, .fog_ofs = 0x24a, .texture = 0x24c, .tex_scale_s = 0x250, .tex_scale_t = 0x252, .geom = 0x254, .mvp_valid = 0x239, .lights_valid = 0x23c, .lights_size = 0x23f,
     .light_raw = 0x268, .light_base = 0x278, .tg = 0x230, .light_scale = 0x226, .light_scale_zex = 0x22e, .vtab = 0x618, .clipmask = 0x664, .culltab = 0x65a, .in = 0xbb8, .in_end = 0xc60,
-    .jump_table = 0x5d6, .movemem_tab = 0x550, .moveword_adj = 10848, .desc_light = 0x6a8, .desc_clip = 0x6b0, .clip_planes = 0x180, .clip_masks = 0x690, .out_bytes = 16, .out_toggle = 0x140, .no_lit = 1, .lit_vtx = bg_lit_vtx };
+    .jump_table = 0x5d6, .mw_max = 16, .geom_def = F2_GEOM_DEF | 0x400000, .movemem_tab = 0x550, .moveword_adj = 10848, .desc_light = 0x6a8, .desc_clip = 0x6b0, .clip_planes = 0x180, .clip_masks = 0x690, .out_bytes = 16, .out_toggle = 0x140, .no_lit = 1, .lit_vtx = bg_lit_vtx };
 static const struct f3dex2_build l_b_bg = {
     .head = 0x194, .copy = 0x210, .sync = 0x214, .segcopy = 0x220, .ef = 0x240, .ed = 0x24c, .tri1 = 0xa70, .tri2 = 0xa68, .vtx = 0x6d8,
     .mtx = 0x0f0, .geom = 0x1d8, .enddl = 0x1ec, .half2 = 0x200, .modvtx = 0xf34, .culldl = 0xef4, .branchz = 0xf1c, .reject_mask = 0x70b0, .tri4 = 0x994, .lay = &l_lay_bg };
