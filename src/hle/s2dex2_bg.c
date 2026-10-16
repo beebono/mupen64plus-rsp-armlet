@@ -156,6 +156,8 @@ int s2dex2_obj_bg1cyc(uint32_t *dm, uint32_t *s7p, uint32_t *s6p, const struct s
         w8(dm, R_ROWFIT, !((x + width_px + 11) < iw8));
         siz = m8(dm, TYPE_SIZ);
         fmt = m8(dm, TYPE_FMT);
+        if (MUT(94, siz > 3 || fmt > 4, 0))             /* (the tables are indexed by the byte: past them the lookups read the microcode's other DMEM, whose state the closed form does not keep) */
+            return S2_UNSUPPORTED;
         tsize = m16(dm, TILE_SIZ + 2 * siz);
         tmask = m16(dm, TILE_FMT + 4 * fmt);
         tscale = m16(dm, TILE_FMT + 4 * fmt + 2);

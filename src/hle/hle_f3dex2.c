@@ -51,7 +51,7 @@ static const struct f2_layout l_lay_std = {
     .mv = 0x00, .p = 0x40, .mvp = 0x80, .persp_norm = 0xdc, .viewport_scale = 0xe0, .viewport_trans = 0xe8, .clip_ratio = 0x186, .const31 = 0x1b0, .const30 = 0x1c0,
     .fog_mul = 0x1e0, .fog_ofs = 0x1e2, .texture = 0x1e4, .tex_scale_s = 0x1e8, .tex_scale_t = 0x1ea, .geom = 0x1ec, .mvp_valid = 0x1d9, .lights_valid = 0x1dc, .lights_size = 0x1dd,
     .light_raw = 0x1f8, .light_base = 0x200, .tg = 0x1d0, .light_scale = 0x1c6, .light_scale_zex = 0x1ce, .vtab = 0x380, .clipmask = 0x3cc, .culltab = 0x3c2, .in = 0x920, .in_end = 0x9c8,
-    .jump_table = 0x36e, .movemem_tab = 0x2f0, .moveword_adj = 10238, .desc_light = 0x410, .desc_clip = 0x418, .clip_planes = 0x180, .clip_masks = 0x3f8, .out_bytes = 344, .out_toggle = 0x208 };
+    .jump_table = 0x36e, .mw_max = 14, .geom_def = F2_GEOM_DEF, .movemem_tab = 0x2f0, .moveword_adj = 10238, .desc_light = 0x410, .desc_clip = 0x418, .clip_planes = 0x180, .clip_masks = 0x3f8, .out_bytes = 344, .out_toggle = 0x208 };
 const struct f2_layout *f2L = &l_lay_std;
 
 /* ---- the RDP buffer --------------------------------------------------------------------------------------------------------------------------------------------------------- */
@@ -93,11 +93,39 @@ int f3_flush(struct f3 *f)
     return HLE_OK;
 }
 
+/* A G_MOVEMEM (or S2DEX's G_OBJ_MOVEMEM) DMA goes to an address the display list picks from a table, plus an offset in w0: anywhere in DMEM, and with bit 12 set into IMEM (new microcode). Lean mode
+ * keeps no copy of the display list input buffer in DMEM (it reads the list from RDRAM), the opcode classification is taken from the jump table at the start (the entries of the opcodes 0xd0 .. 0xff
+ * and 0 .. 9; the others decline), the overlays are tracked by their descriptors, and the display list stack, its depth, the segment table and the RDP FIFO pointer are what the loop works on. A store of
+ * [a, a + len] into any of those cannot be modelled, and only a list that rewrites the microcode's own state does it (no game does): decline. (G_MOVEWORD's offsets are bounded instead, below.) */
+int f3_store_unmodelled(const struct f3 *f, unsigned a, unsigned len)
+{
+    unsigned lo = a & 0xfff, hi = lo + len, dl = DESC_LIGHT < DESC_CLIP ? DESC_LIGHT : DESC_CLIP, dh = (DESC_LIGHT < DESC_CLIP ? DESC_CLIP : DESC_LIGHT) + 8;
+    if ((a & 0x1000) || hi >= 0x1000)
+        return 1;
+    return (lo < F2_IN_END && hi >= F2_IN) || (lo < JUMP_TABLE + 0x14u && hi >= JUMP_TABLE - 0x60u) || (lo < dh && hi >= dl)
+        || (lo < DL_DEPTH + 1u && hi >= DL_DEPTH) || (lo < FIFO_PTR + 4u && hi >= FIFO_PTR) || (lo < DL_STACK + 0x48u && hi >= SEGMENTS);
+}
+
+/* The vertex table (F2_VTAB, 32 halfwords, then the constants of the clipper) is indexed by the vertex number x 2 that the command carries: a number that is odd or past the table reads those constants
+ * (and an end index past 32 slots or a count that does not fit below it, in G_VTX, loads vertices over other state). The slot a game addresses is always in the table: decline the rest. */
+static inline int vidx_bad(uint32_t w) { return ((w & 0xfff) > 0x3e) | (w & 1); }
+
+/* The RDP output ring is written by the task's own flushes, and the compare treats the bytes of those commands the RDP ignores (the second words of the syncs, the slack after a command) as don't care.
+ * A display list, a vertex array, a matrix or a light read from inside the ring would read exactly those bytes: not a game's. Decline when a read of [a, a + n) touches the ring [FIFO_START, FIFO_END). */
+static int ring_hit(const struct f3 *f, uint32_t a, uint32_t n)
+{
+    uint32_t lo = hle_dm32(f->t, FIFO_START) & 0x7fffff, hi = hle_dm32(f->t, FIFO_END) & 0xffffff;
+    a &= 0x7ffff8;
+    return a < hi && a + n > lo;
+}
+
 /* the display list refill that G_DL and G_ENDDL jump into, and the loop's own: the next 168 bytes from k0 */
 /* a DMA read into DMEM as the microcode makes it: in the lean mode a plain copy (one row, to DMEM) with the DMA's rounding and clipping, else through the framework */
 void f3_dma_rd(struct f3 *f, unsigned mem, uint32_t dram, uint32_t len)
 {
     struct hle_task *t = f->t;
+    if (MUT(243, ring_hit(f, dram, ((len & 0xfff) | 7) + 1), 0))
+        f->bad = "a read from inside the RDP output ring";
     if (f->lean && !(mem & 0x1000) && !(len >> 12)) {
         unsigned n = ((len & 0xfff) + 1 + 7) & ~7u, m = mem & 0xff8, k;
         if (m + n > 0x1000)
@@ -150,6 +178,8 @@ static void do_mtx_mul_mvp(struct f3 *f, uint32_t w0)
     hle_st8(f->t, F2_MVP_VALID, MUT(216, (uint8_t)w0, 0));
 }
 
+static inline unsigned first_slot(unsigned first, unsigned i) { return (first + F2_VSTRIDE * i - 0x420) / F2_VSTRIDE; }
+
 static int cmd_vtx(struct f3 *f)
 {
     struct hle_task *t = f->t;
@@ -161,6 +191,10 @@ static int cmd_vtx(struct f3 *f)
 
     if (n == 0 || n > 32)
         return hle_decline(t, "G_VTX with an unusual count");
+    if (MUT(224, hle_dm32(t, F2_GEOM) & ~f2L->geom_def, 0))        /* (as for the triangles, tri_consts) */
+        return hle_decline(t, "geometry mode bits the build does not define");
+    if (MUT(221, ((w0 & 0xfff) > 0x40 || (w0 & 1) || (w0 & 0xfff) < 2 * n || (w0 & 0xf00000)), 0))
+        return hle_decline(t, "G_VTX with an unusual end index");
     if (lit && f2L->no_lit) {
         if (!f2L->lit_vtx)
             return hle_decline(t, "lit vertices of a build with another light layout");
@@ -200,6 +234,8 @@ static int cmd_vtx(struct f3 *f)
     endslot = hle_dm16(t, F2_VTAB + (w0 & 0xfff));
     first = hle_dm16(t, F2_VTAB + ((w0 - n * 2) & 0xfff));
     s4 = endslot - n * 16;
+    if (MUT(243, ring_hit(f, seg_addr(t, w1), n * 16), 0))
+        return hle_decline(t, "vertices inside the RDP output ring");
     if (f->lean) {
         if (seg_addr(t, w1) & 7)
             return hle_decline(t, "unaligned vertices");
@@ -210,6 +246,8 @@ static int cmd_vtx(struct f3 *f)
 
     f2_ld_vctx(t, &c);
     c.gen204 = f->b->gen204;
+    if (MUT(232, c.ratio & 0x8000, 0))                  /* the guard-band ratio multiplies as a signed lane in the microcode; the ratios of the GBI are 1 .. 6 */
+        return hle_decline(t, "guard-band ratio out of range");
     if (lit)
         f2_ld_lights(t, hle_dm8(t, F2_LIGHTS_SIZE) / F2_LIGHT_STRIDE, &c.L);
     if (f->lean) {
@@ -227,6 +265,9 @@ static int cmd_vtx(struct f3 *f)
         for (i = 0; i < n + (n & 1); i++)
             f2_ld_vin(t, s4 + 16 * i, &in[i]);
     fx2_vtx_xform(&c, in, n, out);
+    if (f->trace)
+        for (i = 0; i < n; i++)
+            fprintf(stderr, "    v%u in=(%d %d %d) clip=(%d.%04x %d.%04x %d.%04x %d.%04x) flags=%08x\n", first_slot(first, i), in[i].x, in[i].y, in[i].z, out[i].cx[0], out[i].cf[0], out[i].cx[1], out[i].cf[1], out[i].cx[2], out[i].cf[2], out[i].cx[3], out[i].cf[3], out[i].flags);
     for (i = 0; i < n; i++)
         f2_st_vtx(t, first + F2_VSTRIDE * i, &out[i]);
     return HLE_OK;
@@ -239,6 +280,8 @@ static int cmd_mtx(struct f3 *f)
     unsigned at = w0 & 0xfe, len = (w0 >> 16) & 0xff, dst = hle_dm16(t, f2L->movemem_tab + at), k;
     if (!((w0 & 0xfe) < 8 && ((w0 >> 5) & 0x1fff) == 0))
         return hle_decline(t, "G_MTX with an unusual index");
+    if (MUT(230, ((len | 7) + 1) != 64, 0))              /* a short DMA leaves the rest of the matrix as it was in DMEM, a long one runs on over the state after it */
+        return hle_decline(t, "G_MTX with an unusual length");
     if ((w0 & 5) == 0) {                                /* push: the current modelview matrix goes to the matrix stack in RDRAM (pointer at 0xf4, which moves up by 64) */
         uint32_t sp = hle_dm32(t, 0xf4);
         hle_dma_write(t, 0, sp, 63);
@@ -292,12 +335,17 @@ static int do_enddl(struct f3 *f, int *handover)
     return HLE_OK;
 }
 
-/* the constants of the triangle setup that the microcode reads from DMEM: once per triangle command */
-static void tri_consts(struct f3 *f)
+/* the constants of the triangle setup that the microcode reads from DMEM: once per triangle command. The culling table is indexed by bits 8 .. 15 of the geometry mode (cull front 0x200, cull back 0x400:
+ * 0, 2, 4, 6); any other bit set indexes past the 10 bytes of the table, into the clipper's scratch, whose contents the front-end does not keep (a mode no game sets). */
+static int tri_consts(struct f3 *f)
 {
     struct hle_task *t = f->t;
     struct fx2_tri_in *in = &f->tin;
     unsigned ca = F2_CULLTAB + hle_dm8(t, F2_GEOM + 2);
+    if (MUT(224, hle_dm32(t, F2_GEOM) & ~f2L->geom_def, 0))        /* a bit the build gives no meaning to: bits 8 .. 15 index the culling table (past its 10 bytes into the clipper's scratch, which the front-end does not keep), the low byte goes into the command id, and the rest is data of the code paths nobody tests */
+        return hle_decline(t, "geometry mode bits the build does not define");
+    if (MUT(233, (hle_dm8(t, F2_TEXTURE + 3) & 0xfd) || (hle_dm8(t, F2_TEXTURE + 2) & 0xc0), 0))   /* the texture on byte is 0 or 2 (the triangle command's id takes it ORed in), the tile byte level << 3 | tile (6 bits) */
+        return hle_decline(t, "G_TEXTURE with an unusual on / tile byte");
     in->g = hle_dm32(t, F2_GEOM);
     in->tex = hle_dm8(t, F2_TEXTURE + 3);
     in->tile = hle_dm8(t, F2_TEXTURE + 2);
@@ -315,6 +363,7 @@ static void tri_consts(struct f3 *f)
         in->frac_mask = hle_dm16(t, F2_CONST30 + 10);
     }
     f->clip_mask = hle_dm32(t, F2_CLIPMASK);
+    return HLE_OK;
 }
 
 /* the triangle setup for three vertex records; HLE_OK, with the RDP command (if any) in the buffer */
@@ -332,6 +381,8 @@ static int tri_setup(struct f3 *f, const struct fx2_vtx *const v[3], const struc
     in->flat = MUT(214, flat, NULL);
     in->clip_mask = clip_mask;
     r = fx2_tri_setup(in, cmd, &len);
+    if (f->trace)
+        fprintf(stderr, "  tri_setup -> %d len %u g=%08x cull=%08x tex=%x tile=%x\n", r, len, in->g, in->cull, in->tex, in->tile);
     if (r == FX2_TRI_CLIP) {
         *needs_clip = 1;
         return HLE_OK;
@@ -388,6 +439,8 @@ static int do_tri(struct f3 *f, uint32_t word)
     unsigned k;
     int clip = 0, rc;
 
+    if (MUT(217, ((word >> 16) | (word >> 8) | word) & 0xc1, 0))     /* a vertex number outside the 32 slots (or odd): the table lookup reads the constants after it */
+        return hle_decline(t, "vertex number out of range");
     for (k = 0; k < 3; k++)
         fl[k] = hle_dm32(t, sv[k] + 0x24);
     if (fl[0] & fl[1] & fl[2] & f->b->reject_mask)
@@ -465,8 +518,12 @@ static int run_loop(struct f3 *f, int *handover)
 
         if (f->polls > POLL_LIMIT)
             return hle_decline(t, "too many SP_STATUS polls (the JIT would halt)");
+        if (f->bad)
+            return hle_decline(t, f->bad);
         if (f->k1 == 0) {                               /* the loop head found the buffer empty: refill */
             refill(f);
+            if (MUT(243, ring_hit(f, f->k0 - F2_IN_REFILL, F2_IN_REFILL), 0))
+                f->bad = "the display list is inside the RDP output ring";
             continue;
         }
         if (f->lean) {
@@ -530,6 +587,8 @@ static int run_loop(struct f3 *f, int *handover)
             rc = after_emit(f);
             break;
         case K_MOVEWORD:
+            if (MUT(235, ((w0 >> 16) & 0xff) > f2L->mw_max || (w0 & 0x10000) || (w0 & 3) || (w0 & 0xffff) > (((w0 >> 16) & 0xff) == 10 ? 0x1fc : 0x3c), 0))     /* the table has the entries 0, 2 .. mw_max, and a game's offsets are words within the group (segments 0 .. 0x3c, clip ratios 4 .. 0x1c, the light colours up to the last light) */
+                return hle_decline(t, "G_MOVEWORD index or offset outside what a game writes");
             addr = (hle_dm8(t, ((w0 >> 16) + f2L->moveword_adj) & 0xfff) << 8 | hle_dm8(t, ((w0 >> 16) + f2L->moveword_adj + 1) & 0xfff)) + w0;
             hle_st8(t, addr, (uint8_t)(w1 >> 24));
             hle_st8(t, addr + 1, (uint8_t)(w1 >> 16));
@@ -537,7 +596,12 @@ static int run_loop(struct f3 *f, int *handover)
             hle_st8(t, addr + 3, (uint8_t)w1);
             break;
         case K_MOVEMEM: {
-            unsigned dst = hle_dm16(t, f2L->movemem_tab + (w0 & 0xfe)) + (w0 >> 5);
+            unsigned dst;
+            if (MUT(231, (w0 & 0xfe) > 14, 0))                  /* the table has the entries 0 .. 14; the next ones are the G_MOVEWORD table's */
+                return hle_decline(t, "G_MOVEMEM index outside the table");
+            dst = hle_dm16(t, f2L->movemem_tab + (w0 & 0xfe)) + (w0 >> 5);
+            if (MUT(219, f3_store_unmodelled(f, dst, (w0 >> 16) & 0xff), 0))
+                return hle_decline(t, "G_MOVEMEM into the microcode's own buffers");
             f3_dma_rd(f, dst, seg_addr(t, w1), (w0 >> 16) & 0xff);
             break;
         }
@@ -585,12 +649,14 @@ static int run_loop(struct f3 *f, int *handover)
             rc = cmd_popmtx(f);
             break;
         case K_TRI1:
-            tri_consts(f);
-            rc = do_tri(f, w0);
+            rc = tri_consts(f);
+            if (rc == HLE_OK)
+                rc = do_tri(f, w0);
             break;
         case K_TRI2:                                    /* the second triangle first */
-            tri_consts(f);
-            rc = do_tri(f, w1);
+            rc = tri_consts(f);
+            if (rc == HLE_OK)
+                rc = do_tri(f, w1);
             if (rc == HLE_OK)
                 rc = do_tri(f, w0);
             break;
@@ -603,12 +669,14 @@ static int run_loop(struct f3 *f, int *handover)
             tw[1] = ((g >> 9) & 62) << 16 | ((g >> 4) & 62) << 8 | ((g << 1) & 62);
             tw[2] = ((w0 >> 9) & 62) << 16 | ((w0 >> 4) & 62) << 8 | ((w0 << 1) & 62);
             tw[3] = ((w0 >> 22) & 62) << 16 | ((w0 >> 17) & 62) << 8 | (((w0 >> 12) & 56) | ((g >> MUT(65, 29, 28)) & 6));
-            tri_consts(f);
+            rc = tri_consts(f);
             for (at = 0; at < 4 && rc == HLE_OK; at++)
                 rc = do_tri(f, tw[at]);
             break;
         }
         case K_MODVTX:
+            if (MUT(218, vidx_bad(w0) || ((w0 >> 16) & 0xff) >= 0x28 || ((w0 >> 16) & 3), 0))      /* a vertex outside the 32 slots, an odd number, or a field outside the record: a store anywhere in DMEM */
+                return hle_decline(t, "G_MODIFYVTX out of range");
             at = ((w0 >> 16) & 0xff) + hle_dm16(t, F2_VTAB + (w0 & 0xfff));       /* (the slot address is the delay slot's lhu) */
             hle_st8(t, at, (uint8_t)(w1 >> 24));
             hle_st8(t, at + 1, (uint8_t)(w1 >> 16));
@@ -616,6 +684,8 @@ static int run_loop(struct f3 *f, int *handover)
             hle_st8(t, at + 3, (uint8_t)w1);
             break;
         case K_CULLDL: {                                /* the display list ends when a clip-flag bit of the reject mask is set in all the vertices of the range */
+            if (MUT(222, vidx_bad(w0) | vidx_bad(w1), 0))
+                return hle_decline(t, "G_CULLDL with an unusual vertex number");
             unsigned a = hle_dm16(t, F2_VTAB + (w0 & 0xfff)), z = hle_dm16(t, F2_VTAB + (w1 & 0xfff));
             uint32_t m = b->reject_mask;
             for (;;) {
@@ -633,7 +703,10 @@ static int run_loop(struct f3 *f, int *handover)
             break;
         }
         case K_BRANCHZ: {
-            uint32_t z = hle_dm32(t, hle_dm16(t, F2_VTAB + (w0 & 0xfff)) + 0x1c);
+            if (MUT(223, vidx_bad(w0), 0))
+                return hle_decline(t, "G_BRANCH_Z with an unusual vertex number");
+            unsigned vs = hle_dm16(t, F2_VTAB + (w0 & 0xfff));
+            uint32_t z = b->zex && MUT(246, 1, 0) ? (uint32_t)(int32_t)(int16_t)hle_dm16(t, vs + 6) : hle_dm32(t, vs + 0x1c);   /* F3DZEX compares the integer part of the clip w (`lh 6(vertex)`), the others the screen z */
             if ((int32_t)(z - w1) < 0) {                /* a branch (no stack) to the address G_RDPHALF_1 left at 0xd8 */
                 f->k0 = seg_addr(t, hle_dm32(t, 0xd8));
                 refill(f);
@@ -737,6 +810,19 @@ static unsigned classify(const struct f3dex2_build *b, unsigned h)
     return K_BAD;
 }
 
+/* The jump table has an entry for every opcode, but only the defined ones point at a handler: the others hold other data of the microcode, or 0, which is the pc of G_DL, and some builds' point at the
+ * sync handler (Conker's 0x09 .. 0x0f). A command that is not G_DL (0xde) and still lands on its handler is an undefined opcode, and so is a one-word copy (the second word of the RDP command stays
+ * stale: the stream compare only knows that for the sync commands 0xe6 .. 0xe9 and the no-op 0) that is not one of those: decline. */
+static unsigned classify_op(const struct f3dex2_build *b, unsigned op, unsigned h)
+{
+    unsigned k = classify(b, h);
+    if (MUT(225, k == K_DL && op != 0xde, 0))
+        return K_BAD;
+    if (MUT(226, k == K_SYNC && op != 0 && (op < 0xe6 || op > 0xe9), 0))
+        return K_BAD;
+    return k;
+}
+
 static int f3dex2_run(struct hle_task *t, const struct hle_ucode *u)
 {
     const struct f3dex2_build *b = (const struct f3dex2_build *)u->fam_data;
@@ -779,7 +865,7 @@ static int f3dex2_run(struct hle_task *t, const struct hle_ucode *u)
     f.ov = overlay_match(t, DESC_CLIP) ? OV_CLIP : overlay_match(t, DESC_LIGHT) ? OV_LIGHT : OV_UNKNOWN;
     f.ov0 = f.ov;
     for (op = 0; op < 256; op++)
-        f.kind[op] = (uint8_t)classify(b, hle_dm16(t, JUMP_TABLE + 2 * (int)(int8_t)op) & 0xfff);
+        f.kind[op] = (uint8_t)classify_op(b, op, hle_dm16(t, JUMP_TABLE + 2 * (int)(int8_t)op) & 0xfff);
     f.uc0 = hle_dm32(t, 0xfd0);
     for (;;) {
         rc = run_loop(&f, &handover);
@@ -825,7 +911,7 @@ static int f3dex2_run(struct hle_task *t, const struct hle_ucode *u)
         f.ov = overlay_match(t, DESC_CLIP) ? OV_CLIP : overlay_match(t, DESC_LIGHT) ? OV_LIGHT : OV_UNKNOWN;
         f.ov0 = f.ov;
         for (op = 0; op < 256; op++)
-            f.kind[op] = (uint8_t)classify(b, hle_dm16(t, JUMP_TABLE + 2 * (int)(int8_t)op) & 0xfff);
+            f.kind[op] = (uint8_t)classify_op(b, op, hle_dm16(t, JUMP_TABLE + 2 * (int)(int8_t)op) & 0xfff);
     }
     c.stop_pc = 0x1000;
 
@@ -844,13 +930,13 @@ static const struct f3dex2_build l_b_dk64 = {
     .mtx = 0x0f0, .geom = 0x1d0, .enddl = 0x1e4, .half2 = 0x1f8, .modvtx = 0xc78, .culldl = 0xc38, .branchz = 0xc60, .reject_mask = 0x7070 };
 static const struct f3dex2_build l_b_oot = {
     .head = 0x18c, .copy = 0x208, .sync = 0x20c, .segcopy = 0x218, .ef = 0x238, .ed = 0x244, .tri1 = 0x7b4, .tri2 = 0x7ac, .vtx = 0x4f0,
-    .mtx = 0x0f0, .geom = 0x1d0, .enddl = 0x1e4, .half2 = 0x1f8, .modvtx = 0xc74, .culldl = 0xc34, .branchz = 0xc5c, .zex = 1, .reject_mask = 0x7030 };
+    .mtx = 0x0f0, .geom = 0x1d0, .enddl = 0x1e4, .half2 = 0x1f8, .modvtx = 0xc74, .culldl = 0xc34, .branchz = 0xc5c, .zex = 1, .reject_mask = MUT(245, 0x70b0, 0x7030) };
 static const struct f3dex2_build l_b_pm = {
     .head = 0x194, .copy = 0x210, .sync = 0x214, .segcopy = 0x220, .ef = 0x240, .ed = 0x24c, .tri1 = 0xa44, .tri2 = 0xa3c, .vtx = 0x780,
     .mtx = 0x0f0, .geom = 0x1d8, .enddl = 0x1ec, .half2 = 0x200, .modvtx = 0xf08, .culldl = 0xec8, .branchz = 0xef0, .reject_mask = 0x7070 };
 static const struct f3dex2_build l_b_snap = {
     .head = 0x194, .copy = 0x228, .sync = 0x22c, .segcopy = 0x238, .ef = 0x258, .ed = 0x264, .tri1 = 0x7d4, .tri2 = 0x7cc, .vtx = 0x510,
-    .mtx = 0x0f0, .geom = 0x1f0, .enddl = 0x204, .half2 = 0x218, .modvtx = 0xc98, .culldl = 0xc58, .branchz = 0xc80, .mvp = 0x1c0, .reject_mask = 0x7030 };
+    .mtx = 0x0f0, .geom = 0x1f0, .enddl = 0x204, .half2 = 0x218, .modvtx = 0xc98, .culldl = 0xc58, .branchz = 0xc80, .mvp = 0x1c0, .reject_mask = MUT(245, 0x70b0, 0x7030) };
 
 /* DMEM dead at the end of a task (docs/design.md, "The F3DEX2 table of dead ranges"; docs/testing.md has the evidence): the display list input buffer (0x920 .. 0x9c8: the microcode's last refill;
  * a lean run reads the list from RDRAM), the clipper's polygon lists (0x3ca .. 0x408) and new vertices (12 records from 0x9c8; the clipper makes them anew for every triangle), the two RDP output buffers

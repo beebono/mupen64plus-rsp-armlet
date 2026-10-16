@@ -4,7 +4,7 @@
 R=$1; shift
 eq=0; bad=0; dec=0; hang=0
 for f in "$@"; do
-    out=$(systemd-run --user --scope -q -p MemoryMax=2G -p MemorySwapMax=0 timeout -s KILL ${REPLAY_TIMEOUT:-20} "$R" --quiet $REPLAY_ARGS "$f" 2>&1); rc=$?
+    out=$(systemd-run --user --scope -q -p MemoryMax=2G -p MemorySwapMax=0 timeout -s KILL ${REPLAY_TIMEOUT:-20} "$R" --quiet $REPLAY_ARGS "$f" 2>&1 </dev/null); rc=$?
     if [ $rc -eq 137 ] || [ $rc -eq 124 ]; then hang=$((hang+1)); echo "HANG $f"; continue; fi
     case "$out" in
     *"MISMATCH native vs JIT"*) bad=$((bad+1)); echo "MISMATCH $f";;

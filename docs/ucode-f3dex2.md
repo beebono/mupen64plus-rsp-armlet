@@ -46,8 +46,8 @@ The handler pc of an opcode is in the jump table (DMEM 0x36e + 2 int8(op)); a ha
 | `G_POPMTX` 0xd8 | 0x04c | the stack pointer 0xf4 -= w1 (not below the bottom, DMEM 0xfe0); if it changed: flags cleared, the matrix at the new pointer is DMAed to the modelview matrix |
 | `G_VTX` 0x01 | 0x4f0 / 0x510 / 0x780 | section 3 |
 | `G_MODIFYVTX` 0x02 | 0xc78 / 0xc98 / 0xf08 | a word (w1) stored at `w0 >> 16 & 0xff` + the slot address of vertex `w0 & 0xfff` (table 0x380) |
-| `G_CULLDL` 0x03 | 0xc38 | the display list ends (as `G_ENDDL`) when one bit of the build's reject mask (0x7070 / 0x7030) is set in the flags (+0x24) of all vertices from the slot of `w0` to the slot of `w1` |
-| `G_BRANCH_Z` 0x04 | 0xc60 | if the z of vertex w0 (the word at +0x1c) is less than w1: a branch (no stack) to the address `G_RDPHALF_1` left at 0xd8 |
+| `G_CULLDL` 0x03 | 0xc38 | the display list ends (as `G_ENDDL`) when one bit of the build's reject mask (0x7070; 0x70b0 in Ocarina of Time's F3DZEX.NoN 2.06H and Pokemon Snap's F3DEX.NoN 2.08H, the w lane instead of z; read from the microcode: `addiu r1, r0, mask`) is set in the flags (+0x24) of all vertices from the slot of `w0` to the slot of `w1` |
+| `G_BRANCH_Z` 0x04 | 0xc60 | if the z of vertex w0 (the word at +0x1c; F3DZEX: the integer part of its clip w, the halfword at +6, `lh`) is less than w1: a branch (no stack) to the address `G_RDPHALF_1` left at 0xd8 |
 | `G_TRI1` 0x05 / `G_TRI2` 0x06 / `G_QUAD` 0x07 | 0x7b4 / 0x7ac | section 4; TRI2 does the triangle of w1 first, then w0; vertex bytes (w >> 16, >> 8, & 0xff) are vertex numbers x 2, the slot address from the table at 0x380 |
 | `G_SPECIAL_1` 0xd5 (Snap only) | 0x1c0 | concatenates MV x P into the MVP matrix now and sets the valid flag to the low byte of w0 |
 | `G_RDPHALF_1` 0xe1 | 0x030 | w1 to 0xd8 |
@@ -98,7 +98,7 @@ code resident, DMA the other one in. IMEM at the end of a task holds whichever w
 
 The triangle code takes three vertex slots (A, B, C in command order) and:
 
-1. rejects the triangle when its three flag words have a bit in common in the build's reject mask (0x7070; 0x7030 in the NoN builds); the clipper runs when `(fa | fb | fc) & DMEM[0x3cc]` (section 5);
+1. rejects the triangle when its three flag words have a bit in common in the build's reject mask (0x7070; 0x70b0 in the two NoN builds above); the clipper runs when `(fa | fb | fc) & DMEM[0x3cc]` (section 5);
 2. computes the signed area of the *unsorted* vertices `(Ax-Bx)(Ay-Cy) + (Ax-Cx)(By-Ay)` from saturated 16-bit differences, clamps the sum to 16 bits, and culls with the cull table word (DMEM 0x3c2 + byte
    0x1ee, the geometry mode's cull bits): `word + area >= 0` or `area == 0` draws nothing;
 3. sorts the vertices by screen y (H, M, L: min / max networks with the ties as `VLT` / `VGE` leave them), computes the edge slopes (DxLDy, DxMDy, DxHDy: `rcp32` of each dy, scaled, times dx, the integer

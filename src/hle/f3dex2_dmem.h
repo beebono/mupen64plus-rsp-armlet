@@ -19,6 +19,8 @@
 /* The layout. The four standard builds share it; a dialect that moved the microcode's DMEM state (F3DEXBG) has its own instance (hle_f3dex2.c sets f2L per task). The members are
  * DMEM addresses; the F2_ names are the ones the rest of the front-end uses. */
 struct f3;
+/* G_ZBUFFER, G_SHADE, G_CULL_FRONT, G_CULL_BACK, G_FOG, G_LIGHTING, G_TEXTURE_GEN, G_TEXTURE_GEN_LINEAR, G_LOD, G_SHADING_SMOOTH, G_CLIPPING */
+#define F2_GEOM_DEF (0x1u | 0x4u | 0x200u | 0x400u | 0x10000u | 0x20000u | 0x40000u | 0x80000u | 0x100000u | 0x200000u | 0x800000u)
 struct f2_layout {
     uint16_t mv, p, mvp;
     uint16_t persp_norm, viewport_scale, viewport_trans;
@@ -31,6 +33,8 @@ struct f2_layout {
     uint16_t vtab, clipmask, culltab;
     uint16_t in, in_end;
     uint16_t jump_table;
+    uint32_t geom_def;              /* the geometry mode bits the build gives a meaning to */
+    uint8_t mw_max;                 /* the last index of the G_MOVEWORD table (even; 14, F3DEXBG's 16) */
     uint16_t movemem_tab;           /* halfword table by (w0 & 0xfe): destination, and +2 the second address of G_MTX */
     uint16_t moveword_adj;          /* the microcode's index arithmetic of G_MOVEWORD: table address = (w0 >> 16) + this, mod 0x1000 */
     uint16_t desc_light, desc_clip;

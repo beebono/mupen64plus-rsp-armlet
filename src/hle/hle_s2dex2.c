@@ -20,7 +20,7 @@ enum { K_S2_SELDL = K_EXT, K_S2_LOADTXTR, K_S2_BG1CYC, K_S2_BGCOPY, K_S2_RENDERM
 
 /* the layout of S2DEX 2.x: the jump table, the display list input buffer (refilled in 168-byte chunks) and the RDP output buffer (800 bytes + slack, two of them 0xc00 apart) */
 static const struct f2_layout l_lay_s2 = {
-    .jump_table = 0x370, .in = 0x418, .in_end = 0x4c0, .moveword_adj = 10374, .out_bytes = 800, .out_toggle = 0xc00,
+    .jump_table = 0x370, .mw_max = 14, .geom_def = F2_GEOM_DEF, .in = 0x418, .in_end = 0x4c0, .moveword_adj = 10374, .out_bytes = 800, .out_toggle = 0xc00,
     .desc_clip = 0x314, .desc_light = 0x31c };       /* the two code overlays of the microcode at IMEM 0x6c8 (sprites, rectangles) and (backgrounds) take the slots of the clipping and lighting overlays */
 
 static const struct f2_pcs l_pcs_s2 = { .dl = 0x054, .texture = 0xfff, .texrect = 0x018, .half1 = 0x01c, .moveword = 0x090, .popmtx = 0xfff, .movemem = 0xfff, .omh = 0x0b4, .oml = 0x0b8 };
@@ -226,9 +226,13 @@ static int s2_ext_cmd(struct f3 *f, unsigned kind)
         f->s6 = s6;
         return HLE_OK;
     }
-    case K_S2_MOVEMEM:                                  /* G_OBJ_MOVEMEM: size from bits 16..23, the DMEM address from the table at 0x388 indexed by the low bits of w0 */
-        f3_dma_rd(f, hle_dm16(t, w0 + 904), seg_addr(t, w1), (w0 >> 16) & 0xff);
+    case K_S2_MOVEMEM: {                                /* G_OBJ_MOVEMEM: size from bits 16..23, the DMEM address from the table at 0x388 indexed by the low bits of w0 */
+        unsigned dst = hle_dm16(t, w0 + 904);
+        if (MUT(237, f3_store_unmodelled(f, dst, (w0 >> 16) & 0xff), 0))
+            return hle_decline(t, "G_OBJ_MOVEMEM into the microcode's own state");
+        f3_dma_rd(f, dst, seg_addr(t, w1), (w0 >> 16) & 0xff);
         return HLE_OK;
+    }
     default: {
         static char why[8][48];
         static unsigned wn;

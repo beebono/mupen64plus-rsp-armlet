@@ -83,6 +83,7 @@ struct f3 {
     uint16_t wval;
     unsigned ncmd;
     uint32_t total;
+    const char *bad;                /* a reason to decline found where the function could not return one (checked at the head of the loop) */
 };
 
 /* ---- shared with the dialects ------------------------------------------------------------------------------------------------------------------------------------------------ */
@@ -99,6 +100,7 @@ enum { F3DEX2_N_DEAD_OUT = 21 };
 
 int f3_flush(struct f3 *f);
 void f3_dma_rd(struct f3 *f, unsigned mem, uint32_t dram, uint32_t len);
+int f3_store_unmodelled(const struct f3 *f, unsigned a, unsigned len);   /* a store of [a, a + len] the lean mode cannot model (display list buffer, jump table, overlay descriptors, FIFO pointer ..., or IMEM) */
 void f3_overlay_load(struct f3 *f, int which);
 void f3_do_dl(struct f3 *f, uint32_t w0, uint32_t w1);
 

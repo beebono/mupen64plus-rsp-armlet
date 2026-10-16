@@ -318,6 +318,25 @@ previous task left in it; found because the equivalence run of a native-run Ocar
 the whole [0, 0xfc0) is dead across tasks (`ARMLET_DMEM_POISON=all` leaves the state stream, the pictures and the audio of the games identical); the table is deliberately smaller than that so that the compare keeps checking
 the state a native front-end computes and the interpreter does not need to reproduce.
 
+**Input no game produces: what the front-ends decline.** The lean mode and the closed forms model the microcode on the display lists, vertices and matrices a game writes. A perturbed task (`tools/rsp2c/fuzz_snaps.py`,
+docs/testing.md, "Fuzzing the front-ends") reaches states the microcode handles in its own way, which the front-ends do not reproduce; each of these is detected where the command is handled (a compare or two) and the whole task
+goes to the JIT. A mutation number (`MUT(n, ...)`, `scripts/build.sh native --tools --hmut=n`) switches each one off for the check:
+
+| decline | why it cannot be modelled | n |
+|---|---|---|
+| a vertex number past the 32 slots or odd (`G_TRI1/2/4`, `G_QUAD`, `G_MODIFYVTX`, `G_CULLDL`, `G_BRANCH_Z`); a `G_VTX` whose end index is past 32 / odd / below 2n / has bits 20 .. 23 set; a `G_MODIFYVTX` field past the record | the table lookup reads the clipper's constants and stores go anywhere | 217, 218, 221, 222, 223 |
+| `G_MOVEMEM` / `G_OBJ_MOVEMEM` to IMEM (bit 12), over the display list buffer, the jump table, the overlay descriptors, the segment table, the display list stack or the FIFO pointer; an index past the table; `G_MOVEWORD` with an index past the table or an offset that is not a word within its group (segments up to 0x3c, lights up to 0x1fc) | stores the front-end does not keep (the lean mode reads the list from RDRAM; the opcode classification is cached from the jump table) | 219, 231, 235, 237, 238 |
+| an opcode whose jump table entry is 0 (which is `G_DL`'s pc) or the sync handler and is not `G_DL` / a sync (Conker's 0x09 .. 0x0f) | undefined opcodes: the sync copy leaves a stale second word | 225, 226 |
+| a geometry mode bit the build gives no meaning to; a texture on byte other than 0 / 2 or a tile byte past 6 bits; a guard-band ratio with bit 15; `G_MTX` with a length other than 64 bytes (F3D / F3DEX: shorter than a matrix) | the cull table is indexed by bits 8 .. 15, the command id takes the low byte, the ratio is a signed lane, a short DMA leaves the rest of the matrix as the geometry buffer was | 224, 230, 232, 233, 229, 239 |
+| a class-0 operand longer than the buffer's dead range (F3D 0x150 bytes at SM64's layout, F3DEX 0x200) | the DMA runs on into live DMEM | 227, 236 |
+| a triangle or `G_CULLDL` over the partner slot of an odd `G_VTX` (F3D, SM64 flag word) | the microcode's pair store writes the flags of a vertex it computed from stale input | 242 |
+| a display list, vertices, matrix or light read from inside the RDP output ring; a matrix push into it (staged output) | the compare treats the bytes the RDP ignores (second words of syncs, slack) as don't care, a read gives them meaning | 243, 244 |
+| S2DEX `G_BG_1CYC` with a texel size past 3 or a format past 4 | the table lookups read other DMEM | 94 |
+
+Found by the same fuzzing and fixed (they are reachable by lists a game can write): the F3D triangle's `f3d_tri_in.sort_given` was never set (stack garbage decided whether the vertices were sorted by Indiana Jones' table: Wave Race and Pilotwings
+captures differed from the JIT in 5 to 9 of 24 tasks, nondeterministically; mutation 228), and the build constants of two F3DEX2 builds were wrong: Ocarina of Time's and Pokemon Snap's reject mask is 0x70b0 (the w lane), not 0x7030 (a triangle or `G_CULLDL`
+whose vertices share only bit 7 was drawn / not ended; 245), and F3DZEX's `G_BRANCH_Z` compares the integer part of the clip w (`lh 6(vertex)`), not the screen z (246).
+
 **Environment.** `ARMLET_HLE_VERIFY` (`1`, `jit`, `interp`), `ARMLET_HLE_EXACT` (the exact-events compare and the DMA-for-DMA front-end), `ARMLET_HLE_INTERP`, `ARMLET_HLE_STATS` (counts, decline reasons, time), `ARMLET_HLE_POISON`,
 `ARMLET_DMEM_POISON`, `ARMLET_HLE_ABORT`, `ARMLET_HLE_QUIET`, `HLE_FX2_SCALAR` (the scalar forms), `HLE_F3_PROF` (ticks per command kind, on stderr), `HLE_F3_TRACE` (every command and triangle), `HLE_F3_WATCH=<addr>` (a DMEM halfword,
 after every command that changes it), `HLE_DUMP_IMEM=<file>`, `HLE_DUMP_STREAM=<file>` (the native side's RDP stream), `HLE_DMEM_ALL` (list every differing DMEM byte), `HLE_RSP_TRIPC=<pc>` (the interpreter prints the three vertex slots at a triangle entry), `HLE_RSP_DEBUG=<n>` (the first n interpreted instructions), `HLE_RSP_TRACE` (every interpreted instruction with the vector register it wrote), `HLE_RSP_WATCH=<addr>` (every change of

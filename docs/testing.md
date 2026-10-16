@@ -398,6 +398,50 @@ overwrote the rows of the next task's start: replays of its small tasks differed
 **Replay harness: `HLE_PATCH`.** `armlet-native-replay` writes `HLE_PATCH=addr:hex;addr:hex` into RDRAM before the task (and `HLE_POKE` into DMEM): the synthetic display lists of `tools/hle/mksyn_ex2.py` (and `tools/f3d/mksyn.py`, whose runtime side this is) live at 0x300000; use `--oracle`. The snapshot supplies the
 microcode, its overlays (a base that never loaded the lighting overlay has none in its RDRAM image: the lit cases need a base with lit vertices, and a clipped one) and the start state.
 
+## Fuzzing the front-ends (input no game produces)
+
+`tools/rsp2c/fuzz_snaps.py` writes perturbed copies of captured task snapshots (bytes of the display list, vertex and matrix rows flipped, words replaced by words of other commands); `armlet-native-replay --oracle` runs the front-end and
+the JIT from the same perturbed state, so every difference is a front-end error (`tools/rsp2c/replay_each.sh` runs one replay per file in a memory-capped scope with a time limit). `tools/rsp2c/fuzz_cmds.py` aims at one command (an opcode and
+the field of it to replace), `tools/rsp2c/ddmin_snap.py` reduces a mismatching file to the few bytes that matter (mostly one to three), and `HLE_F3_TRACE` / `F3DEX_TRACE` / `F3D_TRACE` (commands, vertices with their clip flags, triangle decisions),
+`ARMLET_HLE_EXACT=1 HLE_EV_DUMP=1` (the first differing SP register write with the events around it), `ARMLET_HLE_INTERP=1 HLE_RSP_WATCH=<addr> HLE_RSP_TRACE=1` (who writes a DMEM byte, counted in command loop heads) find the cause. Every mismatch was
+classified as: **(a)** a front-end or table bug reachable by a list a game can write: fixed; **(b)** a state only a self-modifying or illegal list reaches (the display list overwrites the ucode's own buffers, a vertex number past the table, the list in the
+RDP output ring): detected where the command is handled and declined to the JIT, table in [design.md](design.md#task-level-native-path) ("Input no game produces"); **(c)** a fuzzer artefact: none was found (the perturbation only touches rows that
+go to DMEM above the data segment, not the microcode's text; an early targeted run that perturbed the text rows is the reason `fuzz_cmds.py` uses the same row selection).
+
+**The extent before and after** (Donkey Kong 64, Ocarina of Time, Buck Bumble, Paper Mario, Banjo-Kazooie, Super Mario 64, Conker, Worms, Super Smash Bros., and Cruis'n World / Kirby 64 as the other 2.04 / 2.04H builds; 11 sets of perturbed copies of the
+captured tasks with different seeds, 810 to 4000 per game and set, plus display-list-only and vertex-only sets, about 300 000 perturbed tasks in all, of which 154 000 in the table; devel at e499bad against this branch; `--oracle`, x86_64):
+
+| game (tasks) | before: equal / mismatch / declined / hung | after: equal / mismatch / declined / hung |
+|---|---|---|
+| Donkey Kong 64 (19 104) | 6480 / 475 / 12 120 / 28 | 5991 / 0 / 13 113 / 0 |
+| Ocarina of Time (19 250) | 3988 / 286 / 14 964 / 9 | 3709 / 0 / 15 541 / 0 |
+| Buck Bumble (15 600) | 3911 / 9 / 11 679 / 1 | 3710 / 0 / 11 890 / 0 |
+| Paper Mario (14 637) | 10 611 / 62 / 3962 / 1 | 10 307 / 0 / 4330 / 0 |
+| Banjo-Kazooie (10 350) | 845 / 347 / 9155 / 3 | 759 / 0 / 9590 / 1 |
+| Super Mario 64 (10 373) | 1628 / 142 / 8222 / 40 | 1076 / 0 / 9280 / 17 |
+| Conker (18 490) | 8855 / 238 / 9327 / 66 | 7471 / 0 / 11 010 / 9 |
+| Worms Armageddon (10 431) | 7682 / 69 / 2680 / 0 | 7524 / 0 / 2907 / 0 |
+| Super Smash Bros. (14 700) | 3832 / 29 / 10 834 / 4 | 3653 / 0 / 11 047 / 0 |
+| Cruis'n World (10 784) | 1522 / 511 / 8723 / 28 | 1225 / 0 / 9559 / 0 |
+| Kirby 64 (10 440) | 442 / 1 / 9997 / 0 | 393 / 0 / 10 047 / 0 |
+| Pokemon Snap, Dr. Mario 64, Mario Golf, Hydro Thunder, RR64, Star Fox 64, Mario Kart 64, Wave Race, Pilotwings (1512 each) | 4 to 18 mismatches in 6 of them | 0, except one Pokemon Snap task (below) |
+
+The first set alone (825 per game, seed 1) is the run the task started from: Donkey Kong 64 120 / 23 / 682 declined before, 99 / 0 / 726 after; Ocarina of Time 124 / 12 / 687, 109 / 0 / 716; Buck Bumble (the 2.04 captures) 220 / 0 and
+Cruis'n World 134 / 52 (of 1011) before, 206 / 0 and 108 / 0 after. The decline rate of the perturbed tasks rises by 5 to 10 points; the tasks that were "equal" before and decline now were equal by chance (a perturbed list that did not reach the state).
+**Real play does not decline more:** the 3700-frame gates (`ref` against `armlet-hle`, built from devel and from this branch, 9 games above) are identical in hash, state, screenshots and audio, and the native share of the graphics tasks is the same to the
+task (`ARMLET_HLE_STATS`): Donkey Kong 64 1663 of 1664, Ocarina of Time 544 of 1472 (the `G_LOAD_UCODE` declines of section 3 of the dialects page), Buck Bumble 3711 of 3712, Paper Mario 3583 of 3584, Banjo-Kazooie 1535 of 1536, Super Mario 64 1727 of 1728, Conker 1215 of 1216,
+Worms 2879 of 2880, Super Smash Bros. 3327 of 3328. The captured task starts of the 19 sets of captures (the 9 games above, Cruis'n World and the 9 others) replay equal with 0 declined (Ocarina of Time 27 declined, as before); the same 88 of them under qemu-aarch64 (NEON) are equal; 360 perturbed
+ones under qemu: 6 equal, 354 declined, 0 mismatches. The targeted sets (one opcode, one field, 49 000 for the F3DEX2 builds and 28 000 for F3DEX / F3D / S2DEX / F3DEXBG): 0 mismatches.
+
+**Mutations** (`tools/hle/mutcheck_fuzz.sh`, `FILES=<the perturbed snapshots that differed before the fixes, 2175 of them> SYNTH=<a Donkey Kong 64 and an Ocarina of Time snapshot>`): each decline or fix has a number (`MUT(n, ok, bad)`, `scripts/build.sh native --tools --hmut=n`; the
+table in design.md) and the 27 builds with one of them switched off each make some perturbed or synthetic task differ from the JIT (94: 64 files, 217: 588, 218: 88, 219: 16, 221: 33, 222: 5 + 2 synthetic, 223: 1 synthetic task, 224: 15, 225: 25, 226: 1, 227: 306, 228: 26, 229: 23, 230: 2, 231: 34,
+232: 1, 233: 4, 235: 36, 236: 6, 237: 1, 238: 1, 239: 1, 242: 1, 243: 1, 244: 1, 245: 25 + 3 synthetic, 246: 21 synthetic tasks). 220, a guard for `G_MOVEWORD` stores into the buffers, was dominated by the offset bound (235) and was removed.
+The synthetic tasks (`tools/hle/mksyn_ex2.py`) have two new cases: `wild` (coordinates over the whole 16-bit range, matrices of scale up to 256, some coordinates at the ends of the range: 400 seeds equal on Donkey Kong 64 and Ocarina of Time) and `bad` (vertex numbers, indices and offsets no game writes: before the fixes 232 of 400 seeds differed on Donkey Kong 64 and 230 on Ocarina of Time, all 400 decline now); the old `tex` bit in the geometry mode of
+the `clip` / `zneg` / `tri` / `mix` cases (bit 1 means nothing to F3DEX2) is gone. Ocarina of Time's `misc` case was 90 % equal before (`G_BRANCH_Z`, mutation 246): 400 of 400 now, all cases.
+
+**Not resolved:** one perturbed Pokemon Snap task (F3DEX.NoN 2.08H, `snap2_Q`, a `G_GEOMETRYMODE` clear that leaves the lighting on): after a lit `G_VTX` that loads the lighting overlay the microcode refills its display list from the overlay's source address
+(the DL stack word holds the overlay descriptor's RDRAM address) and the task runs on differently; the lit synthetic tasks of the same build are equal and no captured Snap task reaches the state. 1 in 1512.
+
 ## Diddy Kong Racing, Jet Force Gemini and Indiana Jones (docs/native-custom.md)
 
 The three custom microcodes run closed forms (`hle_rare.c`, `hle_indy.c`); the page [native-custom.md](native-custom.md) has the whole test record. In short, on the final tree (desktop, x86_64):
@@ -422,7 +466,7 @@ now (it reads the header the core wrote). Without 0xfc0 - 0xfd0 in the list the 
 ## Regenerating the microcode oracles
 
 The closed forms of S2DEX 2.08 (`s2dex2_bg.c`, `s2dex2_rect.c`) and of F3DEXBG's lit vertices (`f3dexbg_fx.c`) were derived from the microcode and are checked against the microcode itself, besides the replays and verify runs above.
-`tools/rsp2c/` is the one directory of this tooling: `rsp2c.py` (the translator, below), `fuzz_snaps.py` (perturbed copies of captured task snapshots) and `replay_each.sh` (one `armlet-native-replay` per snapshot with a time limit, for the perturbed ones).
+`tools/rsp2c/` is the one directory of this tooling: `rsp2c.py` (the translator, below), `fuzz_snaps.py` / `fuzz_cmds.py` / `ddmin_snap.py` (perturbed copies of captured task snapshots, the same aimed at one command, and their reduction; the section above) and `replay_each.sh` (one `armlet-native-replay` per snapshot with a time limit, for the perturbed ones).
 `tools/rsp2c/rsp2c.py` translates the instructions of a handler (from an IMEM image, one C statement per instruction, on the exact vector-unit library `tools/hle/ref_vu.h`) into a function that does what the RSP interpreter
 does. Those translations are ROM-derived and **not** part of the tree (`*_gen.inc`, `gen_*.inc` and `tools/hle/oracle*/` are git-ignored); they are regenerated from an IMEM image taken with `HLE_DUMP_IMEM=<file>` (the front-end writes
 IMEM at the end of a task; for S2DEX the overlay that the handler lives in must be resident: A for the sprites, B for the backgrounds; for F3DEXBG the lighting overlay):
