@@ -30,6 +30,7 @@ struct f3dex2_build {
     uint16_t tri1, tri2;            /* G_TRI1; G_TRI2 and G_QUAD */
     uint16_t vtx, mtx, geom, enddl, half2, modvtx, culldl, branchz;
     uint16_t mvp;                   /* a handler that concatenates the matrices now (G_SPECIAL_1 of F3DEX.NoN 2.08H), or 0 */
+    unsigned gen204;                /* F3DEX2 2.04 / 2.04H, the generation before 2.05: unclamped screen z, and the clipper's reciprocal sign and fan (fx2_vctx.gen204, fx2_clip_ctx.sign0 / fan_l0; docs/ucode-f3dex2-dialects.md section 5) */
     unsigned zex;                   /* F3DZEX: other lanes of the constant vectors, no mask on the slope fractions */
     uint32_t reject_mask;           /* a triangle whose three clip-flag words have a common bit in this mask is rejected */
     uint16_t tri4;                  /* G_TRI4 (F3DEXBG): four triangles in one command, or 0 */
@@ -88,6 +89,10 @@ struct f3 {
 extern const struct hle_family f3dex2_fam;
 
 /* the dead ranges of the standard builds (the dialects that keep the standard buffers use them too) */
+#define F3DEX2_DEAD_RANGES { 0x3ca, 0x408 }, { 0x920, 0xfb8 }, { 0xfc8, 0xfcc }, \
+    { 0x203, 0x204 }, { 0x207, 0x208 }, { 0x21b, 0x21c }, { 0x21f, 0x220 }, { 0x233, 0x234 }, { 0x237, 0x238 }, { 0x24b, 0x24c }, { 0x24f, 0x250 }, \
+    { 0x263, 0x264 }, { 0x267, 0x268 }, { 0x27b, 0x27c }, { 0x27f, 0x280 }, { 0x293, 0x294 }, { 0x297, 0x298 }, { 0x2ab, 0x2ac }, { 0x2af, 0x2b0 }, { 0x2c3, 0x2c4 }, \
+    { 0x2c7, 0x2c8 }
 extern const struct hle_dead_range f3dex2_dead_out[];
 enum { F3DEX2_N_DEAD_OUT = 21 };
 #define F3DEX2_DEAD .ring_off = 0xfe8, .dead = f3dex2_dead_out, .n_dead = F3DEX2_N_DEAD_OUT

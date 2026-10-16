@@ -147,7 +147,7 @@ static void do_mtx_mul_mvp(struct f3 *f, uint32_t w0)
     f2_ld_mtx(f->t, F2_P, &p);
     fx2_mtx_mul(&mv, &p, &r);
     f2_st_mtx(f->t, F2_MVP, &r);
-    hle_st8(f->t, F2_MVP_VALID, (uint8_t)w0);
+    hle_st8(f->t, F2_MVP_VALID, MUT(216, (uint8_t)w0, 0));
 }
 
 static int cmd_vtx(struct f3 *f)
@@ -209,14 +209,20 @@ static int cmd_vtx(struct f3 *f)
         f3_overlay_load(f, OV_LIGHT);
 
     f2_ld_vctx(t, &c);
+    c.gen204 = f->b->gen204;
     if (lit)
         f2_ld_lights(t, hle_dm8(t, F2_LIGHTS_SIZE) / F2_LIGHT_STRIDE, &c.L);
     if (f->lean) {
         uint32_t va = seg_addr(t, w1);
         for (i = 0; i < n; i++)
             f2_ld_vin_rdram(t, va + 16 * i, &in[i]);
-        if (n & 1)                                      /* an odd count: the pair's second vertex is computed from whatever DMEM holds after the loaded ones; only its clip bits are used */
-            f2_ld_vin(t, s4 + 16 * n, &in[n]);
+        if (n & 1) {                                    /* an odd count: the pair's second vertex is computed from whatever DMEM holds after the loaded ones; only its clip bits are used */
+            unsigned a = s4 + 16 * n;
+            if (a == F2_IN)                             /* (the last slot: the bytes after it are the display list's current chunk, which the lean mode does not keep in DMEM) */
+                f2_ld_vin_rdram(t, f->k0 - MUT(213, F2_IN_REFILL, F2_IN_REFILL - 8), &in[n]);
+            else
+                f2_ld_vin(t, a, &in[n]);
+        }
     } else
         for (i = 0; i < n + (n & 1); i++)
             f2_ld_vin(t, s4 + 16 * i, &in[i]);
@@ -312,7 +318,7 @@ static void tri_consts(struct f3 *f)
 }
 
 /* the triangle setup for three vertex records; HLE_OK, with the RDP command (if any) in the buffer */
-static int tri_setup(struct f3 *f, const struct fx2_vtx *const v[3], uint32_t clip_mask, int *needs_clip)
+static int tri_setup(struct f3 *f, const struct fx2_vtx *const v[3], const struct fx2_vtx *flat, uint32_t clip_mask, int *needs_clip)
 {
     struct hle_task *t = f->t;
     struct fx2_tri_in *in = &f->tin;
@@ -323,6 +329,7 @@ static int tri_setup(struct f3 *f, const struct fx2_vtx *const v[3], uint32_t cl
     in->v[0] = v[0];
     in->v[1] = v[1];
     in->v[2] = v[2];
+    in->flat = MUT(214, flat, NULL);
     in->clip_mask = clip_mask;
     r = fx2_tri_setup(in, cmd, &len);
     if (r == FX2_TRI_CLIP) {
@@ -351,7 +358,9 @@ static int do_clip(struct f3 *f, const struct fx2_vtx *const v[3])
     if (f->ov == OV_LIGHT)                              /* the lighting overlay's entry loads the clipping overlay */
         f3_overlay_load(f, OV_CLIP);
     f2_ld_vctx(t, &vc);
+    vc.gen204 = f->b->gen204;
     cc.v = &vc;
+    cc.sign0 = cc.fan_l0 = f->b->gen204;
     for (p = 0; p < 6; p++) {
         unsigned a1 = 20 - 4 * p;
         for (k = 0; k < 4; k++)
@@ -361,7 +370,7 @@ static int do_clip(struct f3 *f, const struct fx2_vtx *const v[3])
     if (fx2_clip_tri(&cc, v, co))
         return hle_decline(t, "clipper: too many vertices");
     for (k = 0; k < co->ntri; k++) {
-        rc = tri_setup(f, co->tri[k], 0, &dummy);
+        rc = tri_setup(f, co->tri[k], v[0], 0, &dummy);
         if (rc != HLE_OK)
             return rc;
     }
@@ -392,7 +401,7 @@ static int do_tri(struct f3 *f, uint32_t word)
                     (uint32_t)v[k].col[0] << 24 | (uint32_t)v[k].col[1] << 16 | (uint32_t)v[k].col[2] << 8 | v[k].col[3], (uint32_t)(uint16_t)v[k].szi << 16 | v[k].szf);
         fprintf(stderr, "\n");
     }
-    rc = tri_setup(f, vp, f->clip_mask, &clip);
+    rc = tri_setup(f, vp, NULL, f->clip_mask, &clip);
     if (rc != HLE_OK || !clip)
         return rc;
     for (k = 0; k < 3; k++)                             /* the clipper needs the clip coordinates too */
@@ -414,6 +423,33 @@ void f3_do_dl(struct f3 *f, uint32_t w0, uint32_t w1)
     }
     f->k0 = target;
     refill(f);
+}
+
+/* Tasks that load another ucode text in the middle (Kirby 64's every task: S2DEX; F-Zero X's: F3DLX.Rej) decline when the command comes, after the native work before it. The text and data pointers of the
+ * task are remembered; the next tasks with the same pair decline at once, and every 64th runs again in case the game changed. */
+static struct { uint32_t uc, data; unsigned n; } l_loads[8];
+static unsigned l_nloads;
+
+static int load_known(const struct hle_task *t)
+{
+    unsigned i;
+    for (i = 0; i < l_nloads; i++)
+        if (l_loads[i].uc == hle_dm32(t, 0xfd0) && l_loads[i].data == hle_dm32(t, 0xfd8))
+            return l_loads[i].n++ % 64 != 0;
+    return 0;
+}
+
+static void load_note(const struct hle_task *t)
+{
+    unsigned i;
+    for (i = 0; i < l_nloads; i++)
+        if (l_loads[i].uc == hle_dm32(t, 0xfd0) && l_loads[i].data == hle_dm32(t, 0xfd8))
+            return;
+    if (l_nloads < sizeof(l_loads) / sizeof(l_loads[0])) {
+        l_loads[l_nloads].uc = hle_dm32(t, 0xfd0);
+        l_loads[l_nloads].data = hle_dm32(t, 0xfd8);
+        l_loads[l_nloads++].n = 1;
+    }
 }
 
 static int run_loop(struct f3 *f, int *handover)
@@ -459,8 +495,10 @@ static int run_loop(struct f3 *f, int *handover)
             break;
         case K_LOADUCODE: {                             /* the microcode's own code (on the interpreter) loads a ucode text and data and starts it; the same text is a re-initialisation, any other declines */
             uint32_t src = w1 & 0x7ffff8, cur = f->uc0 & 0x7ffff8;
-            if (src + 0xf48 > 0x800000 || cur + 0xf48 > 0x800000 || memcmp(t->rdram + src, t->rdram + cur, 0xf48))
+            if (src + 0xf48 > 0x800000 || cur + 0xf48 > 0x800000 || memcmp(t->rdram + src, t->rdram + cur, 0xf48)) {
+                load_note(t);
                 return hle_decline(t, "G_LOAD_UCODE of another ucode");
+            }
             f->ho_pc = 0xfac;
             if (f->lean) {                              /* the stub reads the command's second word from the input buffer */
                 hle_st32(t, F2_IN_END + f->k1 - 8, w0);
@@ -712,6 +750,8 @@ static int f3dex2_run(struct hle_task *t, const struct hle_ucode *u)
         if (g_prof)
             atexit(prof_dump);
     }
+    if (load_known(t))
+        return hle_decline(t, "an earlier task with these pointers loaded another ucode");
     f2L = b->lay ? b->lay : &l_lay_std;
     hle_cpu_init(t, &c, t->start_pc, 1u << 22);
     c.stop_pc = b->head + 4;                            /* the first fetch has polled SP_STATUS already */
@@ -817,14 +857,10 @@ static const struct f3dex2_build l_b_snap = {
  * with their slack (0xba8..0xd00 + 0xb0 slack, 0xdb0..0xf08 + 0xb0): the command handlers write the commands there, the flush DMAs [buffer start, write pointer) to the FIFO, and the bytes beyond the
  * pointer are scratch of the triangle setup (it writes its shade, texture and z blocks whether or not the command has them; their values depend on vector registers left by earlier commands) and the
  * stale second words of sync commands, which the RDP ignores (the verify stream zeroes them). At the end of a task everything below the pointer has been flushed. */
-const struct hle_dead_range f3dex2_dead_out[] = { { 0x3ca, 0x408 }, { 0x920, 0xfb8 },
-    /* the word at 0xfc8 (OSTask.ucode_boot): the initialisation stores register a0 there (sw a0, 0xfc8), which holds whatever the previous task left in it; nothing reads it */
-    { 0xfc8, 0xfcc },
-    /* the padding byte of each colour of the light slots (struct Light_t: col[3] pad, colc[3] pad, dir[3] pad; 24 bytes from 0x200): the lighting code stores whole vector lanes and the
-     * pad lane holds what the vector registers had, which depends on the commands before; nothing reads the pads. */
-    { 0x203, 0x204 }, { 0x207, 0x208 }, { 0x21b, 0x21c }, { 0x21f, 0x220 }, { 0x233, 0x234 }, { 0x237, 0x238 }, { 0x24b, 0x24c }, { 0x24f, 0x250 },
-    { 0x263, 0x264 }, { 0x267, 0x268 }, { 0x27b, 0x27c }, { 0x27f, 0x280 }, { 0x293, 0x294 }, { 0x297, 0x298 }, { 0x2ab, 0x2ac }, { 0x2af, 0x2b0 }, { 0x2c3, 0x2c4 },
-    { 0x2c7, 0x2c8 } };
+/* the ranges: F3DEX2_DEAD_RANGES (hle_f3dex2_int.h, which a dialect with a few more reuses). The word at 0xfc8 (OSTask.ucode_boot): the initialisation stores register a0 there (sw a0, 0xfc8), which holds
+ * whatever the previous task left in it; nothing reads it. The padding byte of each colour of the light slots (struct Light_t: col[3] pad, colc[3] pad, dir[3] pad; 24 bytes from 0x200): the lighting code
+ * stores whole vector lanes and the pad lane holds what the vector registers had, which depends on the commands before; nothing reads the pads. */
+const struct hle_dead_range f3dex2_dead_out[] = { F3DEX2_DEAD_RANGES };
 
 _Static_assert(sizeof(f3dex2_dead_out) / sizeof(f3dex2_dead_out[0]) == F3DEX2_N_DEAD_OUT, "F3DEX2_N_DEAD_OUT (hle_f3dex2_int.h)");
 HLE_UCODE(l_dk64) = { .id = 0x48c7e653a6adcda8ull, .name = "F3DEX 2.07 (Donkey Kong 64)", .fam = &f3dex2_fam, .flags = HLE_F_NEAR_CLIP, .fam_data = &l_b_dk64, F3DEX2_DEAD };

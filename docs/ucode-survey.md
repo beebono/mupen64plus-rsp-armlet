@@ -148,7 +148,8 @@ whose differing words all fall in the masked fields" is therefore worthwhile for
 build passes `ARMLET_HLE_VERIFY` and the `tools/equiv` hash stream on at least one game before being admitted to a list, exactly like a hand-registered one (so the games actually gained, 12 to 18 more than today, depend on how many of them run clean); (3) identification
 hashes the full 4 KiB and ignores the data image.
 Not worth it: whole-text hashing; matching across dialects (near-clip against .NoN, LX against EX2, 2.04 against 2.05: the vertex / triangle code differs by 20 to 40 instructions); the S2DEX, Rej / LX2, Rare, Resident Evil 2 and Indiana Jones texts (about 12 games),
-which need their own kernels in any case. The F3DEX2 2.04 / 2.04H pair (Buck Bumble, Cruis'n World, Kirby, Smash) is the best next hand-written build: it is the largest group at 96% that exact matching and L3 both miss.
+which need their own kernels in any case. The F3DEX2 2.04 / 2.04H pair (Buck Bumble, Cruis'n World, Kirby, Smash) is the best next hand-written build: it is the largest group at 96% that exact matching and L3 both miss. (Done since: [ucode-f3dex2-dialects.md](ucode-f3dex2-dialects.md) section 5. The "20 to 40 real words" were five differences in
+the vertex stores, the clipper and the lighting overlay, which is not in the 4 KiB the survey dumped, plus the triangle constants of the F3DZEX generation.)
 
 ## Reproduce
 

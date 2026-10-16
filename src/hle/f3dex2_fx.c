@@ -117,7 +117,8 @@ static inline int32_t dotn(const int16_t n[3], const int16_t d[3], int unsig)
 }
 
 /* the linear texture generation (G_TEXTURE_GEN_LINEAR): from the sum 0x4000 + d / 2 the code goes on with a polynomial. x = 0x4000 + c0 + d / 2 (the accumulator adds c0 << 16 to the sum, the
- * integer half saturates); then x2 = x x (VMULF), p = x k + x c2 (VMULF, VMACF; k = v31[7]); the result is 0x4000 + 2 x c1 + 2 x2 p, in the accumulator, saturated. */
+ * integer half saturates); then x2 = x x (VMULF), p = x k + x c2 (VMULF, VMACF; k = v31[7]); the result is 0x4000 + 2 x c1 + 2 x2 p, in the accumulator, saturated. F3DEX2 2.04 / 2.04H: the
+ * instruction that restarts the accumulator also overwrites the register x is in, so the linear term is 2 * 0x4000 * c1. */
 int16_t fx2_texgen_linear(const struct fx2_vctx *c, int16_t d)
 {
     hle_acc acc0 = ((hle_acc)0x4000 << 16) + ((hle_acc)d << 15) + ((hle_acc)c->tg[0] << 16);
@@ -125,7 +126,7 @@ int16_t fx2_texgen_linear(const struct fx2_vctx *c, int16_t d)
     hle_acc a;
     x2 = hle_sclamp(hle_mulf(x, x));
     p = hle_sclamp(hle_macf(hle_mulf(x, c->c31_7), x, c->tg[2]));
-    a = hle_macf(hle_macf(((hle_acc)0x4000 << 16), x, c->tg[1]), x2, p);
+    a = hle_macf(hle_macf(((hle_acc)0x4000 << 16), MUT(215, c->gen204, 0) ? 0x4000 : x, c->tg[1]), x2, p);
     return hle_sclamp(a);
 }
 
@@ -245,7 +246,7 @@ static void vtx_project(const struct fx2_vctx *c, const struct fx2_pair P[4], in
     }
     o->sx = S[0].i;
     o->sy = S[1].i;
-    o->szi = S[2].i < 0 ? 0 : S[2].i;
+    o->szi = S[2].i < 0 && !MUT(212, c->gen204, 0) ? 0 : S[2].i;
     o->szf = S[2].f;
     o->rwi = R1.i;
     o->rwf = R1.f;
@@ -433,7 +434,7 @@ unsigned fx2_tri_attr_prep(const struct fx2_tri_in *in, const struct fx2_tri_sta
 {
     uint32_t g = in->g;
     unsigned shade = g & 4, zb = g & 1, tex = in->tex, k, l;
-    const struct fx2_vtx *va = in->v[0];
+    const struct fx2_vtx *va = in->flat ? in->flat : in->v[0];
     const struct fx2_vtx *vs3[3] = { st->H, st->M, st->L };
     struct fx2_pair R0, R1, T, E, Rmw = { 0, 0 };
     hle_acc tt, full;
@@ -635,7 +636,10 @@ static void clip_intersect(const struct fx2_clip_ctx *c, const int16_t pl[4], co
     dsum_d = lane_sum(dd);
     D32 = hle_pair32(dsum_d);
     R0 = hle_rcp32(D32);
-    sg = (int16_t)(dsum_d.i | 1) < 0 ? -2 : 2;
+    if (MUT(210, c->sign0, 0))                          /* VABS of the integer part itself (2.04): 0 for 0 */
+        sg = dsum_d.i < 0 ? -2 : dsum_d.i > 0 ? 2 : 0;
+    else                                                /* VABS of the integer part with its low bit set (VOR with 1) */
+        sg = (int16_t)(dsum_d.i | 1) < 0 ? -2 : 2;
     {
         hle_acc a = (hle_acc)(uint16_t)R0 * sg;
         uint16_t v2 = hle_uclamp(a);
@@ -694,7 +698,6 @@ static void clip_intersect(const struct fx2_clip_ctx *c, const int16_t pl[4], co
     }
     nv->s = hle_sclamp((hle_acc)out->s * t + (hle_acc)in->s * nt);
     nv->t = hle_sclamp((hle_acc)out->t * t + (hle_acc)in->t * nt);
-    (void)c;
 }
 
 int fx2_clip_tri_scalar(const struct fx2_clip_ctx *c, const struct fx2_vtx *const v[3], struct fx2_clip_out *o)
@@ -748,9 +751,15 @@ int fx2_clip_tri_scalar(const struct fx2_clip_ctx *c, const struct fx2_vtx *cons
         last = list[cur][n[cur] - 1];
     }
     for (i = 0; i + 2 < n[cur]; i++) {
-        o->tri[o->ntri][0] = list[cur][i];
-        o->tri[o->ntri][1] = list[cur][i + 1];
-        o->tri[o->ntri][2] = list[cur][n[cur] - 1];
+        if (MUT(211, c->fan_l0, 0)) {
+            o->tri[o->ntri][0] = list[cur][0];
+            o->tri[o->ntri][1] = list[cur][n[cur] - 2 - i];
+            o->tri[o->ntri][2] = list[cur][n[cur] - 1 - i];
+        } else {
+            o->tri[o->ntri][0] = list[cur][i];
+            o->tri[o->ntri][1] = list[cur][i + 1];
+            o->tri[o->ntri][2] = list[cur][n[cur] - 1];
+        }
         o->ntri++;
     }
     return 0;

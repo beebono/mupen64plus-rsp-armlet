@@ -12,6 +12,8 @@ handler pcs for the commands below 0x170 a `struct f2_pcs`, and commands the sta
 | `ac310503c83b23ea`, `d2d1f9f2e7dfe1ab` | F3DEX 2.08 | Dr. Mario 64, RR64; WinBack (the main text), 007 TWINE, Hot Wheels, Hydro Thunder, Mario Golf / Tennis, Ogre Battle | only pcs (vertex 0x4f8, triangles 0x7bc / 0x7b4, MODIFYVTX 0xc80, CULLDL 0xc40, BRANCH_Z 0xc68); the two texts have identical code |
 | `33dc705a5e4d39ae` | F3DEX 2.03 | F-Zero X (its first text) | pcs again (the old build: vertex 0x4e8, triangles 0x794 / 0x78c, ...). Registered, but F-Zero X's tasks start with this text and `G_LOAD_UCODE` the F3DLX.Rej text in the same task (section 3), so they decline |
 | `e80e52925f70b674` | F3DEXBG.NoN 2.08 | Conker's Bad Fur Day | section 2 |
+| `5dce3244420ce715` | F3DEX 2.04 | Buck Bumble, Cruis'n World | the generation before 2.05: the triangle code of F3DZEX, an unclamped screen z, another clipper tail, a lighting overlay with a slip; section 5 |
+| `e857446754069ab5` | F3DEX 2.04H | Super Smash Bros.; Kirby 64 (every task declines, section 5.6) | 2.04 with `G_SPECIAL_1` (0xd5) added: 24 bytes inserted at 0x1b8, the pcs above it +0x18; section 5 |
 
 ## 2. F3DEXBG.NoN 2.08
 
@@ -81,3 +83,47 @@ rest of the task on the interpreter, three times slower than the JIT.
 |---|---|---|
 | F3DLX.Rej 2.08 `f67036e9d2a701c3`, 2.03 `7de803fdbd8fb8b0`, F3DFLX.Rej 2.03F `c750be26762c28b0` | Excitebike 64; F-Zero X | a different microcode, not a variant: 20-byte vertex records (no clip coordinates: the "Rej" builds reject instead of clip), another triangle code that splits a triangle crossing the near plane in two, another lighting code (directional only), other boot and DMEM layout. About 970 of 1000 instruction words differ from F3DEX2 2.08 (`tools/ucode_survey.py`). F3DFLX has its own jump table layout. |
 | L3DEX 2.08 `cd32d8e5555c1bfc` | WinBack (every second task) | the line microcode: `G_LINE3D` and a triangle code that draws lines; 763 words differ from F3DEX2 2.08. |
+
+## 5. F3DEX2 2.04 and 2.04H
+
+The two texts of the survey's "F3DEX2 2.04 / 2.04H" cluster ([ucode-survey.md](ucode-survey.md): 96 % against the registered builds, "20 to 40 real words" in the vertex and triangle code). 2.04 is the older generation: the text is the standard F3DEX2
+skeleton (same DMEM layout as Donkey Kong 64: `l_lay_std`, the 344-byte output buffers, the loop head at 0x18c, the handlers below 0x170 at the standard pcs) and its handlers sit at the pcs of the 2.03 table (vertex 0x4e8, `G_TRI1` 0x794, `G_TRI2` 0x78c, ...). 2.04H
+(Kirby 64, Super Smash Bros.) is the same code plus one handler: `G_SPECIAL_1` (0xd5) at 0x1b8, the "concatenate the matrices now and set the valid byte to the low byte of w0" command that F3DEX.NoN 2.08H (Pokemon Snap) has at 0x1c0 (the front-end's `K_MVP`); everything from 0x1b8 on
+moves up by 0x18 (copy 0x220, sync 0x224, segcopy 0x230, `G_RDPSETOTHERMODE` 0x250, `G_SETSCISSOR` 0x25c, geometry mode 0x1e8, `G_ENDDL` 0x1fc, `G_RDPHALF_2` 0x210, vertex 0x500, triangles 0x7ac / 0x7a4, `G_CULLDL` 0xc2c, `G_BRANCH_Z` 0xc54, `G_MODIFYVTX` 0xc6c). The two builds are
+table entries (`l_b_ex2_204`, `l_b_ex2_204h` in `hle_f3dex2_dialects.c`); the pcs are read off the jump table in the data segment, the differences below off the instruction streams (`tools/native/disasm.py`, an alignment of the L3-normalised words like `tools/ucode_survey.py`'s).
+
+**5.1 What is the same as which build.** 2.04 against Donkey Kong 64 (2.07): 34 blocks differ. Against Ocarina of Time's F3DZEX.NoN 2.06H only 20 do, and none of them in the triangle code. The triangle code, its constants (the data's vector constants at
+0x1b0 / 0x1c0 are F3DZEX's, not 2.07's), the slope handling (no mask on the fractions), the polynomial of the lighting at 0x1ce, the lighting overlay and the clipper's six-plane loop are F3DZEX's. So the front-end's existing `zex` parameter set (the constants are read from the data) carries the triangle
+setup; only the reject mask is the standard 0x7070. The 2.03 text (F-Zero X) is 2.04 with a few lane choices of the vertex code permuted; its entry (`l_b_ex2_203`) is left as it is: the only 2.03 task of F-Zero X that is native-eligible has no triangle, and its triangle constants would need `zex` (not verified, the task
+that matters declines: section 3).
+
+**5.2 What differs from 2.05 and later, found and how it is handled.** Each is a field of the builds' `gen204` flag; all of them are small closed-form changes inside the existing functions, none needs new kernels.
+
+| # | where | 2.05+ (what the front-end did) | 2.04 / 2.04H | handled in |
+|---|---|---|---|---|
+| 1 | vertex loop's stores (0x5f4 ... 0x73c; `G_VTX` and the new vertices of the clipper) | the screen z's integer part is `max(z, 0)` (`VGE v3, v25, v0`; `SSV v3`) | `SDV v25` stores the unclamped integer part together with x and y; the fraction is the same. A vertex behind the z = 0 plane of the viewport (negative `z / w * scale + trans`) keeps a negative z in its record, so the triangle's z block, `G_BRANCH_Z` and the clipper see it | `fx2_vctx.gen204` (`vtx_project`; the NEON vertex form: `NMUT(6)`) |
+| 2 | the clipper, intersection of an edge with a plane (0x394 ...) | the sign of the doubled reciprocal is that of `(int | 1)` of the distance difference's integer part (`VOR v29, v11, v1` first): never 0 | `VABS v29, v11, v25[3]` on the integer part itself: a distance difference below 1.0 (integer part 0) gives 0, the reciprocal's scale is 0, `t` becomes the minimum (1) | `fx2_clip_ctx.sign0` |
+| 3 | the clipper, the fan (0x4b4 ...) | triangles (L[k], L[k+1], L[n-1]), k = 0 .. n-3 | (L[0], L[n-2-k], L[n-1-k]), k = 0 .. n-3: the first vertex of the polygon is the pivot and the last triangle comes first. The order of the vertices within a triangle decides the flat colour, the winding and the ties of the sort | `fx2_clip_ctx.fan_l0` |
+| 4 | the lighting overlay, linear texture generation (overlay offset 0x1d0) | `VMUDH v21, v1, v31[13]` restarts the accumulator at 0x4000 and writes v21 | the same instruction writes **v22**, which holds x: the following `VMACF v22, v22, c1` then multiplies 0x4000 (not x) with c1, so the linear term of the polynomial is `2 * 0x4000 * c1` | `fx2_texgen_linear` (`gen204`) |
+| 5 | triangle setup | F3DEX2 constants (rcp 0x20, dx 0x1000, limit 0x100, fraction mask) | F3DZEX's lanes (8, 0x4000, 0x1cc, none), read from the data | `zex` |
+
+Found in the same work, **not 2.04-specific** (they were in the front-end for every F3DEX2 build; the captured games never reached them, the synthetic tasks of section 5.5 did): the flat-shading colour of the triangles the clipper makes comes from the vertex the *original* triangle command started with (the microcode's `a0`, set at
+the triangle entry, is not set again on the clipper's way in), not from the first vertex of the fan triangle (`fx2_tri_in.flat`); and an odd vertex count that ends at the last vertex slot (31) computes its phantom partner from the first bytes of the display list's current chunk at 0x920, which the lean mode does not keep in DMEM
+(`cmd_vtx` reads them from RDRAM: `k0 - 168`).
+
+**5.3 Dead ranges.** The standard table (`F3DEX2_DEAD_RANGES`). Cruis'n World's RDP ring (RDRAM 0x353380 ...) overlaps the last 0x120 bytes of its ucode data (0x352ca0 + 0x800): the lists a task writes there come back as data at the start of the next task, into DMEM [0x6e0, 0x800) (vertex slots 17 to 22, written
+before they are read), and the lists differ from the JIT's in the stale second words of the sync commands. Those bytes of the next task's DMEM differ too, so [0x6e0, 0x800) is dead for `5dce` (the hash stream of the equivalence run is identical with it; `ARMLET_DMEM_POISON=mask` and `ring` PASS in Cruis'n World and Buck Bumble). Super Smash Bros.
+and Buck Bumble do not overlap.
+
+**5.4 The identity hash does not cover the lighting overlay.** The ucode id is the FNV of the first 4 KiB; the lighting overlay is stored behind it (`desc_light` points at text + 0x1188, 0x208 bytes), so it is neither hashed nor in the survey's dumps. The 2.04 overlay was read from the task snapshots (the overlay DMA's rows) and compared with Ocarina of
+Time's and Donkey Kong 64's (one instruction: difference 4 above, and the light scale lane of 2.07).
+
+**5.5 Tests.** Captured tasks (`ARMLET_HLE_CAPTURE`): 150 + 337 (every task of the first 900 frames) + 150 of Buck Bumble, Cruis'n World and Super Smash Bros. equal on x86_64, aarch64 NEON and aarch64 scalar. Synthetic tasks (`tools/hle/mksyn_ex2.py`: random matrices of scales down to 1/1024, vertices in batches, triangles
+crossing the clip planes with short edges, negative screen z, lit vertices with 1 to 5 lights / look-at / fog / both texture generations, and G_CULLDL, G_BRANCH_Z, G_MODIFYVTX, G_QUAD, G_SPECIAL_1, G_POPMTX, calls and branches), the JIT run from the same state (`--oracle`, `tools/hle/synth_ex2.sh`). Mutations 210 .. 216 (`tools/hle/mutcheck_204.sh`): each of the differences above,
+the phantom vertex, the flat colour and the valid byte of the matrix concatenation (`G_SPECIAL_1`), all caught ([testing.md](testing.md), "F3DEX2 2.04 and 2.04H").
+
+**5.6 Kirby 64.** Its tasks start with the 2.04H text (claimed) and every one declines: each ends with `G_LOAD_UCODE` of a different text, which is S2DEX (the survey saw only the first text of a task). The loaded text (3912 bytes, its data, 1664 bytes, goes to DMEM 0x180) is the code of the registered S2DEX 2.08 build
+(Worms): an alignment against it differs in the initialisation (one vector instruction), a nop, and four immediates, and its handlers from 0x184 on sit 8 bytes lower (loop head 0x1a4, `G_OBJ_LOADTXTR` 0x550, `G_BG_1CYC` 0xb74, `G_BG_COPY` 0x208, `G_OBJ_RECTANGLE` 0xb80, `G_SETSCISSOR` 0x1d0). Its display lists contain `G_BG_1CYC`,
+`G_BG_COPY` (the S2DEX front-end declines it: [ucode-s2dex2.md](ucode-s2dex2.md)), `G_OBJ_RENDERMODE` and `G_OBJ_LOADTXTR`. What it would take: the native loop switching to another build in the middle of a task (the S2DEX layout, pcs, overlays and dead ranges, and the union of the two builds' dead ranges in the entry the
+task starts with, since the equivalence shim masks by the first text), a build record for the shifted pcs, and `G_BG_COPY`. The rest of a task on the interpreter is three times slower than the JIT, so the task declines as a whole. Kirby is therefore 0 % native. To keep the registration from costing time (the native work before the command would be thrown away every task), the front-end remembers the text and data pointers of a task that declined at
+such a command and declines the next tasks with the same pair at once (every 64th runs again): 692 of 703 Kirby tasks in the first 1500 frames decline before the boot code runs. F-Zero X's tasks do the same.
