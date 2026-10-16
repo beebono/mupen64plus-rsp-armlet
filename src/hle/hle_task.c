@@ -166,7 +166,7 @@ bool armlet_hle_task_begin(struct armlet_ctx *c)
     if ((*c->rsp.SP_PC_REG & 0xfff) != 0 || (armlet_dmem32(c, ARMLET_TASK_FLAGS) & 1))
         return false;
     u = armlet_gfx_identify(c, &is_new);
-    if (u->family == ARMLET_FAM_OTHER)
+    if (u->family == ARMLET_FAM_OTHER && !armlet_hle_find(u->id))      /* (S2DEX and the other families without a banner match have a table entry) */
         return false;
     H.cur_id = u->id;
     H.gfx = 1;

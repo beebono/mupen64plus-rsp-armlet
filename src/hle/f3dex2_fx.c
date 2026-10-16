@@ -574,7 +574,7 @@ unsigned fx2_tri_attrs_scalar(const struct fx2_tri_in *in, const struct fx2_tri_
         ze.f = (uint16_t)(dE[7].f * 32);
         a = (hle_acc)(((uint32_t)v10 * 32) >> 16) + (hle_acc)stv[7].f * 32 + (((hle_acc)stv[7].i * 32) << 16);
         zst.i = hle_sclamp(a);
-        zst.f = hle_uclamp(a);
+        zst.f = hle_uclamp(a - (((hle_acc)stv[7].i * 32) << 16));      /* the fraction is read before the integer product is added (a saturated integer part leaves the fraction alone) */
         put16(cmd, o + 0, (uint16_t)zst.i);
         put16(cmd, o + 2, zst.f);
         put16(cmd, o + 4, (uint16_t)zx.i);
