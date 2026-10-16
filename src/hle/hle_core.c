@@ -133,6 +133,9 @@ static struct rec *rec_new(void)
 
 /* ---- the SP DMA row geometry (as rsp_dma_read / rsp_dma_write in the fork's rsp/cp0.cpp) --------------------------------------------------------------------------- */
 int hle_exact(void) { return K.exact; }
+/* development (hle_rare.c's HLE_RARE_LOCKSTEP): the commit log as it is, and back to a mark */
+void hle_dev_mark(size_t m[2]) { m[0] = K.n_recs; m[1] = K.n_arena; }
+void hle_dev_rewind(const size_t m[2]) { K.n_recs = m[0]; K.n_arena = m[1]; }
 
 /* hle_rdram_write: the RDRAM writes of a front-end that does not go through the fork's DMA (its sandbox cannot see them) keep their own undo log */
 static struct undo {
@@ -282,6 +285,18 @@ int hle_mtc0(struct hle_task *t, unsigned rd, uint32_t value)
         r->rd = (uint8_t)rd;
         r->a = value;
         r->b = cur;
+        r->c = 0;
+        if (rd == 9 && (*t->cr[11] & DPC_STATUS_XBUS) && (value & ~7u) > (cur & ~7u) && (value & ~7u) - (cur & ~7u) <= 0x1000) {
+            /* an XBUS list lives in DMEM, which the microcode goes on to overwrite: keep its bytes for the replay */
+            uint32_t n = (value & ~7u) - (cur & ~7u), i;
+            size_t off = K.n_arena;
+            K.arena = (uint8_t *)grow(K.arena, &K.cap_arena, off + n, 1);
+            for (i = 0; i < n; i++)
+                K.arena[off + i] = ((const uint8_t *)t->dmem)[(((cur & ~7u) + i) & 0xfff) ^ 3];
+            r->c = n;
+            r->off = off;
+            K.n_arena = off + n;
+        }
         if (rd == 9) {
             /* what the video plugin leaves behind after it took a list (rdp_defer.c: START = CURRENT = END = the new end); a list with end <= current is ignored */
             uint32_t c8 = cur & ~7u, e8 = value & ~7u;
@@ -419,6 +434,12 @@ static void compare_tasks(struct report *r, const struct hle_ucode *u, const Prs
         rep(r, "  pc: native %03x, JIT %03x\n", a->pc, b->pc);
     if (a->sp_status_timeout != b->sp_status_timeout)
         rep(r, "  SP_STATUS_TIMEOUT: native %d, JIT %d\n", a->sp_status_timeout, b->sp_status_timeout);
+    if (u->flags & HLE_F_REGS_LIVE) {           /* the scalar registers a later task reads are part of the result */
+        unsigned k;
+        for (k = 1; k < 32; k++)
+            if ((u->live_sregs >> k & 1) && a->sr[k] != b->sr[k])
+                rep(r, "  scalar register %u: native %08x, JIT %08x\n", k, a->sr[k], b->sr[k]);
+    }
     if (K.exact && (b->dirty_blocks & ~a->dirty_blocks))
         rep(r, "  IMEM dirty blocks: native %08x, JIT %08x (the JIT's must be a subset)\n", a->dirty_blocks, b->dirty_blocks);
 
@@ -426,6 +447,13 @@ static void compare_tasks(struct report *r, const struct hle_ucode *u, const Prs
         FILE *fp = fopen(getenv("HLE_DUMP_STREAM"), "wb");
         if (fp) {
             fwrite(K.st[0].bytes, 1, K.st[0].len < K.st[0].cap ? K.st[0].len : K.st[0].cap, fp);
+            fclose(fp);
+        }
+    }
+    if (getenv("HLE_DUMP_STREAM_JIT")) {     /* development: the JIT side's stream */
+        FILE *fp = fopen(getenv("HLE_DUMP_STREAM_JIT"), "wb");
+        if (fp) {
+            fwrite(K.st[1].bytes, 1, K.st[1].len < K.st[1].cap ? K.st[1].len : K.st[1].cap, fp);
             fclose(fp);
         }
     }
@@ -466,6 +494,13 @@ static void compare_tasks(struct report *r, const struct hle_ucode *u, const Prs
             if (memcmp(&ea_cmp, &eb_cmp, sizeof(ea_cmp))) {
                 rep(r, "  SP register write #%zu: native kind %u %08x %08x %08x %016" PRIx64 "\n                       JIT    kind %u %08x %08x %08x %016" PRIx64 "\n", k,
                     ea->v[ia].kind, ea->v[ia].a, ea->v[ia].b, ea->v[ia].c, ea->v[ia].hash, eb->v[ib].kind, eb->v[ib].a, eb->v[ib].b, eb->v[ib].c, eb->v[ib].hash);
+                if (getenv("HLE_EV_DUMP")) {        /* development: the events around the first difference on both sides */
+                    size_t q;
+                    for (q = ia > 8 ? ia - 8 : 0; q < ia + 4 && q < ea->n; q++)
+                        fprintf(stderr, "    native[%zu] kind %u %08x %08x %08x\n", q, ea->v[q].kind, ea->v[q].a, ea->v[q].b, ea->v[q].c);
+                    for (q = ib > 8 ? ib - 8 : 0; q < ib + 4 && q < eb->n; q++)
+                        fprintf(stderr, "    JIT   [%zu] kind %u %08x %08x %08x\n", q, eb->v[q].kind, eb->v[q].a, eb->v[q].b, eb->v[q].c);
+                }
                 break;
             }
             ia++;
@@ -517,22 +552,42 @@ static void compare_tasks(struct report *r, const struct hle_ucode *u, const Prs
 }
 
 /* ---- running a task --------------------------------------------------------------------------------------------------------------------------------------------------- */
-static void poison_regs(void)
+static void poison_regs(uint32_t live)
 {
     unsigned i, k;
+    /* development: HLE_POISON_SEL="s=<hex mask of scalar registers>,v=<hex mask of vector registers>,x=<1 accumulator | 2 flags | 4 divide unit>" poisons only these (default: all) */
+    uint32_t sm = ~live, vm = ~0u, xm = 7;
+    const char *e = getenv("HLE_POISON_SEL");
+    if (e) {
+        sm = vm = xm = 0;
+        for (; *e; e++) {
+            if (e[1] == '=') {
+                unsigned long v = strtoul(e + 2, NULL, 16);
+                if (*e == 's') sm = (uint32_t)v;
+                else if (*e == 'v') vm = (uint32_t)v;
+                else if (*e == 'x') xm = (uint32_t)v;
+            }
+        }
+    }
     for (i = 1; i < 32; i++)
-        K.v.sr[i] = 0xdead0000u | i;
+        if (sm >> i & 1)
+            K.v.sr[i] = 0xdead0000u | i;
     for (i = 0; i < 32; i++)
-        for (k = 0; k < 8; k++)
-            K.v.vr[i][k] = (uint16_t)(0xdead ^ (i << 8) ^ k);
-    for (i = 0; i < 24; i++)
-        K.v.acc[i] = (uint16_t)(0xbeef ^ i);
-    for (i = 0; i < 3; i++)
-        for (k = 0; k < 16; k++)
-            K.v.flags[i][k] = (k ^ i) & 1 ? 0xffff : 0;
-    *K.v.div_out = (int16_t)0xdead;
-    *K.v.div_in = (int16_t)0xbeef;
-    *K.v.dp_flag = 1;
+        if (vm >> i & 1)
+            for (k = 0; k < 8; k++)
+                K.v.vr[i][k] = (uint16_t)(0xdead ^ (i << 8) ^ k);
+    if (xm & 1)
+        for (i = 0; i < 24; i++)
+            K.v.acc[i] = (uint16_t)(0xbeef ^ i);
+    if (xm & 2)
+        for (i = 0; i < 3; i++)
+            for (k = 0; k < 16; k++)
+                K.v.flags[i][k] = (k ^ i) & 1 ? 0xffff : 0;
+    if (xm & 4) {
+        *K.v.div_out = (int16_t)0xdead;
+        *K.v.div_in = (int16_t)0xbeef;
+        *K.v.dp_flag = 1;
+    }
 }
 
 static void replay(struct armlet_ctx *c)
@@ -557,8 +612,40 @@ static void replay(struct armlet_ctx *c)
                         memcpy((uint8_t *)K.v.rdram + ((d + j) & 0x7ffffc), K.arena + off, 4);
             }
         } else {
+            uint8_t keep[0x1000];
+            uint32_t i2, base = r->b & ~7u, endv = r->a, total;
+            size_t j = i;
             if (r->rd == 9)
                 *K.v.cr[10] = r->b;     /* DPC_CURRENT as it was when the microcode wrote DPC_END */
+            if (r->c) {
+                /* An XBUS list: its bytes go back into DMEM for the video plugin, then DMEM as it is. Lists that follow each other in the ring (the microcode hands over every
+                 * command on its own) are taken as one: the video plugin sees the same bytes in the same order, and a command cut by the end of a list carries over anyway. */
+                total = r->c;
+                for (i2 = 0; i2 < r->c; i2++) {
+                    uint8_t *p = (uint8_t *)K.v.dmem + (((base + i2) & 0xfff) ^ 3);
+                    keep[i2] = *p;
+                    *p = K.arena[r->off + i2];
+                }
+                while (j + 1 < K.n_recs) {
+                    const struct rec *q = &K.recs[j + 1];
+                    if (q->kind != R_MTC0 || q->rd != 9 || !q->c || (q->b & ~7u) != (endv & ~7u) || ((q->b & ~7u) < base) || (q->b & ~7u) + q->c - base > sizeof(keep) || (q->b & ~7u) + q->c > 0x1000)
+                        break;
+                    for (i2 = 0; i2 < q->c; i2++) {
+                        unsigned o = (q->b & ~7u) - base + i2;
+                        uint8_t *p = (uint8_t *)K.v.dmem + ((((q->b & ~7u) + i2) & 0xfff) ^ 3);
+                        keep[o] = *p;
+                        *p = K.arena[q->off + i2];
+                    }
+                    total = (q->b & ~7u) + q->c - base;
+                    endv = q->a;
+                    j++;
+                }
+                prsp_native_mtc0(r->rd, endv);
+                for (i2 = total; i2-- > 0;)
+                    ((uint8_t *)K.v.dmem)[((base + i2) & 0xfff) ^ 3] = keep[i2];
+                i = j;
+                continue;
+            }
             prsp_native_mtc0(r->rd, r->a);
         }
     }
@@ -672,7 +759,7 @@ static int native_run(struct armlet_ctx *c, const struct hle_ucode *uc, int reco
         return rc;
     }
     if (K.poison)
-        poison_regs();
+        poison_regs(uc->flags & HLE_F_REGS_LIVE ? uc->live_sregs : 0);
     *K.v.pc = K.end_pc;
     return HLE_OK;
 }
@@ -689,7 +776,7 @@ int armlet_hle_run(struct armlet_ctx *c, const struct armlet_ucode_id *u)
     if (!(K.tasks & 63))
         report(0);
     /* the JIT's own preconditions (run_rsp_task), and the one thing the replay relies on: the video plugin is foir, behind the coalescing path */
-    if ((*c->rsp.SP_STATUS_REG & (SP_STATUS_HALT | SP_STATUS_BROKE)) || !c->cfg.rdp_coalesce || (*c->rsp.DPC_STATUS_REG & DPC_STATUS_XBUS)) {
+    if ((*c->rsp.SP_STATUS_REG & (SP_STATUS_HALT | SP_STATUS_BROKE)) || !c->cfg.rdp_coalesce || ((*c->rsp.DPC_STATUS_REG & DPC_STATUS_XBUS) && !(uc->flags & HLE_F_XBUS_OK))) {
         K.declined++;
         count_reason("not eligible (SP halted, RDP coalescing off or XBUS)");
         return 0;
@@ -923,6 +1010,51 @@ int armlet_hle_harness(const struct hle_ucode *uc, const PrspNativeSnap *before,
         K.ev[1].v[K.ev[1].n++] = ev[i];
     }
     compare_tasks(&r, uc, K.sn, after, 0);
+    snprintf(out, outsz, "%.*s", (int)r.n, r.buf);
+    return (int)r.count;
+}
+
+int armlet_hle_harness_jit(const struct hle_ucode *uc, const PrspNativeSnap *before, void (*jit)(void *), void *jctx, char *out, size_t outsz, struct hle_harness_result *res)
+{
+    struct report r;
+    uint64_t t0;
+    int rc;
+
+    init_once();
+    K.verify = 0;
+    prsp_native_load(before);
+    t0 = now_ns();
+    rc = native_run(NULL, uc, 1, 0);
+    if (res) {
+        res->declined = rc != HLE_OK;
+        res->native_us = (double)(now_ns() - t0) / 1000.0;
+    }
+    r.n = 0;
+    r.count = 0;
+    if (rc != HLE_OK) {
+        snprintf(out, outsz, "declined: %s\n", K.why ? K.why : "(no reason)");
+        return -1;
+    }
+    prsp_native_save(K.sn);
+    if (!K.ram_n)
+        K.ram_n = (uint8_t *)malloc(0x800000);
+    if (!K.ram_n)
+        abort();
+    memcpy(K.ram_n, K.v.rdram, 0x800000);
+    sandbox_off();
+    prsp_native_record(0);
+    armlet_event_listener = NULL;
+    prsp_native_load(before);
+    prsp_native_resync();
+    side_reset(1, uc);
+    K.cur_ev = 1;
+    armlet_event_listener = ev_cb;
+    prsp_native_record(1);
+    jit(jctx);
+    prsp_native_record(0);
+    armlet_event_listener = NULL;
+    prsp_native_save(K.sj);
+    compare_tasks(&r, uc, K.sn, K.sj, 1);
     snprintf(out, outsz, "%.*s", (int)r.n, r.buf);
     return (int)r.count;
 }

@@ -54,6 +54,15 @@ static void rand_ctx(struct f3d_vctx *c, int lit)
     if (chance(15)) { c->lim[0] = (int16_t)rnd(); c->lim[1] = (int16_t)rnd(); c->lim[2] = (int16_t)rnd(); c->lim[3] = (int16_t)rnd(); }
     c->persp = chance(70) ? 0xffff : (uint16_t)rnd();
     c->flags_variant = chance(40) ? F3D_FLAGS_PW : F3D_FLAGS_SM64;
+    c->has_off = chance(30);                     /* Rare's vertex offset */
+    for (int k = 0; k < 4; k++) {
+        c->off_i[k] = chance(50) ? (int16_t)range(-100, 100) : (int16_t)rnd();
+        c->off_f[k] = chance(10) ? 0xffff : (uint16_t)rnd();
+    }
+    c->fog_wide = chance(25);                    /* Indiana Jones's fog */
+    for (int k = 0; k < 5; k++) c->fogw[k] = chance(50) ? (int16_t)range(-8, 8) : (int16_t)rnd();
+    if (chance(70)) c->fogw[4] = (int16_t)range(1, 255);
+    c->clip_acc = chance(30) ? 1 : 0;
     c->clip_k = chance(75) ? 1 : chance(50) ? (int16_t)range(1, 6) : (int16_t)rnd();
     c->tscale[0] = chance(60) ? 0xffff : (uint16_t)rnd();
     c->tscale[1] = chance(60) ? 0xffff : (uint16_t)rnd();
@@ -152,6 +161,7 @@ static int check_tri(unsigned count)
         if (chance(10)) v[2].sy = v[0].sy;
         if (chance(5)) v[1] = v[0];
         struct f3d_tri_in ti;
+        memset(&ti, 0, sizeof ti);
         for (int k = 0; k < 3; k++) ti.v[k] = &v[k];
         ti.flat = &v[below(3)];
         ti.geom = (uint32_t)(chance(60) ? 4 : 0) | (chance(50) ? 2 : 0) | (chance(50) ? 1 : 0) | (chance(55) ? 0x200 : 0) | (chance(12) ? 0x1000 : 0) | (chance(12) ? 0x2000 : 0) | (chance(10) ? (rnd() & 0xf8) : 0);
@@ -160,6 +170,14 @@ static int check_tri(unsigned count)
         ti.zclamp = chance(30) ? 0 : (uint8_t)rnd();
         ti.reject_mask = 0x7070; ti.clip_mask = 0x4343;
         ti.vco_carry = chance(10);
+        ti.variant = chance(40) ? F3D_TRIV_SM64 : chance(40) ? F3D_TRIV_WR : chance(50) ? F3D_TRIV_RARE : F3D_TRIV_INDY;
+        if (ti.variant == F3D_TRIV_INDY && chance(80)) {     /* Indiana Jones's sort table: any permutation, any parity */
+            static const uint8_t perm[6][3] = { {0, 1, 2}, {0, 2, 1}, {1, 0, 2}, {1, 2, 0}, {2, 0, 1}, {2, 1, 0} };
+            unsigned q = below(6);
+            ti.sort_given = 1;
+            memcpy(ti.ord, perm[q], 3);
+            ti.par = chance(50);
+        }
         uint8_t c1[0xc0], c2[0xc0];
         unsigned l1 = 0, l2 = 0;
         memset(c1, 0x55, sizeof c1); memset(c2, 0x55, sizeof c2);

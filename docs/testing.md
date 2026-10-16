@@ -369,20 +369,42 @@ The F3DEXBG lit routine's longer run (Conker, 3700 frames) showed 60 tasks whose
 closed forms now, checked against those transliterations first ("Regenerating the microcode oracles" below) and then against the JIT by the runs above. Not bit-exact corners are declined, not emulated: a background whose wrap loop would not end, an even number of
 lights (the microcode's lighting loop never ends on it), more than 11 lights, DMEM vector constants other than S2DEX 2.08's.
 
+## Diddy Kong Racing, Jet Force Gemini and Indiana Jones (docs/native-custom.md)
+
+The three custom microcodes run closed forms (`hle_rare.c`, `hle_indy.c`); the page [native-custom.md](native-custom.md) has the whole test record. In short, on the final tree (desktop, x86_64):
+
+| test | result |
+|---|---|
+| 3700-frame gates (`ref` twice for the three; `hle` and default against `ref`), SM64, Mischief Makers, Resident Evil 2, Star Fox 64, Mario Kart 64, Banjo-Kazooie, Worms, Conker, Dr. Mario 64, WinBack as well | identical in every pair: hash stream, state stream, 6 screenshots, audio |
+| `ARMLET_HLE_VERIFY=1`, 3700 frames (9000 for the three custom games) | 0 differences: Diddy Kong Racing 3903 tasks, Jet Force Gemini 4415, Indiana Jones 2445 (of 5184; the rest declines by design), and the other families' tasks of the games above |
+| captured task starts, recorded JIT result: x86_64, aarch64 under qemu NEON, aarch64 under qemu scalar (`scripts/build.sh aarch64 --tools [--scalar]`) | 120 Rare tasks equal; 509 Indiana Jones tasks 201 equal, 308 declined; the same on all three |
+| synthetic tasks (`tools/rare/synth.py`, `synth_indy.py`), JIT run from the same state (`--oracle`), same three builds | Diddy Kong Racing 200 of 200 equal; Jet Force Gemini 97 equal, 103 declined; Indiana Jones 193 equal, 107 declined; 0 differences |
+| perturbed tasks (`tools/rsp2c/fuzz_snaps.py`, `replay_each.sh`), `--oracle` | Rare 945 tasks: 285 equal, 0 mismatches; Indiana Jones 2000: 153 equal, 0 mismatches (samples of both under qemu NEON and scalar: 0) |
+| mutations (`tools/rare/mutcheck.sh`): hmut 40-60 (Rare) and 170-201 (Indiana Jones), gmut 27-41 and 43-46 (F3D functions) | all 72 caught (gmut 30, a NEON form, on aarch64 under qemu) |
+| `tools/f3d/test_fxn.c` (NEON against scalar on random vertices, matrices, triangles; now with the Indiana Jones variant, the sort table and the wide fog), aarch64 under qemu | 20 000 cases each, 0 differences |
+
+**Dead ranges of Indiana Jones** (`l_dead` in `hle_indy.c`: 0x16a - 0x16c, 0x270 - 0x378, 0x560 - 0x58a, 0x590 - 0x596, 0xf80 - 0xfd0), 3700 frames, each range alone with
+`ARMLET_DMEM_POISON=<lo>-<hi>`, all five together, `=mask` and `=mask,ring`: equivalence PASS for every one (hash, state, pictures, audio identical); `=all` leaves state stream, pictures and audio
+identical (the hash stream differs by design); `ARMLET_HLE_POISON=1` (the registers; `live_sregs` are left alone) PASS. The range 0xf80 - 0xfd0 ends in the OSTask header (0xfc0 - 0xfd0), which the
+microcode uses as scratch; `rsp_shim.c` took the task's ucode from that header after the call, so the first version of this test failed on the hash stream; the shim identifies the task before the call
+now (it reads the header the core wrote). Without 0xfc0 - 0xfd0 in the list the native result differs from the JIT's in those 16 bytes, so the range stays. Diddy Kong Racing and Jet Force Gemini:
+`=mask,ring` PASS.
+
 ## Regenerating the microcode oracles
 
 The closed forms of S2DEX 2.08 (`s2dex2_bg.c`, `s2dex2_rect.c`) and of F3DEXBG's lit vertices (`f3dexbg_fx.c`) were derived from the microcode and are checked against the microcode itself, besides the replays and verify runs above.
-`tools/rsp2c.py` translates the instructions of a handler (from an IMEM image, one C statement per instruction, on the exact vector-unit library `tools/hle/ref_vu.h`) into a function that does what the RSP interpreter
+`tools/rsp2c/` is the one directory of this tooling: `rsp2c.py` (the translator, below), `fuzz_snaps.py` (perturbed copies of captured task snapshots) and `replay_each.sh` (one `armlet-native-replay` per snapshot with a time limit, for the perturbed ones).
+`tools/rsp2c/rsp2c.py` translates the instructions of a handler (from an IMEM image, one C statement per instruction, on the exact vector-unit library `tools/hle/ref_vu.h`) into a function that does what the RSP interpreter
 does. Those translations are ROM-derived and **not** part of the tree (`*_gen.inc`, `gen_*.inc` and `tools/hle/oracle*/` are git-ignored); they are regenerated from an IMEM image taken with `HLE_DUMP_IMEM=<file>` (the front-end writes
 IMEM at the end of a task; for S2DEX the overlay that the handler lives in must be resident: A for the sprites, B for the backgrounds; for F3DEXBG the lighting overlay):
 
 ```
 # S2DEX 2.08 sprite rectangle (Worms Armageddon): overlay A is IMEM [0x6c8, 0xe00); entered after the DMA of the sprite, done at 0x648, outside the scissor at 0x1ac
-tools/rsp2c.py --name rect_gen --entry 0xba8 --stop 0x648 --stop 0x1ac --seg s2_ovA.img 0x6c8 0xe00 --out rect_gen.inc
+tools/rsp2c/rsp2c.py --name rect_gen --entry 0xba8 --stop 0x648 --stop 0x1ac --seg s2_ovA.img 0x6c8 0xe00 --out rect_gen.inc
 # S2DEX 2.08 background: overlay B is IMEM [0x6c8, 0xe00)
-tools/rsp2c.py --name bg1cyc_gen --entry 0x6fc --stop 0x154 --stop 0x1ac --stop 0x64c --stop 0xfc8 --seg s2_ovB.img 0x6c8 0xe00 --out bg1cyc_gen.inc
+tools/rsp2c/rsp2c.py --name bg1cyc_gen --entry 0x6fc --stop 0x154 --stop 0x1ac --stop 0x64c --stop 0xfc8 --seg s2_ovB.img 0x6c8 0xe00 --out bg1cyc_gen.inc
 # F3DEXBG.NoN 2.08 lit G_VTX (Conker): matrix concatenation 0x080, lighting overlay 0x2d8, vertex handler 0x6d8, DMA and wait code 0xfc8
-tools/rsp2c.py --name bg_vtx_gen --entry 0x6d8 --stop 0x194 --stop 0x224 --seg mtx.imem 0x080 0x0f4 --seg ov.imem 0x2d8 0x6d8 --seg ov.imem 0x6d8 0x994 --seg ov.imem 0xfc8 0x1000 --out bg_vtx_gen.inc
+tools/rsp2c/rsp2c.py --name bg_vtx_gen --entry 0x6d8 --stop 0x194 --stop 0x224 --seg mtx.imem 0x080 0x0f4 --seg ov.imem 0x2d8 0x6d8 --seg ov.imem 0x6d8 0x994 --seg ov.imem 0xfc8 0x1000 --out bg_vtx_gen.inc
 ```
 
 `tools/hle/build_test_s2dex2.sh` takes them as `S2RECT_ORACLE=rect_gen.inc` and `S2BG_ORACLE=bg1cyc_gen.inc`: random DMEM images, the closed form against the translation (the whole DMEM, the output pointer, drawn / outside the

@@ -182,7 +182,10 @@ void armlet_rdp_defer_task_begin(const struct armlet_ctx *c)
     /* a graphics task of a known family (F3D / F3DEX / F3DEX2 and their relatives): a task at all, type 1 */
     if (armlet_dmem32(c, ARMLET_TASK_UCODE_BOOT_SIZE) > 0x1000 || armlet_dmem32(c, ARMLET_TASK_TYPE) != 1)
         return;
-    l_task_on = armlet_gfx_identify(c, &is_new)->family != ARMLET_FAM_OTHER;
+    {
+        const struct armlet_ucode_id *u = armlet_gfx_identify(c, &is_new);
+        l_task_on = u->family != ARMLET_FAM_OTHER || (c->cfg.gfx_mode == ARMLET_GFX_HLE && armlet_gfx_native_find(u->id) != NULL);     /* banner-less custom microcodes with a native front-end (GfxMode = hle) */
+    }
     l_stat.tasks_on += l_task_on;
 }
 

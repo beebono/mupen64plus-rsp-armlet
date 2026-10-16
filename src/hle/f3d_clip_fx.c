@@ -74,7 +74,7 @@ static void new_vertex(const struct f3d_vctx *ctx, const struct f3d_vtx *P, cons
     struct hle_pair Rx = f3d_recip_refine(X);
     int32_t dQ = (int32_t)((uint32_t)dQhi << 16 | dQlo), Rx32 = hle_pair32(Rx);
     u16 w1lo = lo_of(hle_mac_32x32_before_h(dQ, Rx32)), w1hi = hi_of(hle_mac_32x32(dQ, Rx32));
-    hle_acc ua = hle_wrap48(FMUT(1, 3, 4) + hle_mac_32xu16((int32_t)((uint32_t)w1hi << 16 | w1lo), R16));
+    hle_acc ua = hle_wrap48(FMUT(1, ctx->clip_acc && F3D_FX_MUTATE != 40 ? ctx->clip_acc : 3, 4) + hle_mac_32xu16((int32_t)((uint32_t)w1hi << 16 | w1lo), R16));
     u16 uhi = hi_of(ua), ulo = lo_of(ua);
     u16 wP = uhi == 0 ? ulo : 0xffff;
     if (wP == 0) wP = 1;
@@ -148,6 +148,59 @@ void f3d_clip_tri_scalar(const struct f3d_vctx *c, const struct f3d_vtx *const v
         o->tri[o->ntri][0] = poly[i + 2];
         o->tri[o->ntri][1] = F3D_FX_MUTATE == 3 ? poly[(i + 3) % n] : poly[i + 1];   /* mutation 3 */
         o->tri[o->ntri][2] = poly[0];
+        o->ntri++;
+    }
+}
+
+void f3d_clip_tri_seq(const struct f3d_vctx *c, const struct f3d_vtx *const v[3], struct f3d_clip_out *o)
+{
+    const struct f3d_vtx *poly[12], *out[12];
+    unsigned n = 3;
+    poly[0] = v[0]; poly[1] = v[1]; poly[2] = v[2];
+    o->ntri = 0;
+    o->nnew = 0;
+    o->npoly = 0;
+    for (int p = 0; p < 6; p++) {
+        const u16 mask = c->plane_mask[p];
+        unsigned m = 0, idx = 1;
+        u16 a2 = (u16)(poly[0]->flags & mask);
+        const struct f3d_vtx *a3 = poly[0];
+        if (!a2 && F3D_FX_MUTATE != 41)
+            out[m++] = poly[0];
+        for (;;) {
+            const struct f3d_vtx *a0 = idx < n ? poly[idx] : NULL, *sp = a0 ? a0 : poly[0];
+            u16 v1 = (u16)(sp->flags & mask);
+            idx++;
+            if (v1 != a2) {                /* mutation 39: the planes separated by a boolean, not by the masked value */
+                const struct f3d_vtx *in = (v1 != 0) != (F3D_FX_MUTATE == 38) ? a3 : sp, *outv = (v1 != 0) != (F3D_FX_MUTATE == 38) ? sp : a3;      /* mutation 38: anchor swapped */
+                struct f3d_vtx *nv;
+                a2 = v1;
+                if (o->nnew >= F3D_CLIP_MAX_NEW)
+                    return;
+                nv = &o->nv[o->nnew++];
+                new_vertex(c, outv, in, c->plane[p], nv);
+                out[m++] = nv;
+            }
+            if (!a0)
+                break;
+            a3 = sp;
+            if (!a2)
+                out[m++] = sp;
+            if (m >= (F3D_FX_MUTATE == 39 ? 5 : 10))                   /* mutation 39: a smaller room for the polygon */
+                return;
+        }
+        if (!m)
+            return;                                                    /* everything is outside: the triangle is discarded */
+        memcpy(poly, out, m * sizeof(poly[0]));
+        n = m;
+    }
+    for (unsigned i = 0; i < n; i++)
+        o->poly[i] = poly[i];
+    o->npoly = n;
+    for (unsigned i = 0; i + 2 < n && o->ntri < 7; i++) {
+        o->tri[o->ntri][0] = poly[0];
+        o->tri[o->ntri][1] = poly[F3D_FX_MUTATE == 37 ? i + 2 : i + 1];      /* mutation 37: fan order */
+        o->tri[o->ntri][2] = poly[F3D_FX_MUTATE == 37 ? i + 1 : i + 2];
         o->ntri++;
     }
 }

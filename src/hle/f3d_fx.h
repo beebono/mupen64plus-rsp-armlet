@@ -83,6 +83,16 @@ struct f3d_vctx {
     int16_t plane[6][4];
     uint16_t plane_mask[6];
     uint8_t flags_variant;          /* F3D_FLAGS_*: how the clip flag word is formed (docs/ucode-f3d.md 10.5.1) */
+    /* the Rare builds (docs/ucode-rare.md): a 32-bit offset vector added to the clip coordinates (the S15.16 sums) before the flags and the projection, VADDC + VADD per lane */
+    int has_off;
+    int16_t off_i[4];
+    uint16_t off_f[4];
+    /* Indiana Jones (docs/ucode-indy.md): the fog value from five halfwords (DMEM 0x160): a 32-bit multiplier (fogw[0] : fogw[1]), a 32-bit offset (fogw[2] : fogw[3]) and a 16-bit factor that is also the
+     * maximum (fogw[4]); fog_wide selects it in place of fog[] */
+    int fog_wide;
+    int16_t fogw[5];
+    /* the clipper's rounding constant of the weight (the accumulator lane the microcode starts that sum from): 3 unless set (Indy: 1) */
+    int clip_acc;
 };
 
 /* The F3D vertex pipeline for n vertices: clip coordinates, clip flags, 1/W, screen coordinates, texture scale, lighting, texture generation, fog. out[i] is the record of in[i]. The results do not depend on
@@ -101,8 +111,9 @@ void f3d_relight(const struct f3d_mtx *mv, const int8_t raw[][3], unsigned nslot
 /* ---- triangles ------------------------------------------------------------------------------------------------------------------------------------------------------------ */
 enum { F3D_TRI_OK = 0, F3D_TRI_REJECT = 1, F3D_TRI_CLIP = 2, F3D_TRI_CULL = 3 };
 
-/* the triangle code variants: SM64's, and Wave Race's (no front-face culling, no flat shading, the shade block when any of the low three geometry bits is set; docs/ucode-f3d.md 10.5.2) */
-enum { F3D_TRIV_SM64 = 0, F3D_TRIV_WR = 1 };
+/* the triangle code variants: SM64's, Wave Race's (no front-face culling, no flat shading, the shade block when any of the low three geometry bits is set; docs/ucode-f3d.md 10.5.2) and Rare's (the cull
+ * bits mean something else, the texture block is not scaled, no minimum z slope; docs/ucode-rare.md) */
+enum { F3D_TRIV_SM64 = 0, F3D_TRIV_WR = 1, F3D_TRIV_RARE = 2, F3D_TRIV_INDY = 3 };
 
 struct f3d_tri_in {
     const struct f3d_vtx *v[3];     /* the three vertices in command order */
@@ -114,6 +125,11 @@ struct f3d_tri_in {
     uint16_t reject_mask, clip_mask;/* 0x7070 and 0x4343 (SM64); the build's */
     int vco_carry;                  /* the VCO carry of lane 1 at entry: 0 */
     uint8_t variant;                /* F3D_TRIV_* */
+    /* Indiana Jones sorts the vertices by a table (docs/ucode-indy.md): with sort_given ord[] are the indices into v[] of the top, middle and bottom vertex and par is the parity of the swaps (1: the area is
+     * negated); no front-face culling, every vertex shades with its own colour */
+    int sort_given;
+    uint8_t ord[3];
+    int par;
 };
 
 /* The triangle command: the decision (flags, area, facing) and the RDP triangle bytes. On F3D_TRI_OK, cmd[0 .. *len) (a multiple of 8, at most 0xb0) is the RDP command, big endian. On the other results nothing is
@@ -131,10 +147,16 @@ struct f3d_clip_out {
     unsigned nnew;                  /* new vertices created (also when the triangle ends up discarded) */
     struct f3d_vtx nv[F3D_CLIP_MAX_NEW];
     const struct f3d_vtx *tri[7][3];/* the fan triangles in submission order, vertices as pointers to the inputs or to nv[] */
+    const struct f3d_vtx *poly[10]; /* f3d_clip_tri_seq: the polygon */
+    unsigned npoly;
 };
 /* Clips the triangle v[0..2] (command order) against the six planes. c supplies the clip ratio, persp, viewport, fog and geometry state the new vertices are completed with; the colours and texture coordinates are
  * interpolated. */
 void f3d_clip_tri_scalar(const struct f3d_vctx *c, const struct f3d_vtx *const v[3], struct f3d_clip_out *o);
+/* Indiana Jones's clipper (docs/ucode-indy.md): the same cuts and new vertices, but the polygon is walked in the order of the input list (v[0], v[1], v[2]), a new vertex is made where the walk crosses a
+ * plane (the one on the inside is the interpolation's anchor), and the fan is (poly[0], poly[i + 1], poly[i + 2]); o->poly / o->npoly is the final polygon, tri[] the fan. The planes are separated by
+ * the value of the masked flags, not by a boolean. */
+void f3d_clip_tri_seq(const struct f3d_vctx *c, const struct f3d_vtx *const v[3], struct f3d_clip_out *o);
 void f3d_clip_tri(const struct f3d_vctx *c, const struct f3d_vtx *const v[3], struct f3d_clip_out *o);
 
 #ifdef __cplusplus

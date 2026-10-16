@@ -5,14 +5,14 @@ import os, struct, subprocess, sys
 here = os.path.dirname(os.path.abspath(__file__))
 rspdis = os.path.join(here, "..", "ucodemap", "rspdis")
 lo = int(sys.argv[2], 0) if len(sys.argv) > 2 else 0
-hi = int(sys.argv[3], 0) if len(sys.argv) > 3 else 0x1000
+hi = int(sys.argv[3], 0) if len(sys.argv) > 3 else int(os.environ.get("DISASM_MAX", "4096"))
 if sys.argv[1].endswith(".snap"):           # a routine-entry snapshot: the IMEM the routine was entered with
     sys.path.insert(0, here)
     import snaplib
     w = snaplib.read(sys.argv[1])["before"].imem
     data = b"\0" * (len(w) * 4)
 else:
-    data = open(sys.argv[1], "rb").read()[:4096]
+    data = open(sys.argv[1], "rb").read()[:int(os.environ.get("DISASM_MAX", "4096"))]
     w = struct.unpack("<%dI" % (len(data) // 4), data)
 inp = "".join("%d %d %08x\n" % (i, i * 4, w[i]) for i in range(lo // 4, min(hi, len(data)) // 4))
 out = subprocess.run([rspdis], input=inp, capture_output=True, text=True).stdout

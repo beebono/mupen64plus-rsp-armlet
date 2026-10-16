@@ -93,6 +93,15 @@ static void world_init(void)
     parallelRSPInitiateRSP(*i, &cycles);
 }
 
+static int l_oracle;                    /* --oracle: the oracle of a task snapshot is a JIT run from the same state, not the recorded result */
+static uint32_t *l_entry;
+static void jit_once(void *p)
+{
+    (void)p;
+    W.regs[4] &= ~3u;
+    W.sp_pc = *l_entry;
+    parallelRSPDoRspCycles(~0u);
+}
 static unsigned dmab, dmab_bytes = 1024;      /* --dmabench BYTES: time a sync (DPC_END + a DMA write) */
 
 static int replay(const char *path, unsigned bench)
@@ -165,7 +174,13 @@ static int replay(const char *path, unsigned bench)
         }
         prsp_native_load(&before);
         prsp_native_resync();
-        nd = armlet_hle_harness(uc, &before, &after, ev, h.n_events, buf, sizeof(buf), &res);
+        if (l_oracle) {
+            static uint32_t entry;
+            entry = h.entry_pc;
+            l_entry = &entry;
+            nd = armlet_hle_harness_jit(uc, &before, jit_once, NULL, buf, sizeof(buf), &res);
+        } else
+            nd = armlet_hle_harness(uc, &before, &after, ev, h.n_events, buf, sizeof(buf), &res);
         if (nd < 0) {
             printf("%s: DECLINED %s", path, buf);
             free(ev);
@@ -384,6 +399,8 @@ int main(int argc, char **argv)
             hb = (unsigned)atoi(argv[++a]);
         else if (!strcmp(argv[a], "--quiet"))
             l_quiet = 1;
+        else if (!strcmp(argv[a], "--oracle"))
+            l_oracle = 1;
         else if (!strcmp(argv[a], "--masks")) {
             /* the DMEM ranges that the task-level path declares dead, per ucode, in the form tools/equiv/rsp_shim.c reads (RSPT_MASKS): "<id>:<lo>-<hi>,<lo>-<hi>;..." */
             armlet_hle_print_masks(stdout);
