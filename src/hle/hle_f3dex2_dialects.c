@@ -14,13 +14,9 @@
 static const struct f3dex2_build l_b_ex2_208 = {
     .head = 0x194, .copy = 0x210, .sync = 0x214, .segcopy = 0x220, .ef = 0x240, .ed = 0x24c, .tri1 = 0x7bc, .tri2 = 0x7b4, .vtx = 0x4f8,
     .mtx = 0x0f0, .geom = 0x1d8, .enddl = 0x1ec, .half2 = 0x200, .modvtx = 0xc80, .culldl = 0xc40, .branchz = 0xc68, .reject_mask = 0x7070, .load_key = 0xcf7664aee1658511ull };
-static const struct f3dex2_build l_b_ex2_203 = {
-    .head = 0x18c, .copy = 0x208, .sync = 0x20c, .segcopy = 0x218, .ef = 0x238, .ed = 0x244, .tri1 = 0x794, .tri2 = 0x78c, .vtx = 0x4e8,
-    .mtx = 0x0f0, .geom = 0x1d0, .enddl = 0x1e4, .half2 = 0x1f8, .modvtx = 0xc54, .culldl = 0xc14, .branchz = 0xc3c, .reject_mask = 0x7070, .load_key = 0xd02467acf66d7396ull };
 
 HLE_UCODE(l_ex2_ac31) = { .id = 0xac310503c83b23eaull, .name = "F3DEX 2.08 (Dr. Mario 64, RR64)", .fam = &f3dex2_fam, .flags = HLE_F_NEAR_CLIP, .fam_data = &l_b_ex2_208, F3DEX2_DEAD };
 HLE_UCODE(l_ex2_d2d1) = { .id = 0xd2d1f9f2e7dfe1abull, .name = "F3DEX 2.08 (WinBack, Mario Golf, Hydro Thunder ...)", .fam = &f3dex2_fam, .flags = HLE_F_NEAR_CLIP, .fam_data = &l_b_ex2_208, F3DEX2_DEAD };
-HLE_UCODE(l_ex2_33dc) = { .id = 0x33dc705a5e4d39aeull, .name = "F3DEX 2.03 (F-Zero X)", .fam = &f3dex2_fam, .flags = HLE_F_NEAR_CLIP, .fam_data = &l_b_ex2_203, F3DEX2_DEAD };
 
 /* F3DEX2 2.04 (Buck Bumble, Cruis'n World) and 2.04H (Kirby 64, Super Smash Bros.) */
 static const struct f3dex2_build l_b_ex2_204 = {
