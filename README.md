@@ -57,6 +57,8 @@ builds the reference pairing that the equivalence tests compare against.
 | `tools/equiv/` | the equivalence harness (test plugins, device scripts, comparison) |
 | `tools/session/` | the profiling sessions (runner, device and desktop drivers) and the analysis scripts (timing tables, cost model, perf mapping, native-cost model) |
 | `tools/native/` | the offline harness `replay.c` (snapshots of routine entries, verify, benchmarks), `disasm.py`, `mutcheck.sh` |
+| `tools/rsp2c/` | `rsp2c.py` (translates a microcode handler into C on the exact vector-unit library: the oracles of the closed forms), `fuzz_snaps.py` and `replay_each.sh` (perturbed task snapshots) |
+| `tools/rare/` | the Diddy Kong Racing / Jet Force Gemini / Indiana Jones tests: synthetic task generators (`synth.py`, `synth_indy.py`), `mutcheck.sh`, `stats.py` ([docs/native-custom.md](docs/native-custom.md)) |
 | `tools/ucodemap/` | `ucodemap.py`: attributes the dynamic instructions of a graphics ucode to routines; `rspdis`, its decoder |
 | `docs/` | design, testing, options, profiling |
 

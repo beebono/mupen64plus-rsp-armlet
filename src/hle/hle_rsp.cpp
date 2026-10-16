@@ -124,12 +124,14 @@ extern "C" int hle_rsp_run(struct hle_task *t, struct hle_cpu *c)
 	uint32_t *r = c->r;
 	int pending = 0, ran = 0;
 	unsigned ptarget = 0;
-	static int dbg = -1, trace = -1, watch = -2;
+	static int dbg = -1, trace = -1, watch = -2, trace_pc = -2;
 
 	if (g_prof_on < 0)
 		g_prof_on = getenv("HLE_RSP_PROFILE") != nullptr;
 	if (trace < 0)
 		trace = getenv("HLE_RSP_TRACE") != nullptr;
+	if (trace_pc == -2)
+		trace_pc = getenv("HLE_RSP_TRACE_PC") ? (int)strtoul(getenv("HLE_RSP_TRACE_PC"), nullptr, 16) : -1;
 	if (dbg < 0)
 	{
 		const char *e = getenv("HLE_RSP_DEBUG");
@@ -307,8 +309,8 @@ extern "C" int hle_rsp_run(struct hle_task *t, struct hle_cpu *c)
 					fprintf(stderr, "WATCH %03x: %02x -> %02x at pc %03x (word %08x)\n", watch, wlast, b, c->pc, w);
 				wlast = b;
 			}
-			if (trace)
-			{ // HLE_RSP_TRACE=1: instruction by instruction: pc, word, the vector register written (else a few scalar registers)
+			if (trace && (trace_pc < 0 || (int)c->pc == trace_pc))
+			{ // HLE_RSP_TRACE=1: instruction by instruction: pc, word, the vector register written (else a few scalar registers); HLE_RSP_TRACE_PC=hex: only that pc
 				unsigned vr = (w >> 25) == 0x25 ? (w >> 6) & 31 : (op == 50 ? rt : 99);
 				fprintf(stderr, "T %03x %08x", c->pc, w);
 				if (vr < 32)
@@ -318,7 +320,7 @@ extern "C" int hle_rsp_run(struct hle_task *t, struct hle_cpu *c)
 						fprintf(stderr, "%04x%c", s.cp2.regs[vr].e[q], q == 7 ? ']' : ' ');
 				}
 				else
-					fprintf(stderr, " r8=%08x r9=%08x r10=%08x r1=%08x r6=%08x r15=%08x", r[8], r[9], r[10], r[1], r[6], r[15]);
+					fprintf(stderr, " r8=%08x r9=%08x r10=%08x r1=%08x r6=%08x r15=%08x r5=%08x r2=%08x r3=%08x r4=%08x", r[8], r[9], r[10], r[1], r[6], r[15], r[5], r[2], r[3], r[4]);
 				fprintf(stderr, "\n");
 			}
 		}

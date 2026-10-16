@@ -1,6 +1,6 @@
 /*
  * test_s2dex2.c: the S2DEX 2.x closed forms (src/hle/s2dex2_rect.c, s2dex2_bg.c) on random DMEM images, against the microcode. With -DS2RECT_ORACLE=\"file\" (the translation of overlay A that
- * tools/rsp2c.py makes, see docs/testing.md, "Regenerating the microcode oracles") and / or -DS2RECT_VU (the instruction-level kernel the rectangle closed form replaced, tools/hle/oracle/s2dex2_rect_vu.c, linked in)
+ * tools/rsp2c/rsp2c.py makes, see docs/testing.md, "Regenerating the microcode oracles") and / or -DS2RECT_VU (the instruction-level kernel the rectangle closed form replaced, tools/hle/oracle/s2dex2_rect_vu.c, linked in)
  * every sprite the closed form takes (it declines what it does not cover: not counted as a failure, but reported) must give the same DMEM, output pointer and outcome (drawn / outside the
  * scissor); likewise -DS2BG_ORACLE for the background routine. Without an oracle the kernels only have to finish without harm.
  *

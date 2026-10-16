@@ -141,11 +141,35 @@ EXPORT m64p_error CALL PluginGetVersion(m64p_plugin_type *t, int *v, int *a, con
     return p_ver(t, v, a, n, c);
 }
 
+/* a graphics task (OSTask type 1): identify its ucode as src/gfx_ucode.c does and put the ranges it declares dead in force from this call on. The OSTask header is read before the task runs: the
+ * microcode may use it as scratch (Indiana Jones's does; ARMLET_DMEM_POISON=fc0-fd0 changes it), and then the task would not be recognised afterwards. */
+static void mask_identify(void)
+{
+    if (n_masks && rinfo.DMEM && *(const unsigned *)(rinfo.DMEM + 0xfc0) == 1 && *(const unsigned *)(rinfo.DMEM + 0xfcc) <= 0x1000) {
+        unsigned addr = *(const unsigned *)(rinfo.DMEM + 0xfd0) & 0x7fffff & ~3u, size = *(const unsigned *)(rinfo.DMEM + 0xfd4), i, k;
+        unsigned long long id = 0xcbf29ce484222325ull;
+        if (!size)
+            size = 0xf80;
+        if (size > 0x1000)
+            size = 0x1000;
+        size = (size + 3) & ~3u;
+        for (i = 0; i < size; i += 4)
+            id = (id ^ *(const unsigned *)(rinfo.RDRAM + ((addr + i) & 0x7ffffc))) * 0x100000001b3ull;
+        for (k = 0; k < n_masks; k++)
+            if (masks[k].id == id)
+                sticky[k] = 1;
+    }
+}
+
 EXPORT unsigned int CALL DoRspCycles(unsigned int c)
 {
     struct stat st;
-    double a = now(CLOCK_MONOTONIC);
-    unsigned r = p_do(c);
+    double a;
+    unsigned r;
+    if (hl)
+        mask_identify();
+    a = now(CLOCK_MONOTONIC);
+    r = p_do(c);
     double b = now(CLOCK_MONOTONIC);
 
     cum_ms += (b - a) * 1e3;
@@ -172,21 +196,6 @@ EXPORT unsigned int CALL DoRspCycles(unsigned int c)
         unsigned char dm[4096];
         const unsigned char *dmem = rinfo.DMEM;
         unsigned long long x;
-        if (n_masks && *(const unsigned *)(rinfo.DMEM + 0xfc0) == 1 && *(const unsigned *)(rinfo.DMEM + 0xfcc) <= 0x1000) {
-            /* a graphics task: identify its ucode as src/gfx_ucode.c does and zero the ranges it declares dead */
-            unsigned addr = *(const unsigned *)(rinfo.DMEM + 0xfd0) & 0x7fffff & ~3u, size = *(const unsigned *)(rinfo.DMEM + 0xfd4), i, k;
-            unsigned long long id = 0xcbf29ce484222325ull;
-            if (!size)
-                size = 0xf80;
-            if (size > 0x1000)
-                size = 0x1000;
-            size = (size + 3) & ~3u;
-            for (i = 0; i < size; i += 4)
-                id = (id ^ *(const unsigned *)(rinfo.RDRAM + ((addr + i) & 0x7ffffc))) * 0x100000001b3ull;
-            for (k = 0; k < n_masks; k++)
-                if (masks[k].id == id)
-                    sticky[k] = 1;
-        }
         {
             unsigned k, j, i;
             int any = 0;

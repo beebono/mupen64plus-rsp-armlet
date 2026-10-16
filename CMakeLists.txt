@@ -22,6 +22,8 @@ set(ARMLET_NATIVE_MUTATE 0 CACHE STRING "test builds only: a deliberate error in
 option(ARMLET_RDP_DEFER "coalescing of the RDP list calls (needs the fork's prsp_rdp_defer.h hooks, -DPRSP_RDP_DEFER); OFF builds the module without it" ON)
 set(ARMLET_RDP_MUTATE 0 CACHE STRING "test builds only: drop safeguard N of the RDP-list coalescing (src/rdp_defer.c)")
 set(ARMLET_HLE_MUTATE 0 CACHE STRING "test builds only: a deliberate error N in the task-level native path (MUT(n, ...) in src/hle/f3dex2_fx.c and hle_f3dex2.c; tools/hle/mutcheck.sh)")
+option(ARMLET_HLE_SCALAR "the task-level native path (src/hle) without NEON on aarch64: the scalar reference forms (-U__ARM_NEON)" OFF)
+set(ARMLET_F3D_MUTATE 0 CACHE STRING "test builds only: a deliberate error N in the F3D family's struct-level functions (F3D_FX_MUTATE in src/hle/f3d_*_fx.c; the Rare front-end uses them)")
 set(ARMLET_HLE_FX_MUTATE 0 CACHE STRING "test builds only: a deliberate error N in the shared fixed-point library (HLE_FX_MUT in src/hle/hle_fx.h)")
 option(ARMLET_PRSP_SHADOW "parallel-rsp shadow verification: every task is replayed on a second JIT (-DPRSP_SHADOW)" OFF)
 
@@ -109,6 +111,9 @@ endif()
 if(ARMLET_HLE_FX_MUTATE)
     target_compile_definitions(mupen64plus-rsp-armlet PRIVATE HLE_FX_MUTATE=${ARMLET_HLE_FX_MUTATE})
 endif()
+if(ARMLET_F3D_MUTATE)
+    target_compile_definitions(mupen64plus-rsp-armlet PRIVATE F3D_FX_MUTATE=${ARMLET_F3D_MUTATE})
+endif()
 if(ARMLET_PROFILE)
     # PRSP_HOOKS turns on the observation hooks of the fork's prsp_hooks.h; the profiler's C++ files see the same definition
     target_compile_definitions(mupen64plus-rsp-armlet PRIVATE ARMLET_PROFILE "$<$<COMPILE_LANGUAGE:CXX>:PRSP_HOOKS>")
@@ -126,6 +131,9 @@ target_compile_options(mupen64plus-rsp-armlet PRIVATE
 # rsp-hle is built as upstream does (-ffast-math, -Wall); armlet's own code is held to -Wextra.
 set_source_files_properties(${hle_c} PROPERTIES COMPILE_OPTIONS "-ffast-math")
 set_source_files_properties(${armlet_c} PROPERTIES COMPILE_OPTIONS "-Wextra;-Wno-unused-parameter")
+if(ARMLET_HLE_SCALAR)
+    set_property(SOURCE ${armlet_hle_src} APPEND PROPERTY COMPILE_OPTIONS "-U__ARM_NEON")
+endif()
 
 # rsp/vu_inline.cpp holds the register-convention VU op bodies the aarch64 JIT copies into its code (x19 = CPUState). The copied
 # code must not touch any integer register the JIT keeps live, so every one of them is fixed for that file (x0-x8, x16, x17 stay
@@ -150,6 +158,9 @@ if(ARMLET_NATIVE_TOOLS AND ARMLET_NATIVE)
     endif()
     if(ARMLET_HLE_FX_MUTATE)
         target_compile_definitions(armlet-native-replay PRIVATE HLE_FX_MUTATE=${ARMLET_HLE_FX_MUTATE})
+    endif()
+    if(ARMLET_F3D_MUTATE)
+        target_compile_definitions(armlet-native-replay PRIVATE F3D_FX_MUTATE=${ARMLET_F3D_MUTATE})
     endif()
     target_compile_options(armlet-native-replay PRIVATE
         "$<$<COMPILE_LANGUAGE:CXX>:-Wall;-Wno-missing-field-initializers;-Wno-empty-body;-ffast-math;-Wno-unused-parameter;-Wno-parentheses>" "$<$<COMPILE_LANGUAGE:C>:-Wall>")

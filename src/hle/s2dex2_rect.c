@@ -19,7 +19,7 @@
  * scissor (S2_CLIPPED).
  *
  * Only two lanes carry the result (0 and 4), so this is plain scalar C: NEON would load eight lanes to use two, and the whole kernel is some sixty integer operations.
- * It is checked against the microcode (tools/rsp2c.py's translation of overlay A, docs/testing.md, "Regenerating the microcode oracles") on random DMEM images (tools/hle/test_s2dex2.c) and by the
+ * It is checked against the microcode (tools/rsp2c/rsp2c.py's translation of overlay A, docs/testing.md, "Regenerating the microcode oracles") on random DMEM images (tools/hle/test_s2dex2.c) and by the
  * replays and verify runs of the games (docs/testing.md).
  *
  * Copyright (C) 2026 arMLEt contributors

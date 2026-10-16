@@ -60,7 +60,10 @@ struct hle_layout {
 enum {
     HLE_F_NEAR_CLIP = 1u << 0,      /* clips against the near plane (F3DEX2 without .NoN) */
     HLE_F_ZEX = 1u << 1,            /* F3DZEX (OoT / MM) differences */
-    HLE_F_LEGACY_TRI = 1u << 2      /* the two-level dispatch families */
+    HLE_F_LEGACY_TRI = 1u << 2,     /* the two-level dispatch families */
+    HLE_F_XBUS_OK = 1u << 3,        /* a task may start with DPC_STATUS.XBUS set (the build's lists go through a DMEM ring; the commit replays the list bytes it recorded) */
+    HLE_F_REGS_LIVE = 1u << 4       /* the next task reads some of the scalar registers this one leaves (hle_ucode.live_sregs; ARMLET_HLE_POISON=1 changes the results of Jet Force Gemini and Indiana Jones
+                                       if they are poisoned): verify compares those with the JIT's, the poison leaves them alone. The vector unit is never live. */
 };
 
 /* A DMEM range declared dead at the end of a task (scratch / leftovers). Each entry cites how it was established; see docs/design.md "DMEM masks". The verify compare,
@@ -95,6 +98,7 @@ struct hle_ucode {
     uint16_t ring_off;              /* DMEM address of the two words that bound the RDP output ring in RDRAM (start, end) at the start of a task (the OSTask output buffer: 0xfe8 on F3DEX2), or 0.
                                        The ring is treated like a DMEM mask: its contents are not compared (the RDP stream is), because nothing reads them (ARMLET_DMEM_POISON=ring) */
     const void *fam_data;           /* the family's per-build constants (its own struct: PCs, cull bits, constants), or NULL */
+    uint32_t live_sregs;            /* with HLE_F_REGS_LIVE: bit r = scalar register r is read by a later task */
     const struct hle_dead_range *dead;  /* DMEM masks, or NULL */
     unsigned n_dead;
 };
@@ -153,6 +157,8 @@ void hle_break(struct hle_task *t, unsigned end_pc);
 
 /* nonzero in the exact-events mode (ARMLET_HLE_EXACT=1): a front-end then does every SP DMA and every IMEM load the microcode does, in its order, instead of only what the external effects need */
 int hle_exact(void);
+void hle_dev_mark(size_t m[2]);              /* development: the commit log's length ... */
+void hle_dev_rewind(const size_t m[2]);      /* ... and back to it */
 
 /* ---- the RSP interpreter (hle_rsp.cpp) ------------------------------------------------------------------------------------------------------------------------------ */
 /* The microcode's own code, run by an interpreter on the real DMEM / IMEM and the JIT's register file (the vector unit through the fork's per-instruction helpers), with

@@ -219,6 +219,10 @@ static int tri_core(const struct f3d_tri_in *in, int test_flags, int neon, uint8
     u16 ahi = (u16)hle_clamp16((int32_t)(s16)(m1 >> 16) + (s16)(m2 >> 16) + ((uint32_t)(u16)m1 + (u16)m2 > 0xffff));
     const struct f3d_vtx *p[3] = { A, B, C };
     int par = 0;
+    if (in->sort_given && F3D_FX_MUTATE != 35) {                  /* mutation 35: Indy sorts by Y as F3D does */
+        p[0] = in->v[in->ord[0]]; p[1] = in->v[in->ord[1]]; p[2] = in->v[in->ord[2]];
+        par = F3D_FX_MUTATE == 36 ? 0 : in->par != 0;                 /* mutation 36: the table's parity ignored */
+    } else
     for (;;) {
         if (FMUT(7, p[1]->sy < p[0]->sy, p[1]->sy <= p[0]->sy)) { const struct f3d_vtx *q = p[0]; p[0] = p[1]; p[1] = q; par ^= 1; }
         if (p[2]->sy < p[1]->sy) { const struct f3d_vtx *q = p[1]; p[1] = p[2]; p[2] = q; par ^= 1; continue; }
@@ -227,8 +231,17 @@ static int tri_core(const struct f3d_tri_in *in, int test_flags, int neon, uint8
     {
         int neg = (s16)ahi < 0;
         if (((ahi | alo) & 0xffff) == 0)
-            return F3D_TRI_CULL;
-        if ((!neg && (in->geom & F3D_G_CULL_FRONT) && !(in->variant == F3D_TRIV_WR && F3D_FX_MUTATE != 24)) || (neg && (in->geom & F3D_G_CULL_BACK)))   /* mutation 24: Wave Race culls front faces */
+            return in->variant == F3D_TRIV_INDY && F3D_FX_MUTATE != 33 ? F3D_TRI_REJECT : F3D_TRI_CULL;       /* mutation 33: culled */       /* (Indy: a different exit of the microcode) */
+        uint32_t cf = in->geom & F3D_G_CULL_FRONT, cb = in->geom & F3D_G_CULL_BACK;
+        if (in->variant == F3D_TRIV_INDY && F3D_FX_MUTATE != 32)       /* mutation 32: the F3D culling. Indy: bit 13 culls the faces of negative area, bit 12 does nothing */
+            cf = 0;
+        if (in->variant == F3D_TRIV_RARE && F3D_FX_MUTATE != 27) {     /* Rare: bit 13 turns culling on, bit 12 selects the front faces; bit 12 alone does nothing; mutation 27: the F3D rule */
+            if (cf) {
+                cf = cb >> 1;
+                cb = 0;
+            }
+        }
+        if ((!neg && cf && !(in->variant == F3D_TRIV_WR && F3D_FX_MUTATE != 24)) || (neg && cb))   /* mutation 24: Wave Race culls front faces */
             return F3D_TRI_CULL;
     }
     if (par && F3D_FX_MUTATE != 2) {                 /* mutation 2: the area is not negated after an odd number of swaps */
@@ -297,7 +310,7 @@ static int tri_core(const struct f3d_tri_in *in, int test_flags, int neon, uint8
     int32_t V[3][8];
     for (int k = 0; k < 3; k++) {
         const struct f3d_vtx *P = p[k];
-        const struct f3d_vtx *Pc = ((in->geom & F3D_G_SMOOTH) || (in->variant == F3D_TRIV_WR && F3D_FX_MUTATE != 26)) ? P : in->flat;   /* mutations 25, 26: the SM64 shade rule, flat shading in Wave Race */
+        const struct f3d_vtx *Pc = ((in->geom & F3D_G_SMOOTH) || (in->variant == F3D_TRIV_INDY && F3D_FX_MUTATE != 34) || (in->variant == F3D_TRIV_WR && F3D_FX_MUTATE != 26)) ? P : in->flat;   /* mutations 25, 26: the SM64 shade rule, flat shading in Wave Race */
         for (int i = 0; i < 4; i++)
             V[k][i] = (int32_t)((uint32_t)Pc->col[i] << 16 | 0x8000);
         V[k][7] = (int32_t)((uint32_t)(u16)P->sz << 16 | P->szf);
@@ -308,7 +321,8 @@ static int tri_core(const struct f3d_tri_in *in, int test_flags, int neon, uint8
         int32_t mw = 0;
         for (int k = 0; k < 3; k++) {
             const struct f3d_vtx *P = k == 0 ? A : k == 1 ? B : C;
-            int32_t w = pair_of(hle_mac_32xu16((int32_t)((uint32_t)(u16)P->cx[3] << 16 | P->cf[3]), in->persp));
+            int32_t w32 = (int32_t)((uint32_t)(u16)P->cx[3] << 16 | P->cf[3]);
+            int32_t w = pair_of(hle_mac_32xu16(w32, in->persp));
             if (k == 0 || (F3D_FX_MUTATE == 9 ? ge32(w, mw) : !ge32(w, mw))) mw = w;   /* mutation 9: the farthest vertex's w */
         }
         int32_t m2v = mw >> 1;
@@ -323,7 +337,7 @@ static int tri_core(const struct f3d_tri_in *in, int test_flags, int neon, uint8
             for (int i = 0; i < 3; i++) V[k][4 + i] = sv[k][i];
         }
         /* the magnitude measure: of |s'| (and |t'|) of the three vertices the largest high word (vertex order H, L, M; the earlier one wins ties), with its low word */
-        for (int l = 0; l < 2; l++) {
+        for (int l = 0; l < 2 && (in->variant != F3D_TRIV_RARE || F3D_FX_MUTATE == 28); l++) {
             u16 a = abs16s((u16)(V[0][4 + l] >> 16)), b = abs16s((u16)(V[2][4 + l] >> 16));
             u16 x17 = (s16)a >= (s16)b ? a : b;
             u16 x18 = (s16)a >= (s16)b ? (u16)V[0][4 + l] : (u16)V[2][4 + l];
@@ -365,7 +379,20 @@ static int tri_core(const struct f3d_tri_in *in, int test_flags, int neon, uint8
         }
         o += 64;
     }
-    if (has_tex) {
+    if (has_tex && in->variant == F3D_TRIV_RARE && F3D_FX_MUTATE != 28) {      /* mutation 28: the texture block scaled by K as F3D's is */
+        /* Rare: the gradients of lanes 4 .. 7 as they are (no scale K) */
+#ifdef __ARM_NEON
+        if (neon) n4_store_block(o, &g4[1]); else
+#endif
+        for (int j = 0; j < 4; j++) {
+            int i = 4 + j;
+            put16(o + 0 + 2 * j, (u16)(lo[i].init >> 16)); put16(o + 8 + 2 * j, (u16)(lo[i].gx >> 16));
+            put16(o + 16 + 2 * j, (u16)lo[i].init);       put16(o + 24 + 2 * j, (u16)lo[i].gx);
+            put16(o + 32 + 2 * j, (u16)(lo[i].ge >> 16)); put16(o + 40 + 2 * j, (u16)(lo[i].gy >> 16));
+            put16(o + 48 + 2 * j, (u16)lo[i].ge);         put16(o + 56 + 2 * j, (u16)lo[i].gy);
+        }
+        o += 64;
+    } else if (has_tex) {
         /* the scale from the largest gradient measure of s, t, w */
         int32_t X[3];
         for (int j = 0; j < 3; j++) {

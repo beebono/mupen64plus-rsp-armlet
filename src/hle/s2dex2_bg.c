@@ -11,7 +11,7 @@
  *   uObjBg      imageX imageW frameX frameW  imageY imageH frameY frameH   (halfwords at 0x3b0, a lane each; the x and y groups of four), image pointer at 0x3c0, scaleW / scaleH at 0x3cc / 0x3ce
  *   formats     sizes and frame positions u10.2 / s10.2, image positions u10.5, scales s5.10; the reciprocal of a scale is a 16.16 number
  *
- * Checked against the microcode (its transliteration by tools/rsp2c.py, docs/testing.md, "Regenerating the microcode oracles") on random DMEM images (tools/hle/test_s2dex2.c) and by the replays and verify runs
+ * Checked against the microcode (its transliteration by tools/rsp2c/rsp2c.py, docs/testing.md, "Regenerating the microcode oracles") on random DMEM images (tools/hle/test_s2dex2.c) and by the replays and verify runs
  * of the games (docs/testing.md).
  *
  * Copyright (C) 2026 arMLEt contributors

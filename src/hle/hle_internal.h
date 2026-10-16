@@ -93,6 +93,10 @@ struct hle_harness_result {
 int armlet_hle_harness(const struct hle_ucode *uc, const PrspNativeSnap *before, const PrspNativeSnap *after, const PrspNativeEvent *ev, size_t n_ev, char *out,
                        size_t outsz, struct hle_harness_result *res);
 
+/* like armlet_hle_harness, but the oracle is a JIT run from the same state, made here by jit(ctx) (the state `before` is loaded, SP_PC set, parallelRSPDoRspCycles called), not a recorded
+ * result: for snapshots that were changed after the capture (tools/rsp2c/fuzz_snaps.py) */
+int armlet_hle_harness_jit(const struct hle_ucode *uc, const PrspNativeSnap *before, void (*jit)(void *), void *jctx, char *out, size_t outsz, struct hle_harness_result *res);
+
 double armlet_hle_dmabench(const struct hle_ucode *uc, const PrspNativeSnap *before, unsigned iters, unsigned bytes, int record);
 double armlet_hle_bench(const struct hle_ucode *uc, const PrspNativeSnap *before, unsigned iters);   /* ns per front-end run, or -1 when it declines */
 

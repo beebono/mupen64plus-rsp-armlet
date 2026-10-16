@@ -125,6 +125,18 @@ void f3d_vtx_tail(const struct f3d_vctx *c, const uint16_t hi[4], const uint16_t
 /* the fog value from the normalised z (shi:slo of lane 2) */
 uint8_t f3d_fog_byte(const struct f3d_vctx *c, uint16_t shi2, uint16_t slo2)
 {
+    if (c->fog_wide) {
+        /* z (32 bits) x the 32-bit multiplier (VMUDL VMADM VMADN VMADH: the low word is read before the last product), + the 32-bit offset (VADDC VADD), x the 16-bit factor (VMUDN VMADH), then
+         * the integer half limited to [0, factor] */
+        int32_t z = (int32_t)((uint32_t)shi2 << 16 | slo2), m = hle_fx(c->fogw[0], (uint16_t)c->fogw[1]);
+        uint16_t lo = hle_uclamp(hle_mac_32x32_before_h(z, m));
+        int16_t hi = (int16_t)hle_sclamp(hle_mac_32x32(z, m));
+        struct hle_pair s = hle_add32(hle_fx(hi, lo), FMUT(31, hle_fx(c->fogw[2], F3D_FX_MUTATE == 43 ? 0 : (uint16_t)c->fogw[3]), 0));    /* mutation 31: no offset */
+        int16_t v = (int16_t)hle_sclamp(hle_wrap48((hle_acc)(int32_t)hle_pair32(s) * (F3D_FX_MUTATE == 46 ? 1 : c->fogw[4])));
+        if (v < 0 && F3D_FX_MUTATE != 44) v = 0;                 /* mutation 44: no lower limit */
+        if (v >= c->fogw[4] && F3D_FX_MUTATE != 45) v = c->fogw[4];   /* mutation 45: no upper limit */
+        return (uint8_t)v;
+    }
     hle_acc a = hle_wrap48((hle_acc)(int32_t)((uint32_t)shi2 << 16 | slo2) * c->fog[0]);   /* VMUDN VMADH */
     int16_t v = (int16_t)hle_sclamp(a);
     int32_t w = (int32_t)v + c->fog[1];
@@ -197,6 +209,11 @@ static void vtx_one(const struct f3d_vctx *c, const struct f3d_vin *in, unsigned
         acc = hle_wrap48(acc + c->mp.f[3][k]);
         lo[k] = hle_uclamp(acc);
         hi[k] = hle_sclamp(hle_wrap48(acc + ((hle_acc)c->mp.i[3][k] << 16)));
+        if (c->has_off) {                                                   /* Rare: VADDC + VADD of the offset vector */
+            struct hle_pair s = hle_add32(hle_fx((int16_t)hi[k], lo[k]), hle_fx(c->off_i[k], c->off_f[k]));
+            hi[k] = (uint16_t)(F3D_FX_MUTATE == 29 ? hle_clamp16((int16_t)hi[k] + c->off_i[k]) : s.i);   /* mutation 29: the carry of the low words dropped */
+            lo[k] = s.f;
+        }
     }
     uint16_t shi[4], slo[4];
     f3d_vtx_tail(c, hi, lo, o, shi, slo);
@@ -309,6 +326,9 @@ static void neon_prepare(const struct f3d_vctx *c, struct vtx_neon_ctx *n)
 struct f3d_vpre {
     struct vtx_neon_ctx n;
     int lit;
+    int has_off;                            /* Rare: the offset vector, both halves */
+    int16x8_t off_hi;
+    uint16x8_t off_lo;
     int16x8_t lcol_amb;                     /* the ambient colour bytes << 7 */
     int16x8_t ldir[F3D_MAX_SLOTS + 1], lcol[F3D_MAX_SLOTS + 1];     /* slot nslot - k at index k */
 };
@@ -319,6 +339,11 @@ static void neon_prepare_all(const struct f3d_vctx *c, struct f3d_vpre *p)
 {
     neon_prepare(c, &p->n);
     p->lit = (c->geom & F3D_G_LIGHTING) != 0;
+    p->has_off = c->has_off;
+    if (c->has_off) {
+        p->off_hi = vcombine_s16(vld1_s16(c->off_i), vld1_s16(c->off_i));
+        p->off_lo = vcombine_u16(vld1_u16(c->off_f), vld1_u16(c->off_f));
+    }
     if (p->lit) {
         p->lcol_amb = vreinterpretq_s16_u16(vshll_n_u8(vld1_u8(c->lcol[c->nslot + 1]), 7));
         for (unsigned k = 0; k <= c->nslot; k++) {
@@ -398,6 +423,22 @@ static void neon_pair(const struct f3d_vctx *c, const struct f3d_vpre *P, const 
             }
         if (n->ok32 && !big) neon_transform32(n, px, &hi, &lo, &vcc);
         else neon_transform(n, px, &hi, &lo, &vcc);
+    }
+    if (P->has_off) {                       /* VADDC + VADD of the offset: the low words wrap and carry, the high words saturate; the flags are those of the sums */
+        uint16x8_t lo2 = vaddq_u16(lo, P->off_lo);
+        int16x8_t carry = vreinterpretq_s16_u16(vshrq_n_u16(vcltq_u16(lo2, lo), 15));
+        if (F3D_FX_MUTATE == 29) carry = vdupq_n_s16(0);
+        int32x4_t h0 = vaddq_s32(vaddl_s16(vget_low_s16(vreinterpretq_s16_u16(hi)), vget_low_s16(P->off_hi)), vmovl_s16(vget_low_s16(carry)));
+        int32x4_t h1 = vaddq_s32(vaddl_s16(vget_high_s16(vreinterpretq_s16_u16(hi)), vget_high_s16(P->off_hi)), vmovl_s16(vget_high_s16(carry)));
+        uint16x8_t whi, wlo, le, ge;
+        static const uint16_t wt[8] = {1, 2, 4, 8, 16, 32, 64, 128};
+        hi = vreinterpretq_u16_s16(vcombine_s16(vqmovn_s32(h0), vqmovn_s32(h1)));
+        lo = lo2;
+        neon_wlanes(hi, &whi);
+        neon_wlanes(lo, &wlo);
+        neon_clip_flags(hi, lo, whi, wlo, &le, &ge);
+        if (F3D_FX_MUTATE != 30)                           /* mutation 30: the flags of the sums not recomputed (NEON form) */
+            vcc = (unsigned)vaddvq_u16(vandq_u16(le, vld1q_u16(wt))) | ((unsigned)vaddvq_u16(vandq_u16(ge, vld1q_u16(wt))) << 8);
     }
     uint16_t hia[8], loa[8];
     vst1q_u16(hia, hi); vst1q_u16(loa, lo);
