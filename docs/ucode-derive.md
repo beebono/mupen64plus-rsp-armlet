@@ -68,7 +68,7 @@ It means that a person or the probe has to look.
 ## Validation: leave-one-out against the hand-written records
 
 Every registered build is derived **without its own table** (all texts of its record are removed from the reference set) and the derived record is compared with the hand-written one, field by field (F3DEX2 and S2DEX: 74 fields each, from `pc.*`, `f2pcs.*`, `lay.*`,
-`gen204`, `zex`, `reject_mask`, `load_key` and the extension table; F3DEX 1.x: 65 since its records run (below; the rows here are the current ones); F3D: 26). `tools/derive_check.sh DUMPS` runs it (and the mutation check) and fails on a mismatch that is not in the table of understood ones below.
+`gen204`, `zex`, `reject_mask`, `load_key` and the extension table; F3DEX 1.x: 65 since its records run (below; the rows here are the current ones); F3D: 70 since its records run, "F3D records that run" below). `tools/derive_check.sh DUMPS` runs it (and the mutation check) and fails on a mismatch that is not in the table of understood ones below.
 
 | family | build (hand record) | ids | primary reference | also needs | verdict | unexplained | near / reference-only | fields compared | fields that differ from the hand record |
 |---|---|---|---|---|---|---|---|---|---|
@@ -92,11 +92,12 @@ Every registered build is derived **without its own table** (all texts of its re
 | f3dex1 | l_b_lxn121 | 0a7cc6c9 | l_b_lxn123 | l_b_lx121 | EXACT | 0 | - / 0 | 65 | none |
 | f3dex1 | l_b_lxn123 | cc09096c | l_b_lx123 | l_b_lxn121 | EXACT | 0 | - / 0 | 65 | none |
 | f3dex1 | l_b_non100 | 5063f108 | l_b_non122 | l_b_095 | NONE | 12 | - / 22 | 65 | none |
-| f3d | l_sm64 | 94c7cfdd | l_pw | l_tt | NONE | 0 | - / 8 | 26 | noted 2 |
-| f3d | l_pw | 3e9b9c3a | l_sm64 | - | NONE | 9 | - / 6 | 26 | noted 1 |
-| f3d | l_wr | fb483893 | l_sm64 | l_tt | NONE | 80 | - / 47 | 26 | unconfirmed 3, noted 7 |
-| f3d | l_mm | 4212d63f | l_tt | - | NONE | 48 | - / 50 | 26 | noted 1 |
-| f3d | l_tt | 88fa3c0a | l_sm64 | l_mm | NONE | 2 | - / 2 | 26 | unconfirmed 1, noted 2 |
+| f3d | l_sm64 | 94c7cfdd | l_tt | l_pw | NONE | 0 | - / 5 | 70 | none |
+| f3d | l_pw | 3e9b9c3a | l_sm64 | l_ge | NONE | 0 | - / 6 | 70 | none |
+| f3d | l_wr | fb483893 | l_sm64 | l_tt | NONE | 80 | - / 47 | 70 | expected 2, noted 1 |
+| f3d | l_mm | 4212d63f | l_tt | - | NONE | 48 | - / 50 | 70 | none |
+| f3d | l_tt | 88fa3c0a | l_sm64 | l_mm | NONE | 2 | - / 2 | 70 | none |
+| f3d | l_ge | 538f79d8 | l_pw | l_tt | NONE | 17 | - / 16 | 70 | expected 2 |
 
 Mismatches, with the class the tool gives them (**unconfirmed**: the derived value is the reference's and the report says no aligned instruction confirms it; **noted**: the tool said it could not decide the attribute; **expected**: understood and
 listed in `EXPECTED` of `derive_build.py`; **UNEXPLAINED** would fail the check, and there is none):
@@ -126,23 +127,11 @@ listed in `EXPECTED` of `derive_build.py`; **UNEXPLAINED** would fail the check,
 | l_dex095 | flag.v095 | 0x1 | 0x0 | noted | noted: the tool says it could not decide it |
 | l_dlxn | flag.non | 0x1 | 0x0 | noted | noted: the tool says it could not decide it |
 | l_dlxn:0a7cc6 | flag.non | 0x1 | 0x0 | noted | noted: the tool says it could not decide it |
-| l_sm64 | culldl_mask | 0xffff | 0x7070 | noted | noted: the tool says it could not decide it |
-| l_sm64 | flag.lay.flags_variant | 0x0 | 0x1 | noted | noted: the tool says it could not decide it |
-| l_pw | flag.lay.flags_variant | 0x1 | 0x0 | noted | noted: the tool says it could not decide it |
-| l_wr | geom | 0xa60 | 0x7e0 | unconfirmed | unconfirmed: no aligned instruction anchors it, kept from the primary reference (reported as such) |
-| l_wr | geom_end | 0xfc0 | 0x930 | unconfirmed | unconfirmed: no aligned instruction anchors it, kept from the primary reference (reported as such) |
-| l_wr | loop_pc | 0x64 | 0x60 | unconfirmed | unconfirmed: no aligned instruction anchors it, kept from the primary reference (reported as such) |
-| l_wr | flag.lay.nslots | 0x20 | 0x10 | noted | noted: the tool says it could not decide it |
-| l_wr | flag.vptr_mul | 0x8 | 0x4 | noted | noted: the tool says it could not decide it |
-| l_wr | flag.vtx_wr | 0x1 | 0x0 | noted | noted: the tool says it could not decide it |
-| l_wr | flag.gp_end | 0x1 | 0x0 | noted | noted: the tool says it could not decide it |
-| l_wr | flag.quad | 0x1 | 0x0 | noted | noted: the tool says it could not decide it |
-| l_wr | flag.tri_wr | 0x1 | 0x0 | noted | noted: the tool says it could not decide it |
-| l_wr | flag.popmtx_stale | 0x1 | 0x0 | noted | noted: the tool says it could not decide it |
-| l_mm | flag.xbus | 0x1 | 0x0 | noted | noted: the tool says it could not decide it |
-| l_tt | dl_depth | 0x15a | 0x110 | unconfirmed | unconfirmed: no aligned instruction anchors it, kept from the primary reference (reported as such) |
-| l_tt | flag.popmtx_stale | 0x1 | 0x0 | noted | noted: the tool says it could not decide it |
-| l_tt | flag.half_shift | 0x1 | 0x0 | noted | noted: the tool says it could not decide it |
+| l_wr | pc.tri1 | 0x278 | 0x0 | expected | Wave Race's G_TRI1 entry is a call into a routine it shares with its quad command (`jal 0x288`): no other reference's handler maps onto it; the derived build declines G_TRI1 |
+| l_wr | pc.quad | 0x1fc | 0x0 | expected | Wave Race's quad command is in no other reference: no handler to map it from (the derived build declines the command) |
+| l_wr | flag.vptr_mul | 0x8 | 0x4 | noted | follows from G_TRI1: the index scale is read from its handler, which is not mapped |
+| l_ge | pc.tri4 | 0x20c | 0x0 | expected | GoldenEye's G_TRI4 (2.0G) is in no other reference: no handler to map it from (the derived build declines the command) |
+| l_ge | lay.tri4_tab | 0x2d0 | 0x0 | expected | follows from the handler: without a G_TRI4 pc there is no table to read |
 
 What this shows:
 
@@ -164,8 +153,10 @@ What this shows:
   Eight of the nine texts come out equal field by field, seven of them EXACT; F3DEX 0.95 is NONE with three handlers no other reference has (its G_PERSPNORM, G_QUAD and the 0.95 G_CULLDL: "expected"), Turok's
   1.00 NONE (12 unexplained words) with a record that is still equal. The attributes the old tool could not decide by pairs of references (`non` for 1.21 / 1.23 / F3DLX.NoN, `v095`) are read from the text or
   became data: `v095` is gone (its opcodes, depth byte and vertex table are the layout and the handler pcs).
-- **F3D**: the references are five builds with three layouts. The reject / cull masks and the overlay window are derived where the aligned code uses them (Pilotwings' `0x7030`), the attribute switches (`vtx_wr`, `tri_wr`, `quad`, `gp_end`, `nslots`, ...) only from reference pairs that differ in one attribute, which do not exist;
-  `loop_pc` is a point inside a run that no aligned instruction names. Honest outcome: the F3D family can be *classified* and its masks derived, its record is a hand job.
+- **F3D** (since 2026-10-17, "F3D records that run" below): the whole record of the front-end, 70 fields (the layout, the 23 handler pcs, the three masks, seven attributes, the load key). The six
+  references are six different texts (no two builds share code the way the F3DEX 1.x versions do), so every leave-one-out verdict is NONE, but the records come out equal field by field for SM64, Pilotwings,
+  Mischief Makers and Tetrisphere; Wave Race's G_TRI1 entry and quad command and GoldenEye's G_TRI4 are in no other reference ("expected"). The attributes the old pair votes could not decide (`xbus`,
+  `vtx_wr`, `tri_wr`, `gp_end`, the loop head, `half_shift`, `quad`) are read from the text or became table cells.
 
 ## The mutation check
 
@@ -248,6 +239,9 @@ Reading the verdicts:
 - **Rows 6 and 7 (NONE)** are close: Chameleon Twist 2's 2.05 (2 unexplained words in the clipper, 3 missing) and Donald Duck's F3DEX.NoN 1.23 (no unexplained word, 2 instructions missing against the 1.22 / 1.21 builds). Both verify clean in the experiment below.
 - **Everything else is another microcode** (the 18.8 points that remain after rows 1, 2, 4, 6, 7 and 10 are 7.2 points of registered builds that decline in the front-end and 11.6 of the microcode below): S2DEX 1.06 / 1.07 (a different generation than 2.x; 300 to 340 words), the Rej / F3DLX.Rej / F3DFLX.Rej / L3DEX texts (500 to 700 words differ: 20-byte vertex records, other triangle code), F3D 2.0G (GoldenEye: 17 + 16 words against
   the 2.0D family) and the 2.0H re-layouts (Glover, Wipeout: 780 words), Star Wars Rogue Squadron and Indiana Jones (no family), F-Zero X's 2.03 (above), the F3DEX.NoN 1.22 of Iggy's Reckin' Balls (14 words). Their 11.6 points need kernels, not records.
+- (2026-10-17) The F3D rows as the F3D derivation sees them now ("F3D records that run" below): row 3 (GoldenEye's 2.0G) NONE, 17 unexplained words, 16 reference-only, l_pw + l_tt: its four-triangle
+  command, which is now a command of the front-end, and the text is registered; row 29 (`2f41`) NONE, 32 / deleted 29, l_mm + l_sm64 (an output flush that keeps the lists in RDRAM); rows 16, 25 and 30 as
+  before (other code: the Sprite2D microcode, and `1d12` at 51 %).
 
 ### Do the EXACT / NEAR claims hold? An experiment on the desktop
 
@@ -310,8 +304,8 @@ The estimate of what these would add: the four rows are 12.5 of the 34.4 points 
 
 ## What the tool cannot do
 
-- It sees the **code**, not the inputs: a layout that no aligned instruction reads (Conker's moved fog / texture words) stays unconfirmed; an attribute that no pair of references isolates (F3D's `xbus`, `vtx_wr`) is not decided; two knobs that share a value in every reference
-  (F3D's `reject_mask` / `culldl_mask`) cannot be told apart without the handler.
+- It sees the **code**, not the inputs: a layout that no aligned instruction reads (Conker's moved fog / texture words) stays unconfirmed; an attribute that no pair of references isolates is not decided by votes
+  (F3DEX 1.x and F3D read theirs from signatures in the text instead); two knobs that share a value in every reference cannot be told apart without the handler (F3D's G_CULLDL mask is read from its handler).
 - **It cannot prove that a rewritten routine computes the same thing** (Paper Mario's lighting loop; the one rewrite between the F3DEX 1.x versions, a call through a saved `ra` against a tail jump, is a pattern it knows): that is what the probe of the next phase is for, with the near-match tolerance. The tool's NEAR / NONE list is the work list of the probe.
 - The dead ranges (`F3DEX2_DEAD` and the S2DEX / BG variants) are copied, not derived.
 - Other microcode (Rej, L3DEX, S2DEX 1.x, Rare, Indiana Jones, Resident Evil 2's custom texts) is reported as "no family" (aligned fraction under 50 %) or NONE.
@@ -328,7 +322,7 @@ python3 -I tools/derive_build.py emit DUMPS cand.c KEY...               # the C 
 
 ## The C port (2026-10-17)
 
-`src/hle/derive.c` is `derive_f2.py` / `derive_f1d.py` / `derive_lib.py` / `rsp_isa.py` in C, decision for decision (including the first-maximum and insertion-order choices of the Python dicts; one difference of the Python tool was removed: `derive_f2.derive` left the primary reference restricted to its own overlays (`set_active`), so a derivation depended on the ones before it; it resets them now). The F3DEX2 family, S2DEX 2.x and (since 2026-10-17) F3DEX 1.x give records and verdicts; F3D is *classified* (family, aligned fraction, verdict from `derive_variant`'s residual), no record. The runtime needs the references without the microcode texts: `derive_refs.c`, written by `tools/derive_refs_gen.py`. **What is embedded:** per instruction word of each reference image (text + overlay segments) a 16-bit index into a table of one-way 64-bit hashes of the word's *shape* (the word with its immediate, branch offset or load/store offset masked, hashed; the whole word hashed for instructions without such a field) and the 16-bit immediate (a jump keeps its 26-bit target field); the build records (pcs, layout, flags, reject mask, extension table, load key; the knob list for the F3DEX 1.x / F3D references); each reference's jump table (256 handler pcs); the word indices of the reference-only handlers (`G_SPECIAL_1`, `G_TRI4`) and the segment geometry. Shape equality was checked equal to the Python tool's `wkey` equality over every word of every reference at generation time. `tools/derive_refs_gen.py DUMPS src/hle/derive_refs.c --check` fails when a registered build changed and the file is stale (the cache's tool version contains a checksum of the data, so a stale file also retires old cache entries).
+`src/hle/derive.c` is `derive_f2.py` / `derive_f1d.py` / `derive_lib.py` / `rsp_isa.py` in C, decision for decision (including the first-maximum and insertion-order choices of the Python dicts; one difference of the Python tool was removed: `derive_f2.derive` left the primary reference restricted to its own overlays (`set_active`), so a derivation depended on the ones before it; it resets them now). The F3DEX2 family, S2DEX 2.x and (since 2026-10-17) F3DEX 1.x and F3D give records and verdicts. The runtime needs the references without the microcode texts: `derive_refs.c`, written by `tools/derive_refs_gen.py`. **What is embedded:** per instruction word of each reference image (text + overlay segments) a 16-bit index into a table of one-way 64-bit hashes of the word's *shape* (the word with its immediate, branch offset or load/store offset masked, hashed; the whole word hashed for instructions without such a field) and the 16-bit immediate (a jump keeps its 26-bit target field); the build records (pcs, layout, flags, masks, extension table, load key); each reference's jump table (256 handler pcs); the word indices of the reference-only handlers (`G_SPECIAL_1`, `G_TRI4`) and the segment geometry. Shape equality was checked equal to the Python tool's `wkey` equality over every word of every reference at generation time. `tools/derive_refs_gen.py DUMPS src/hle/derive_refs.c --check` fails when a registered build changed and the file is stale (the cache's tool version contains a checksum of the data, so a stale file also retires old cache entries).
 
 Equivalence (`tools/derive_c_check.sh DUMPS`; `derive_c_check.py` runs both tools and diffs, field by field: family, verdict, aligned and residual counts, primary reference, composite, near and reference-only categories, knob trouble, every field of the record, the extension table):
 
@@ -438,3 +432,38 @@ follows from one). The unregistered texts: Donald Duck's F3DEX.NoN 1.23 `efe4` *
 near-plane mask without the NoN code: NoN undecided, NONE; one `$29`-relative geometry load moved: conflict; the refill's `jr s5` -> `jr s4`: unexplained; the handler table cell of G_TRI1: another pc).
 C against Python (`tools/derive_c_check.sh`): 54 texts, 28 leave-one-out, 11 mutants, 786 pairs, 0 differences; ASan + UBSan over the 59 distinct texts clean; `derive_refs.c` regenerated (23 references
 in step with the tables, `armlet-probe-replay --sync`). The probe of these records: [testing.md](testing.md), "F3DEX 1.x data-driven".
+
+## F3D records that run (2026-10-17)
+
+The F3D front-end is data-driven now ([ucode-f3d.md](ucode-f3d.md) section 15: `struct f3d_build`, `f3d_bld.h`), and `tools/derive_f3d.py` (`derive.c` `f3_derive`, decision for decision) derives all
+of it. The record's fields, in the tool's names: `lay.*` (`F3_LAY_FIELDS`: 26 addresses the code names, the two dispatch tables and G_TRI4's table, 7 constants), `pc.*` (`F3_PC_FIELDS`: `head`, `nop`, `brk`
+and 20 commands), `reject_mask`, `clip_mask`, `culldl_mask`, `flag.flags_variant`, `flag.vtx_wr`, `flag.gp_end`, `flag.tri_wr`, `flag.popmtx_stale`, `flag.xbus`, `flag.vptr_mul`, `load_key`.
+
+**How each part is derived.** No two references differ in one attribute alone, so nothing is decided by pair votes; what alignment cannot show is read from the unknown's own text (lesson of F3DEX 1.x: two
+signatures where a half-change is possible; any signature that does not decide makes the verdict NONE).
+
+- **The layout and the reject / clip masks** are knobs as in F3DEX 1.x (F3D also addresses its state relative to `$29` = 0x110: `lb v0, 74(sp)` is Tetrisphere's G_DL depth byte 0x15a). G_VTX's return slot
+  `vret` (0x106 in 2.0D and 2.0G, 0x104 in 2.0H) is a knob too: it is the one dead range that moves between the builds. The geometry buffer comes from `addi s6, zero, X` in the loop head code (overlay 0, read
+  through the DMA table: the head code is at text + 0xf50 .. 0xf88 depending on the build, not where the 4 KiB image puts IMEM 0).
+- **The tables** from the two dispatchers (`andi v0, v0, 0x1fe ; lh v0, jt0(v0)` and `andi v0, v0, 0xfe ; lh v0, jt2(v0)`): 0xc4 and 0x76 (0x74 in 2.0H). A knob would not do: 0x76 is also the clip ratio's address.
+- **The handler pcs** by alignment (`map_pc`, from the best reference that has the handler), accepted only when the unknown's own tables lead a GBI opcode there (class 0: 0x00 .. 0x09, class 2: 0xb0 .. 0xbf)
+  and no other field took it: SM64's G_PERSPNORMALIZE handler maps onto the 2.0H builds' RDPHALF store, which they have instead (their perspective norm is G_MOVEWORD 0x0e). `head` is the target of the loop's
+  back-branch 16 bytes after `nop` (`bgtz gp, head`, or Wave Race's `bne gp, k1, head`); `brk` is the BREAK of overlay 3 (read from the RDRAM behind the text through the DMA table).
+- **The attributes**: the loop form (`gp_end`: the back-branch on `gp`/`k1` and no `addi gp, gp, -8` in the head code), Wave Race's G_VTX encoding (`lbu rX, -6(k1) ; srl rX, rX, 1` instead of `srl at, at, 4`),
+  the index scale (three `sll rX, rX, s` before three `addi rX, rX, vtx_base` in G_TRI1's handler or the routine it calls: 4 or 8), Wave Race's triangle code (neither `andi .., 0x1000` (front-face cull) nor
+  `andi .., 0x200` (the flat-shading choice); one without the other is undecided), Pilotwings' clip flag word (the F3DEX.NoN signature: `andi 0x703` and the w-sign shifts), G_POPMTX's stale flag (a byte store to
+  the light count word among its first words), XBUS (`addi rA, zero, 2 ; mtc0 rA, DPC_STATUS` and DPC_START pointed at the output buffer in DMEM; the FIFO builds clear the bit instead), the G_CULLDL
+  mask (`ori v0, zero, MASK` in its handler; SM64's is 0xffff, the reject mask 0x7070), G_TRI4's table (`lbu rX, TAB(rX)` in its handler).
+
+**Results.** Leave-one-out (`tools/derive_check.sh`, table above): every F3D verdict is NONE (each build has code no other has: Wave Race 80 words, Mischief Makers' XBUS flush 48, GoldenEye's G_TRI4 17,
+Tetrisphere 2, Pilotwings and SM64 only reference-only words), and the records are equal in all 70 fields for SM64, Pilotwings, Mischief Makers and Tetrisphere; Wave Race's G_TRI1 / quad and GoldenEye's
+G_TRI4 are "expected" (no other reference has the handler; the derived build declines those commands). With its own record among the references every registered text derives EXACT with its record
+(`armlet-probe-replay --self`). Mutation check: six F3D edits of SM64's text and data, each changes the result (G_CULLDL's `ori` mask: derived 0x7070; the near-plane mask without Pilotwings' code:
+undecided, NONE; one `$29`-relative geometry load moved: conflict; one of G_TRI1's shifts: undecided; the front-face cull test alone removed: undecided; the table cell of G_TRI1: another pc). C against
+Python (`tools/derive_c_check.sh`): 54 texts, 29 leave-one-out, 17 mutants, 786 pairs, 0 differences; `derive_refs.c` regenerated (generator version 3, tool version 3), 29 references in step with the tables.
+
+**The unregistered F3D texts** (all NONE): Blast Corps' 2.0D `2f41` (32 unexplained words: an output flush that accumulates the lists in RDRAM without handing them to the RDP, a transport the front-end
+does not have), its `1d12` (51 % aligned: other code) and the 2.0H texts of Wipeout 64 (`968d`) and Glover (`9d0d`), which are the Sprite2D microcode (24 and 22 % aligned). GoldenEye 007's 2.0G `538f`
+derives with Pilotwings' clip flag word and masks, the 2.0H RDPHALF numbering and depth byte and every handler but G_TRI4, its main triangle command: as a derived build it would decline nearly every
+task, so it is registered by hand instead, with G_TRI4 as a new command of the front-end ([ucode-f3d.md](ucode-f3d.md) 15, testing.md "F3D data-driven").
+
