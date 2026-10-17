@@ -21,11 +21,12 @@
                  rectangles, backgrounds in 1-cycle and COPY mode, texture loads, display list selection), G_LOAD_UCODE back, triangles again. The addresses of the texts and data in RDRAM are the game's
                  (MKSYN_S2TEXT, MKSYN_S2DATA, MKSYN_F2TEXT, MKSYN_F2DATA override them; a data address is that of the data row, the one G_LOAD_UCODE copies to DMEM 0x180); the snapshot must hold those rows (any captured Kirby 64 task does)
 """
+import os
 import random
 import struct
 import sys
 
-BASE = 0x300000
+BASE = int(os.environ.get("MKSYN_BASE", "0x300000"), 0)       # (a game whose RDP ring lies there: MKSYN_BASE=<free RDRAM>)
 
 
 class DL:

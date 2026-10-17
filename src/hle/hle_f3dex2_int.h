@@ -77,6 +77,7 @@ struct f3 {
     struct fx2_clip_out co;
     struct fx2_tri_in tin;          /* the constants of the triangle setup */
     uint32_t clip_mask;
+    int rc;                         /* a result an ext command's helper left (hle_rej.c)  */
     int ho_req;                     /* an ext command ended the outermost display list: the loop hands the task back (f3_enddl) */
     int lean;                       /* the external-effects mode: no DMA the effects do not need (the display list and the vertices are read from RDRAM, the overlays are loaded once at the end) */
     int ov0;                        /* the overlay IMEM held at the start */

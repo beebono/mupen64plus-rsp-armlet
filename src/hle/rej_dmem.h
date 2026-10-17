@@ -25,7 +25,26 @@ static const struct f2_layout l_lay_rej_xbus __attribute__((unused)) = {
     .mv = 0x00, .p = 0x40, .mvp = 0x80, .persp_norm = 0xdc, .viewport_scale = 0xe0, .viewport_trans = 0xe8, .clip_ratio = 0x186, .const31 = 0x1b0, .const30 = 0x1c0,
     .fog_mul = 0x1e0, .fog_ofs = 0x1e2, .texture = 0x1e4, .tex_scale_s = 0x1e8, .tex_scale_t = 0x1ea, .geom = 0x1ec, .mvp_valid = 0x1d9, .lights_valid = 0x1dc, .lights_size = 0x1dd,
     .light_raw = 0x1f8, .light_base = 0x200, .tg = 0x1d0, .light_scale = 0x1c6, .light_scale_zex = 0x1ce, .vtab = 0x380, .clipmask = 0, .culltab = 0x402, .in = 0x950, .in_end = 0x9f8,
-    .jump_table = 0x36e, .mw_max = 14, .geom_def = F2_GEOM_DEF, .movemem_tab = 0x2f0, .moveword_adj = 10238, .desc_light = 0x2e0, .desc_clip = 0x2e8, .xbus = 1, .ring_start = 0x9f8 };
+    .jump_table = 0x36e, .mw_max = 14, .geom_def = F2_GEOM_DEF, .movemem_tab = 0x2f0, .moveword_adj = 10238, .desc_light = 0x2e0, .desc_clip = 0x2e8, .xbus = 1, .ring_start = 0x9f8, .rej_flags = REJ_YQ };
+/* the fifo texts (F-Zero X's F3DLX.Rej 2.03, Resident Evil 2's F3DEX.Rej 2.06): the display list buffer ends at 0x9b8, two RDP output buffers of 592 bytes 0x300 apart */
+/* F-Zero X's F3DLX.Rej 2.03: the lighting is another one (no_lit) */
+static const struct f2_layout l_lay_rej_fifo203 __attribute__((unused)) = {
+    .mv = 0x00, .p = 0x40, .mvp = 0x80, .persp_norm = 0xdc, .viewport_scale = 0xe0, .viewport_trans = 0xe8, .clip_ratio = 0x186, .const31 = 0x1b0, .const30 = 0x1c0,
+    .fog_mul = 0x1e0, .fog_ofs = 0x1e2, .texture = 0x1e4, .tex_scale_s = 0x1e8, .tex_scale_t = 0x1ea, .geom = 0x1ec, .mvp_valid = 0x1d9, .lights_valid = 0x1dc, .lights_size = 0x1dd,
+    .light_raw = 0x1f8, .light_base = 0x200, .tg = 0x1d0, .light_scale = 0x1c6, .light_scale_zex = 0x1ce, .vtab = 0x380, .clipmask = 0, .culltab = 0x402, .in = 0x910, .in_end = 0x9b8,
+    .jump_table = 0x36e, .mw_max = 14, .geom_def = F2_GEOM_DEF, .movemem_tab = 0x2f0, .moveword_adj = 10238, .desc_light = 0x2e0, .desc_clip = 0x2e8, .out_bytes = 592, .out_toggle = 0x300, .rej_flags = REJ_YQ, .no_lit = 1 };
+/* Resident Evil 2's F3DEX.Rej 2.06: the screen y is not rounded (no REJ_YQ), the lighting is another one */
+static const struct f2_layout l_lay_rej_fifo206 __attribute__((unused)) = {
+    .mv = 0x00, .p = 0x40, .mvp = 0x80, .persp_norm = 0xdc, .viewport_scale = 0xe0, .viewport_trans = 0xe8, .clip_ratio = 0x186, .const31 = 0x1b0, .const30 = 0x1c0,
+    .fog_mul = 0x1e0, .fog_ofs = 0x1e2, .texture = 0x1e4, .tex_scale_s = 0x1e8, .tex_scale_t = 0x1ea, .geom = 0x1ec, .mvp_valid = 0x1d9, .lights_valid = 0x1dc, .lights_size = 0x1dd,
+    .light_raw = 0x1f8, .light_base = 0x200, .tg = 0x1d0, .light_scale = 0x1c6, .light_scale_zex = 0x1ce, .vtab = 0x380, .clipmask = 0, .culltab = 0x402, .in = 0x910, .in_end = 0x9b8,
+    .jump_table = 0x36e, .mw_max = 14, .geom_def = F2_GEOM_DEF, .movemem_tab = 0x2f0, .moveword_adj = 10238, .desc_light = 0x2e0, .desc_clip = 0x2e8, .out_bytes = 592, .out_toggle = 0x300, .no_lit = 1 };
+/* F-Zero X's F3DFLX.Rej 2.03F: the state at other addresses (the jump table at 0x30e, the slots at 0x3b0 .. 0x8c4 with the table at 0x320, the cull table at 0x3a2, the display list buffer ending at 0xa58, output buffers of 512 bytes 0x350 apart) */
+static const struct f2_layout l_lay_rej_flx __attribute__((unused)) = {
+    .mv = 0x00, .p = 0x40, .mvp = 0x80, .persp_norm = 0xdc, .viewport_scale = 0xe0, .viewport_trans = 0xe8, .clip_ratio = 0x186, .const31 = 0x1b0, .const30 = 0x1c0,
+    .fog_mul = 0x1e0, .fog_ofs = 0x1e2, .texture = 0x1e4, .tex_scale_s = 0x1e8, .tex_scale_t = 0x1ea, .geom = 0x1ec, .mvp_valid = 0x1d9, .lights_valid = 0x1dc, .lights_size = 0x1dd,
+    .light_raw = 0x1f8, .light_base = 0x200, .tg = 0x1d0, .light_scale = 0x1c6, .light_scale_zex = 0x1ce, .vtab = 0x320, .clipmask = 0, .culltab = 0x3a2, .in = 0x9b0, .in_end = 0xa58,
+    .jump_table = 0x30e, .mw_max = 14, .geom_def = F2_GEOM_DEF, .movemem_tab = 0x290, .moveword_adj = 10142, .desc_light = 0x280, .desc_clip = 0x288, .out_bytes = 512, .out_toggle = 0x350, .rej_flags = REJ_YQ | REJ_FLAT_A, .no_lit = 1 };
 
 /* A vertex record is 20 bytes, the slot address table is at 0x380 with the stride 20 (slot k at 0x410 + 20 k). The rest of the state is where the F3DEX2 builds keep it (docs/ucode-rej.md, section 1). */
 static inline void rej_st_vtx(struct hle_task *t, unsigned s, const struct rej_vtx *v)
@@ -74,6 +93,8 @@ static inline const char *rej_vtx_pre(struct hle_task *t, uint32_t w0)
         return "G_VTX with an unusual count";
     if (MUT(345, hle_dm16(t, F2_CLIP_RATIO) & 0x8000, 0))      /* the guard-band ratio multiplies as a signed lane in the microcode; the ratios of the GBI are 1 .. 6 */
         return "guard-band ratio out of range";
+    if (lit && f2L->no_lit)
+        return "lit vertices of a Rej text whose lighting is not modelled";
     if (lit) {
         unsigned lb = hle_dm8(t, F2_LIGHTS_SIZE);
         if (!(lb >= F2_LIGHT_STRIDE && lb % F2_LIGHT_STRIDE == 0 && lb <= 7 * F2_LIGHT_STRIDE))
@@ -121,7 +142,7 @@ static inline void rej_vtx_run(struct hle_task *t, uint32_t w0, const struct fx2
     f2_ld_vctx(t, &c);
     if (c.mode & FX2_LIGHTING)
         f2_ld_lights(t, hle_dm8(t, F2_LIGHTS_SIZE) / F2_LIGHT_STRIDE, &c.L);
-    rej_vtx_xform(&c, in, n, out);
+    rej_vtx_xform(&c, f2L->rej_flags, in, n, out);
     for (i = 0; i < n; i++)
         rej_st_vtx(t, first + REJ_VSTRIDE * i, &out[i]);
 }
@@ -158,8 +179,9 @@ static inline const char *rej_flush(struct hle_task *t, uint32_t *s7)
 static inline int rej_vidx_bad(uint32_t b) { return (b & 0x81) != 0; }
 
 /* G_TRI1 (two == 0: the second word is zero: its triangle is the degenerate (0, 0, 0)), G_TRI2 and G_QUAD (the first word's triangle first, then the second's): the RDP commands are appended at *s7 and
- * flushed one by one. Returns NULL or the reason the task declines. */
-static inline const char *rej_cmd_tri(struct hle_task *t, uint32_t *s7, uint32_t w0, uint32_t w1, int two)
+ * `after` runs after each one (the build's flush). Returns NULL or the reason the task declines. */
+typedef const char *(*rej_after_fn)(void *ctx, uint32_t *s7);       /* what runs after a command was appended at *s7 (the flush; NULL: nothing) */
+static inline const char *rej_cmd_tri(struct hle_task *t, uint32_t *s7, uint32_t w0, uint32_t w1, int two, rej_after_fn after, void *actx)
 {
     uint32_t g = hle_dm32(t, F2_GEOM);
     unsigned ca = F2_CULLTAB + hle_dm8(t, F2_GEOM + 2), T = hle_dm16(t, ca), k, nt = two ? 2 : 1;
@@ -171,6 +193,7 @@ static inline const char *rej_cmd_tri(struct hle_task *t, uint32_t *s7, uint32_t
         return "G_TEXTURE with an unusual on / tile byte";
     memset(&ti, 0, sizeof ti);
     ti.g = g;
+    ti.flags = f2L->rej_flags;
     ti.tex = hle_dm8(t, F2_TEXTURE + 3);
     ti.tile = hle_dm8(t, F2_TEXTURE + 2);
     ti.rcp_k = hle_dm16(t, F2_CONST31 + 4);
@@ -193,12 +216,13 @@ static inline const char *rej_cmd_tri(struct hle_task *t, uint32_t *s7, uint32_t
         ti.pass_neg = (T >> (1 + 4 * k)) & 1;
         ti.pass_pos = (T >> (9 + 4 * k)) & 1;
         if (rej_tri_setup(&ti, cmd, &len) == FX2_TRI_DRAW) {
-            const char *why;
             memcpy(&t->dmem[*s7 >> 2], cmd, len);
             *s7 += len;
-            why = rej_flush(t, s7);
-            if (why)
-                return why;
+            if (after) {
+                const char *why = after(actx, s7);
+                if (why)
+                    return why;
+            }
         }
     }
     return NULL;

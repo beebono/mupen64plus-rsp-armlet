@@ -10,6 +10,7 @@
  */
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "hle_f3dex2_int.h"
@@ -18,12 +19,21 @@
 #ifdef ARMLET_NATIVE
 
 
-enum { K_REJ_VTX = K_EXT, K_REJ_TRI1, K_REJ_TRI2, K_REJ_MODVTX, K_REJ_CULLDL, K_REJ_BRANCHZ };
+enum { K_REJ_VTX = K_EXT, K_REJ_TRI1, K_REJ_TRI2, K_REJ_MODVTX, K_REJ_CULLDL, K_REJ_BRANCHZ, K_REJ_DECLINE, K_REJ_DMAIO };
 
 int f3_flush_xbus(struct f3 *f)
 {
     const char *why = rej_flush(f->t, &f->s7);
     return why ? hle_decline(f->t, why) : HLE_OK;
+}
+
+/* after a triangle was appended: the build's flush (the ring of the XBUS texts, or the output buffers of the fifo ones: after_emit); a decline of the flush is the task's */
+static const char *rej_after(void *ctx, uint32_t *s7)
+{
+    struct f3 *f = ctx;
+    (void)s7;                                            /* (the front-end's output pointer is f->s7, which rej_cmd_tri advanced) */
+    f->rc = after_emit(f);
+    return f->rc != HLE_OK ? "the flush declined" : NULL;
 }
 
 static int rej_vtx(struct f3 *f)
@@ -39,8 +49,12 @@ static int rej_vtx(struct f3 *f)
     if (MUT(221, ((w0 & 0xfff) > 2 * REJ_NSLOTS || (w0 & 1) || (w0 & 0xfff) < 2 * n || (w0 & 0xf00000)), 0))
         return hle_decline(t, "G_VTX with an unusual end index");
     why = rej_vtx_pre(t, w0);
+    if (why && getenv("HLE_REJ_SOFT"))
+        return HLE_OK;
     if (why)
         return hle_decline(t, why);
+    if (f->trace)
+        fprintf(stderr, "  VTX n=%u geom=%04x lights=%u/%u mvpvalid=%02x\n", n, hle_dm16(t, F2_GEOM), hle_dm8(t, F2_LIGHTS_SIZE), hle_dm8(t, F2_LIGHTS_VALID), hle_dm8(t, F2_MVP_VALID));
     if (f->lean) {
         if (va & 7)
             return hle_decline(t, "unaligned vertices");
@@ -64,14 +78,30 @@ static int rej_ext_cmd(struct f3 *f, unsigned kind)
     unsigned at, k;
 
     switch (kind) {
+    case K_REJ_DECLINE:
+        if (getenv("HLE_REJ_SOFT"))
+            return HLE_OK;
+        return hle_decline(t, "a command of a text this front-end does not run natively");
+    case K_REJ_DMAIO: {                                 /* G_DMA_IO: w1 (a segment address) to DMEM at (the halfword at bit 8 of w0) >> 2, w0 & 0xff8 the length register; F-Zero X reads 256 bytes into the end of its vertex area */
+        unsigned x = (w0 >> 8) & 0xffff, mem = (x >> 2) & 0x1fff;
+        if (MUT(348, x & 0x8000, 0))
+            return hle_decline(t, "G_DMA_IO to RDRAM");
+        if (MUT(349, mem & 0x1000, 0))
+            return hle_decline(t, "G_DMA_IO into IMEM");
+        if (MUT(350, f3_store_unmodelled(f, mem & 0xff8, (w0 & 0xff8) | 7), 0))
+            return hle_decline(t, "G_DMA_IO into the microcode's own buffers");
+        f3_dma_rd(f, mem & 0xff8, seg_addr(t, w1), w0 & 0xff8);
+        return HLE_OK;
+    }
     case K_REJ_VTX:
         return rej_vtx(f);
     case K_REJ_TRI1:
     case K_REJ_TRI2:
         if (kind == K_REJ_TRI1 && !f->lean)
             hle_st32(t, F2_IN_END + f->k1 - 4, 0);     /* (G_TRI1 zeroes the second word of its command in the input buffer) */
-        why = rej_cmd_tri(t, &f->s7, w0, kind == K_REJ_TRI1 ? 0 : w1, kind == K_REJ_TRI2);
-        return why ? hle_decline(t, why) : HLE_OK;
+        f->rc = HLE_OK;
+        why = rej_cmd_tri(t, &f->s7, w0, kind == K_REJ_TRI1 ? 0 : w1, kind == K_REJ_TRI2, rej_after, f);
+        return f->rc != HLE_OK ? f->rc : why ? hle_decline(t, why) : HLE_OK;
     case K_REJ_MODVTX: {                                /* the word w1 goes to the record field (w0 >> 16 & 0xff) - 16 of the vertex w0 & 0xfff */
         int rel = (int)((w0 >> 16) & 0xff) - 16;
         if (MUT(218, rej_vidx_bad(w0 & 0xfff) || rel < 0 || rel > 16 || (rel & 3), 0))
@@ -114,7 +144,7 @@ static int rej_ext_cmd(struct f3 *f, unsigned kind)
 }
 
 /* the commands the front-end does not know by pc: { handler pc, kind } */
-static const uint16_t l_ext_xbus[][2] = { { 0x4a4, K_REJ_VTX }, { 0x74c, K_REJ_TRI1 }, { 0x750, K_REJ_TRI2 }, { 0xc28, K_REJ_MODVTX }, { 0xbec, K_REJ_CULLDL }, { 0xc10, K_REJ_BRANCHZ }, { 0xffff, 0 } };
+static const uint16_t l_ext_xbus[][2] = { { 0x4a4, K_REJ_VTX }, { 0x74c, K_REJ_TRI1 }, { 0x750, K_REJ_TRI2 }, { 0xc28, K_REJ_MODVTX }, { 0xbec, K_REJ_CULLDL }, { 0xc10, K_REJ_BRANCHZ }, { 0x1c0, K_REJ_DMAIO }, { 0xffff, 0 } };
 
 /* Excitebike 64: F3DLX.Rej xbus 2.08 */
 static const struct f3dex2_build l_b_rej_xbus = {
@@ -136,6 +166,30 @@ static const struct f3dex2_build l_b_ex2_208n_xbus = {
 static const struct hle_dead_range l_dead_ex2_xbus[] = { F3DEX2_DEAD_RANGES };
 HLE_UCODE(l_ex2_xbus_f649) = { .id = 0xf649a08381045b6bull, .name = "F3DEX.NoN xbus 2.08 (Excitebike 64, loaded by G_LOAD_UCODE)", .fam = &f3dex2_fam, .flags = HLE_F_XBUS_OK, .fam_data = &l_b_ex2_208n_xbus,
     .dead = l_dead_ex2_xbus, .n_dead = F3DEX2_N_DEAD_OUT };
+
+/* F-Zero X's first text, F3DEX 2.03 (key d02467ac...): the F3DEX2 front-end's own vertex, triangle and clipping code with the 2.04 generation's pcs (docs/ucode-f3dex2-dialects.md, section 1); the G_LOAD_UCODE it ends with loads the F3DFLX.Rej text */
+static const struct f3dex2_build l_b_ex2_203 = {
+    .head = 0x18c, .copy = 0x208, .sync = 0x20c, .segcopy = 0x218, .ef = 0x238, .ed = 0x244, .tri1 = 0x794, .tri2 = 0x78c, .vtx = 0x4e8,
+    .mtx = 0x0f0, .geom = 0x1d0, .enddl = 0x1e4, .half2 = 0x1f8, .modvtx = 0xc54, .culldl = 0xc14, .branchz = 0xc3c, .zex = 1, .gen204 = 1, .reject_mask = 0x7070, .load_key = 0xd02467acf66d7396ull };
+HLE_UCODE(l_ex2_33dc) = { .id = 0x33dc705a5e4d39aeull, .name = "F3DEX fifo 2.03 (F-Zero X)", .fam = &f3dex2_fam, .fam_data = &l_b_ex2_203, F3DEX2_DEAD };
+
+/* the fifo texts: the front of the F3DEX2 2.04 generation (head 0x18c, the handlers below 0x170 at their pcs) and the Rej vertex and triangle code behind it */
+static const uint16_t l_ext_fifo203[][2] = { { 0x4a0, K_REJ_VTX }, { 0x748, K_REJ_TRI1 }, { 0x74c, K_REJ_TRI2 }, { 0xc24, K_REJ_MODVTX }, { 0xbe8, K_REJ_CULLDL }, { 0xc0c, K_REJ_BRANCHZ }, { 0x1b8, K_REJ_DMAIO }, { 0xffff, 0 } };
+static const uint16_t l_ext_fifo206[][2] = { { 0x4c4, K_REJ_VTX }, { 0x740, K_REJ_TRI1 }, { 0x744, K_REJ_TRI2 }, { 0xc60, K_REJ_MODVTX }, { 0xc24, K_REJ_CULLDL }, { 0xc48, K_REJ_BRANCHZ }, { 0x1b8, K_REJ_DMAIO }, { 0xffff, 0 } };
+static const uint16_t l_ext_flx[][2] = { { 0x45c, K_REJ_VTX }, { 0x704, K_REJ_TRI1 }, { 0x708, K_REJ_TRI2 }, { 0xbd4, K_REJ_MODVTX }, { 0xb98, K_REJ_CULLDL }, { 0xbbc, K_REJ_BRANCHZ }, { 0x1b8, K_REJ_DMAIO }, { 0xffff, 0 } };
+#define REJ_FIFO_FRONT .head = 0x18c, .copy = 0x208, .sync = 0x20c, .segcopy = 0x218, .ef = 0x238, .ed = 0x244, .mtx = 0x0f0, .geom = 0x1d0, .enddl = 0x1e4, .half2 = 0x1f8
+/* F-Zero X's F3DLX.Rej fifo 2.03 */
+static const struct f3dex2_build l_b_rej_203 = { REJ_FIFO_FRONT, .load_key = 0xe3a5e6fee8c43368ull, .lay = &l_lay_rej_fifo203, .ext = l_ext_fifo203, .ext_cmd = rej_ext_cmd };
+/* Resident Evil 2's F3DEX.Rej fifo 2.06 */
+static const struct f3dex2_build l_b_rej_206 = { REJ_FIFO_FRONT, .load_key = 0x08322d13b3ad88cfull, .lay = &l_lay_rej_fifo206, .ext = l_ext_fifo206, .ext_cmd = rej_ext_cmd };
+/* F-Zero X's F3DFLX.Rej fifo 2.03F (the text the 2.03 F3DEX text loads) */
+static const struct f3dex2_build l_b_rej_flx = { REJ_FIFO_FRONT, .load_key = 0xf48949acd3c468d8ull, .lay = &l_lay_rej_flx, .ext = l_ext_flx, .ext_cmd = rej_ext_cmd };
+/* dead at the end of a task: from the display list input buffer to the end of the RDP output buffers (the lean mode reads the list from RDRAM; the buffers' slack is scratch), and the word the initialisation stores at 0xfc8 */
+static const struct hle_dead_range l_dead_rej_203[] = { { 0x910, 0xfb8 }, { 0xfc8, 0xfcc } };
+static const struct hle_dead_range l_dead_rej_flx[] = { { 0x9b0, 0xfb8 }, { 0xfc8, 0xfcc } };
+HLE_UCODE(l_rej_7de8) = { .id = 0x7de803fdbd8fb8b0ull, .name = "F3DLX.Rej fifo 2.03 (F-Zero X)", .fam = &f3dex2_fam, .fam_data = &l_b_rej_203, .ring_off = 0xfe8, .dead = l_dead_rej_203, .n_dead = 2 };
+HLE_UCODE(l_rej_9512) = { .id = 0x95129dc7d307dd43ull, .name = "F3DEX.Rej fifo 2.06 (Resident Evil 2)", .fam = &f3dex2_fam, .fam_data = &l_b_rej_206, .ring_off = 0xfe8, .dead = l_dead_rej_203, .n_dead = 2 };
+HLE_UCODE(l_rej_c750) = { .id = 0xc750be26762c28b0ull, .name = "F3DFLX.Rej fifo 2.03F (F-Zero X)", .fam = &f3dex2_fam, .fam_data = &l_b_rej_flx, .ring_off = 0xfe8, .dead = l_dead_rej_flx, .n_dead = 2 };
 
 /* dead at the end of a task: the display list input buffer (the lean mode reads the list from RDRAM), the RDP list ring beyond the last list (scratch the triangle code writes past the end of its command, and the
  * garbage the vertex loop's pipeline stores ahead of the output pointer), the padding bytes of the light slots; and, because the tasks switch to the F3DEX2.NoN text above in the middle and end in it, that

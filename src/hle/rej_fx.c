@@ -35,7 +35,7 @@ static inline struct fx2_pair rd(hle_acc t, hle_acc full)
 /* ---- vertices ------------------------------------------------------------------------------------------------------------------------------------------------------------ */
 /* From the clip coordinates P (x y z w, 32-bit) on. A vertex outside the guard band (x, y or z beyond w times the clip ratio: the compare of VCH / VCL against the scaled w) is marked: the
  * viewport transformation's accumulator starts with 0x7fff * 0x7fff, so every coordinate saturates, and the screen y (with its low two bits cleared) is 0x7ffc, which the triangle code rejects. */
-static void rej_project(const struct fx2_vctx *c, const struct fx2_pair P[4], struct rej_vtx *o, int16_t *fog)
+static void rej_project(const struct fx2_vctx *c, unsigned flags, const struct fx2_pair P[4], struct rej_vtx *o, int16_t *fog)
 {
     struct fx2_pair Q[4], R0, T, E, R1, ndc[4], ndc2[4], S[4];
     hle_acc tt, fl;
@@ -81,13 +81,13 @@ static void rej_project(const struct fx2_vctx *c, const struct fx2_pair P[4], st
         }
     }
     for (k = 0; k < 4; k++) {
-        hle_acc acc = ((hle_acc)(k == 1 ? hle_clamp16((int32_t)c->trans[1] + 2) : c->trans[k]) << 16) + (k == 3 ? ((hle_acc)c->c31_3 << 16) : 0) + (marked ? (((hle_acc)0x7fff * c->c31_7) << 16) : 0);
+        hle_acc acc = ((hle_acc)(k == 1 && (flags & REJ_YQ) ? hle_clamp16((int32_t)c->trans[1] + 2) : c->trans[k]) << 16) + (k == 3 ? ((hle_acc)c->c31_3 << 16) : 0) + (marked ? (((hle_acc)0x7fff * c->c31_7) << 16) : 0);
         hle_acc t1 = hle_wrap48(acc + (hle_acc)ndc2[k].f * c->scale[k]);
         hle_acc f1 = hle_wrap48(t1 + (((hle_acc)ndc2[k].i * c->scale[k]) << 16));
         S[k] = rd(t1, f1);
     }
     o->sx = S[0].i;
-    o->sy = (int16_t)(S[1].i & ~3);
+    o->sy = (flags & REJ_YQ) ? (int16_t)(S[1].i & ~3) : S[1].i;
     o->szi = S[2].i;
     o->szf = S[2].f;
     o->rwi = R1.i;
@@ -95,7 +95,7 @@ static void rej_project(const struct fx2_vctx *c, const struct fx2_pair P[4], st
     *fog = S[3].i;
 }
 
-static void rej_vtx_one(const struct fx2_vctx *c, const struct fx2_vin *vi, unsigned idx, struct rej_vtx *o)
+static void rej_vtx_one(const struct fx2_vctx *c, unsigned flags, const struct fx2_vin *vi, unsigned idx, struct rej_vtx *o)
 {
     int16_t v[3] = { vi->x, vi->y, vi->z };
     int16_t s = vi->s, tt_ = vi->t, fog = 0;
@@ -124,7 +124,7 @@ static void rej_vtx_one(const struct fx2_vctx *c, const struct fx2_vin *vi, unsi
         P[k].i = hle_sclamp(acc);
         P[k].f = hle_uclamp(hle_wrap48(acc - last));
     }
-    rej_project(c, P, o, &fog);
+    rej_project(c, flags, P, o, &fog);
     if (c->mode & FX2_FOG)
         col[3] = (uint8_t)(fog < 0x7f00 ? 0x7f00 : fog);   /* the byte is the low byte of max(S3.i, 0x7f00) */
     memcpy(o->col, col, 4);
@@ -132,17 +132,19 @@ static void rej_vtx_one(const struct fx2_vctx *c, const struct fx2_vin *vi, unsi
     o->t = (int16_t)(((int32_t)tt_ * c->sc_t) >> 16);
 }
 
-void rej_vtx_xform_scalar(const struct fx2_vctx *c, const struct fx2_vin *in, unsigned n, struct rej_vtx *out)
+void rej_vtx_xform_scalar(const struct fx2_vctx *c, unsigned flags, const struct fx2_vin *in, unsigned n, struct rej_vtx *out)
 {
     unsigned i;
     for (i = 0; i < n; i++)
-        rej_vtx_one(c, &in[i], i, &out[i]);
+        rej_vtx_one(c, flags, &in[i], i, &out[i]);
 }
 
-void rej_vtx_xform(const struct fx2_vctx *c, const struct fx2_vin *in, unsigned n, struct rej_vtx *out)
+#ifndef __aarch64__
+void rej_vtx_xform(const struct fx2_vctx *c, unsigned flags, const struct fx2_vin *in, unsigned n, struct rej_vtx *out)
 {
-    rej_vtx_xform_scalar(c, in, n, out);
+    rej_vtx_xform_scalar(c, flags, in, n, out);
 }
+#endif
 
 /* ---- triangles ------------------------------------------------------------------------------------------------------------------------------------------------------------ */
 /* The triangle code is the F3DEX2 one without the clipper (f3dex2_fx.c): the same slopes, header and shade, texture and z blocks (the attribute part is fx2_tri_attrs_*), with F3DZEX's lanes of the
@@ -273,6 +275,9 @@ static void rej_tri_in_f2(const struct rej_tri_in *in, struct fx2_vtx fv[3], str
         fv[k].rwi = r->rwi;
         fv[k].rwf = r->rwf;
     }
+    if ((in->flags & REJ_FLAT_A) && !(in->g & 0x200000))     /* (flat shading: the colour of the first vertex, with F3DFLX its alpha too) */
+        for (k = 1; k < 3; k++)
+            fv[k].col[3] = fv[0].col[3];
     memset(ti, 0, sizeof *ti);
     for (k = 0; k < 3; k++)
         ti->v[k] = &fv[k];
@@ -281,7 +286,7 @@ static void rej_tri_in_f2(const struct rej_tri_in *in, struct fx2_vtx fv[3], str
     ti->tile = in->tile;
 }
 
-int rej_tri_setup_scalar(const struct rej_tri_in *in, uint32_t *cmd, unsigned *len)
+int rej_tri_setup_core(const struct rej_tri_in *in, uint32_t *cmd, unsigned *len, int neon)
 {
     struct fx2_vtx fv[3];
     struct fx2_tri_in ti;
@@ -291,11 +296,26 @@ int rej_tri_setup_scalar(const struct rej_tri_in *in, uint32_t *cmd, unsigned *l
     r = rej_tri_prepare(in, fv, cmd, &st);
     if (r != FX2_TRI_DRAW)
         return r;
-    *len = (in->g & 4) || in->tex || (in->g & 1) ? fx2_tri_attrs_scalar(&ti, &st, cmd) : 32;
+    if (!((in->g & 4) || in->tex || (in->g & 1)))
+        *len = 32;
+#ifdef __aarch64__
+    else if (neon)
+        *len = fx2_tri_attrs_neon(&ti, &st, cmd);
+#endif
+    else
+        *len = fx2_tri_attrs_scalar(&ti, &st, cmd);
+    (void)neon;
     return FX2_TRI_DRAW;
 }
 
+int rej_tri_setup_scalar(const struct rej_tri_in *in, uint32_t *cmd, unsigned *len)
+{
+    return rej_tri_setup_core(in, cmd, len, 0);
+}
+
+#ifndef __aarch64__
 int rej_tri_setup(const struct rej_tri_in *in, uint32_t *cmd, unsigned *len)
 {
-    return rej_tri_setup_scalar(in, cmd, len);
+    return rej_tri_setup_core(in, cmd, len, 0);
 }
+#endif

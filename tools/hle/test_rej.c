@@ -29,7 +29,19 @@ struct rctx {
 #include "rej_dmem.h"
 
 const struct f2_layout *f2L;
-#define l_lay l_lay_rej_xbus
+#ifndef REJ_LAYOUT
+#define REJ_LAYOUT l_lay_rej_xbus
+#endif
+#define l_lay REJ_LAYOUT
+#ifndef REJ_VTX_ENTRY                                       /* the build under test: the pcs of its handlers, the loop head (where the oracle ends), and for the fifo texts the flush routine's entries and where the second triangle resumes */
+#define REJ_VTX_ENTRY 0x4a4
+#define REJ_TRI1_ENTRY 0x74c
+#define REJ_TRI2_ENTRY 0x750
+#define REJ_HEAD 0x194
+#endif
+#ifndef REJ_FIFO
+#define REJ_FIFO 0
+#endif
 
 /* the translation reaches the framework only through the RDP registers (the flush routine) */
 static uint32_t creg[16];
@@ -112,6 +124,21 @@ static void vtx_state(uint32_t *dm, unsigned *lit_out)
             st16(dm, 0x20 + 2 * k, 0);
         }
     st8(dm, 0x1d9, (uint8_t)(rnd() % 2 ? rnd() | 1 : 0));
+    if (rnd() % 2) {                                 /* a projection that keeps most of the vertices inside the guard band: x, y, z scaled to a fraction of w (and the translation) */
+        unsigned sc = 0x0100u << (rnd() % 6), r, c;
+        for (r = 0; r < 4; r++)
+            for (c = 0; c < 4; c++) {
+                st16(dm, 0x80 + 2 * (4 * r + c), 0);
+                st16(dm, 0xa0 + 2 * (4 * r + c), 0);
+            }
+        for (r = 0; r < 3; r++)
+            st16(dm, 0xa0 + 2 * (4 * r + r), (uint16_t)(sc + (rnd() % 4 == 0 ? rnd() % 0x80 : 0)));
+        st16(dm, 0x80 + 2 * 15, (uint16_t)(1 + rnd() % 0x40));
+        st16(dm, 0xa0 + 2 * 15, (uint16_t)rnd());
+        st16(dm, 0x80 + 2 * 12, (uint16_t)((int)(rnd() % 9) - 4));
+        st16(dm, 0x80 + 2 * 13, (uint16_t)((int)(rnd() % 9) - 4));
+        st8(dm, 0x1d9, 1);
+    }
     st16(dm, 0xdc, (uint16_t)(rnd() % 4 == 0 ? r16() : rnd() % 2 ? 0xffff : 0xe000 + rnd() % 0x2000));
     st16(dm, 0xde, (uint16_t)r16());
     for (k = 0; k < 4; k++) {
@@ -126,7 +153,7 @@ static void vtx_state(uint32_t *dm, unsigned *lit_out)
     if (rnd() % 4 == 0)
         for (k = 0; k < 3; k++)
             st16(dm, 0x1d0 + 2 * k, (uint16_t)r16());
-    lit = rnd() % 2;
+    lit = f2L->no_lit ? 0 : rnd() % 2;
     nl = 1 + rnd() % 7;
     st32(dm, 0x1ec, (rnd() % 2 ? 1u : 0) | (rnd() % 2 ? 4u : 0) | (rnd() % 2 ? 0x200000u : 0) | (rnd() % 2 ? 0x10000u : 0) | (lit ? 0x20000u : 0) | (rnd() % 2 ? 0x40000u : 0) | (rnd() % 2 ? 0x80000u : 0));
     st8(dm, 0x1dd, (uint8_t)(24 * nl));
@@ -185,6 +212,8 @@ static int rj_dma(struct rctx *x, uint32_t *r)
     uint32_t *dm = x->u.dmem;
     unsigned mem = r[20], len = (r[19] & 0xfff) + 1, i;
     uint32_t dram = r[24] & 0xffffff;
+    if (getenv("REJ_DBGDMA"))
+        fprintf(stderr, "dma mem %x len %u dram %x (s4 %x t8 %x pc %x)\n", mem, len, dram, r[20], r[24], x->pc);
     if (mem & 0x1000)
         return 0;
     len = (len + 7) & ~7u;
@@ -228,8 +257,8 @@ static unsigned vtx_cases(unsigned n, unsigned *fails_out)
         w1 = va;
         if (rnd() % 8 == 0)
             w1 |= (rnd() % 16) << 24;                /* a segment address */
-        st32(a, 0x950, w0);
-        st32(a, 0x954, w1);
+        st32(a, f2L->in_end - 168, w0);
+        st32(a, f2L->in_end - 164, w1);
         va = (w1 & 0xffffff) + hle_dm32(&(struct hle_task){ .dmem = a }, 0xf8 + ((w1 >> 22) & 0x3c));
         for (k = 0; k < nv + 1; k++)
             rand_vin(va + 16 * k, wild);
@@ -260,22 +289,22 @@ static unsigned vtx_cases(unsigned n, unsigned *fails_out)
             x.r[24] = w1;
             x.r[27] = (uint32_t)-160;
             x.r[26] = 0x100000;
-            x.r[23] = 0x9f8 + 8 * (i % 8);
+            x.r[23] = 0xb00 + 8 * (i % 8);
             if (sigsetjmp(jb, 1)) {
                 printf("vtx %u: timeout\n", i);
                 continue;
             }
             ualarm(200000, 0);
-            rej_vtx_gen(&x, 0x4a4);
+            rej_vtx_gen(&x, REJ_VTX_ENTRY);
             ualarm(0, 0);
             for (d = 0; d < 0x1000; d++)
-                if (d < 0x950 && !dead(d) && ((uint8_t *)a)[d ^ 3] != ((uint8_t *)b)[d ^ 3])
+                if (d < f2L->in && !dead(d) && ((uint8_t *)a)[d ^ 3] != ((uint8_t *)b)[d ^ 3])
                     diff++;
-            if (x.pc != 0x194 || diff) {
+            if (x.pc != REJ_HEAD || diff) {
                 if (fails++ < 6) {
                     printf("vtx %u: n=%u first=%u geom=%08x lit=%u pc %x, %u DMEM bytes differ:", i, nv, v0, hle_dm32(&T, 0x1ec), lit, x.pc, diff);
-                    for (d = 0, k = 0; d < 0x9f8 && k < 12; d++)
-                        if (d < 0x950 && !dead(d) && ((uint8_t *)a)[d ^ 3] != ((uint8_t *)b)[d ^ 3]) {
+                    for (d = 0, k = 0; d < f2L->in && k < 12; d++)
+                        if (d < f2L->in && !dead(d) && ((uint8_t *)a)[d ^ 3] != ((uint8_t *)b)[d ^ 3]) {
                             printf(" %03x:%02x/%02x", d, ((uint8_t *)a)[d ^ 3], ((uint8_t *)b)[d ^ 3]);
                             k++;
                         }
@@ -333,15 +362,23 @@ static void tri_state(uint32_t *dm)
         struct rej_vtx r;
         rand_rec(&r, wild);
         if (rnd() % 6 == 0 && k)                    /* near-duplicates: shared positions, so that edges are horizontal / vertical / zero */
-            r.sx = (int16_t)(hle_dm16(&(struct hle_task){ .dmem = dm }, 0x410 + 20 * (k - 1) + 8)), r.sy = (int16_t)(hle_dm16(&(struct hle_task){ .dmem = dm }, 0x410 + 20 * (k - 1) + 10));
+            r.sx = (int16_t)(hle_dm16(&(struct hle_task){ .dmem = dm }, hle_dm16(&(struct hle_task){ .dmem = dm }, F2_VTAB + 2 * (k - 1)) + 8)), r.sy = (int16_t)(hle_dm16(&(struct hle_task){ .dmem = dm }, hle_dm16(&(struct hle_task){ .dmem = dm }, F2_VTAB + 2 * (k - 1)) + 10));
         if (k < 64)
-            rej_st_vtx(&(struct hle_task){ .dmem = dm }, 0x410 + 20 * k, &r);
+            rej_st_vtx(&(struct hle_task){ .dmem = dm }, hle_dm16(&(struct hle_task){ .dmem = dm }, F2_VTAB + 2 * k), &r);
     }
     g = (rnd() % 2 ? 1u : 0) | (rnd() % 2 ? 4u : 0) | (rnd() % 2 ? 0x200000u : 0) | (rnd() % 4 == 0 ? 0x200u : 0) | (rnd() % 4 == 0 ? 0x400u : 0) | (rnd() % 2 ? 0x10000u : 0) | (rnd() % 2 ? 0x20000u : 0) | (rnd() % 4 == 0 ? 0x800000u : 0);
     st32(dm, 0x1ec, g);
     st8(dm, 0x1e6, (uint8_t)(rnd() % 64));
     st8(dm, 0x1e7, (uint8_t)(rnd() % 2 ? 2 : 0));
 }
+
+#if REJ_FIFO
+static const char *after_none(void *ctx, uint32_t *s7) { (void)ctx; (void)s7; return NULL; }
+#define AFTER after_none
+#else
+static const char *after_ring(void *ctx, uint32_t *s7) { return rej_flush((struct hle_task *)ctx, s7); }
+#define AFTER after_ring
+#endif
 
 static unsigned tri_cases(unsigned n, unsigned *fails_out)
 {
@@ -364,20 +401,23 @@ static unsigned tri_cases(unsigned n, unsigned *fails_out)
         w1 = two ? (quad ? idx[0] << 16 | idx[2] << 8 | idx[3] : idx[3] << 16 | idx[4] << 8 | idx[5]) : 0;
         if (rnd() % 16 == 0)
             w0 ^= (rnd() & 0xff) << (8 * (rnd() % 3));             /* (a vertex number out of range: both sides decline or draw as the microcode does) */
-        st32(a, 0x950, w0);
-        st32(a, 0x954, w1);
-        s7 = 0x9f8 + 8 * (rnd() % 164);
+        st32(a, f2L->in_end - 168, w0);
+        st32(a, f2L->in_end - 164, w1);
+#if REJ_FIFO
+        s7 = 0xb00 + 8 * (rnd() % 80);
+#else
+        s7 = 0xb00 + 8 * (rnd() % 130);
         if (rnd() % 6 == 0)
             s7 = 0xf10 - 8 * (rnd() % 20);
+#endif
         memcpy(b, a, sizeof a);
-        f2L = &l_lay;
         T.dmem = b;
         for (j = 0; j < 16; j++)
             creg[j] = 0;
         creg[8] = creg[9] = creg[10] = s7;
         memcpy(ci, creg, sizeof ci);
         s7m = s7;
-        why = rej_cmd_tri(&T, &s7m, w0, w1, two);
+        why = rej_cmd_tri(&T, &s7m, w0, w1, two, AFTER, &T);
         memcpy(cm, creg, sizeof cm);
         if (why) {
             skipped_decl++;
@@ -390,6 +430,7 @@ static unsigned tri_cases(unsigned n, unsigned *fails_out)
         {
             struct rctx x;
             unsigned diff = 0, d;
+            uint32_t lo = s7m < s7 ? (uint32_t)f2L->ring_start : s7;
             memcpy(creg, ci, sizeof ci);
             oracle_regs(&x, a);
             x.r[25] = w0;
@@ -402,22 +443,33 @@ static unsigned tri_cases(unsigned n, unsigned *fails_out)
                 continue;
             }
             ualarm(200000, 0);
-            rej_tri_gen(&x, two ? 0x750 : 0x74c);
+            rej_tri_gen(&x, two ? REJ_TRI2_ENTRY : REJ_TRI1_ENTRY);
+#if REJ_FIFO
+            while (x.pc != REJ_HEAD && (x.r[31] & 0xfff) == REJ_RESUME && (x.pc == REJ_FLUSH_A || x.pc == REJ_FLUSH_B)) {     /* the flush between the triangles: nothing to do, the second triangle goes on */
+                x.r[31] = 0;
+                rej_tri_gen(&x, REJ_RESUME);
+            }
+#endif
             ualarm(0, 0);
             for (d = 0; d < 0x1000; d++) {
-                int in_ring = d >= f2L->ring_start && d < 0xfc0;
-                uint32_t lo = s7m < s7 ? f2L->ring_start : s7, hi = s7m;
-                if (in_ring ? (d >= lo && d < hi + 0 && ((uint8_t *)a)[d ^ 3] != ((uint8_t *)b)[d ^ 3]) : (d < 0x950 && ((uint8_t *)a)[d ^ 3] != ((uint8_t *)b)[d ^ 3]))
+#if REJ_FIFO
+                int in_out = d >= s7 && d < s7m;
+#else
+                int in_out = d >= f2L->ring_start && d < 0xfc0 && d >= lo && d < s7m;
+#endif
+                if ((in_out || d < f2L->in) && !dead(d) && ((uint8_t *)a)[d ^ 3] != ((uint8_t *)b)[d ^ 3])
                     diff++;
             }
-            if (x.pc != 0x194 || diff || x.r[23] != s7m || creg[8] != cm[8] || creg[9] != cm[9] || creg[10] != cm[10]) {
+            if ((x.pc != REJ_HEAD && !REJ_FIFO) || diff || x.r[23] != s7m || (!REJ_FIFO && (creg[8] != cm[8] || creg[9] != cm[9] || creg[10] != cm[10]))) {
                 if (fails++ < 6) {
-                    printf("tri %u: %s w0 %08x w1 %08x geom %08x s7 %x -> %x / %x pc %x DPC %x %x %x / %x %x %x, %u DMEM bytes differ:", i, two ? (quad ? "QUAD" : "TRI2") : "TRI1", w0, w1, hle_dm32(&T, 0x1ec), s7, x.r[23], s7m, x.pc,
-                           creg[8], creg[9], creg[10], cm[8], cm[9], cm[10], diff);
+                    printf("tri %u: %s w0 %08x w1 %08x geom %08x s7 %x -> %x / %x pc %x, %u DMEM bytes differ:", i, two ? (quad ? "QUAD" : "TRI2") : "TRI1", w0, w1, hle_dm32(&T, 0x1ec), s7, x.r[23], s7m, x.pc, diff);
                     for (d = 0, k = 0; d < 0xfc0 && k < 12; d++) {
-                        int in_ring = d >= f2L->ring_start;
-                        uint32_t lo = s7m < s7 ? f2L->ring_start : s7;
-                        if ((in_ring ? (d >= lo && d < s7m) : d < 0x950) && ((uint8_t *)a)[d ^ 3] != ((uint8_t *)b)[d ^ 3]) {
+#if REJ_FIFO
+                        int in_out = d >= s7 && d < s7m;
+#else
+                        int in_out = d >= f2L->ring_start && d >= lo && d < s7m;
+#endif
+                        if ((in_out || d < f2L->in) && !dead(d) && ((uint8_t *)a)[d ^ 3] != ((uint8_t *)b)[d ^ 3]) {
                             printf(" %03x:%02x/%02x", d, ((uint8_t *)a)[d ^ 3], ((uint8_t *)b)[d ^ 3]);
                             k++;
                         }
@@ -428,10 +480,10 @@ static unsigned tri_cases(unsigned n, unsigned *fails_out)
                         for (q = 0; q < (two ? 6u : 3u); q++) {
                             unsigned idxv = q < 3 ? (w0 >> (16 - 8 * q)) & 0xff : (w1 >> (16 - 8 * (q - 3))) & 0xff;
                             struct rej_vtx rv;
-                            rej_ld_vtx(&T, hle_dm16(&T, 0x380 + idxv), &rv);
+                            rej_ld_vtx(&T, hle_dm16(&T, F2_VTAB + idxv), &rv);
                             printf("  v%u(idx %u): col %02x%02x%02x%02x st %d %d xy %d %d z %d.%04x rw %d.%04x\n", q, idxv / 2, rv.col[0], rv.col[1], rv.col[2], rv.col[3], rv.s, rv.t, rv.sx, rv.sy, rv.szi, rv.szf, rv.rwi, rv.rwf);
                         }
-                        printf("  tex %02x tile %02x T %04x\n", hle_dm8(&T, 0x1e7), hle_dm8(&T, 0x1e6), hle_dm16(&T, 0x402 + hle_dm8(&T, 0x1ee)));
+                        printf("  tex %02x tile %02x T %04x\n", hle_dm8(&T, 0x1e7), hle_dm8(&T, 0x1e6), hle_dm16(&T, F2_CULLTAB + hle_dm8(&T, 0x1ee)));
                         printf("  oracle out:");
                         for (q = 0; q < 160 && s7 + q < 0xfc0; q++)
                             printf(" %02x", ((uint8_t *)a)[(s7 + q) ^ 3]);
@@ -450,6 +502,78 @@ static unsigned tri_cases(unsigned n, unsigned *fails_out)
     return ran;
 }
 
+/* the NEON forms against the scalar ones, on states the DMEM-level cases do not reach (any matrix, any viewport, any counts; the triangles of any records) */
+static unsigned form_cases(unsigned n, unsigned *fails_out)
+{
+    unsigned i, fails = 0;
+    for (i = 0; i < n; i++) {
+        struct fx2_vctx c;
+        static struct fx2_vin in[66];
+        static struct rej_vtx o1[66], o2[66];
+        unsigned nv = 1 + rnd() % 64, k, j, flags = rnd() % 4;
+        memset(&c, 0, sizeof c);
+        for (k = 0; k < 4; k++)
+            for (j = 0; j < 4; j++) {
+                c.mp.i[k][j] = (int16_t)(r16() / (1 << (rnd() % 8)));
+                c.mp.f[k][j] = (uint16_t)r16();
+            }
+        for (k = 0; k < 4; k++) {
+            c.scale[k] = r16();
+            c.trans[k] = r16();
+        }
+        c.pn = (uint16_t)rnd();
+        c.ratio = (uint16_t)(rnd() % 8);
+        c.sc_s = (uint16_t)rnd();
+        c.sc_t = (uint16_t)rnd();
+        c.c31_3 = 0x7f00;
+        c.c31_7 = 0x7fff;
+        c.mode = (rnd() % 2 ? FX2_FOG : 0) | (rnd() % 3 ? 0 : FX2_TEXGEN);
+        for (k = 0; k < nv; k++) {
+            in[k].x = r16(); in[k].y = r16(); in[k].z = r16(); in[k].s = r16(); in[k].t = r16();
+            for (j = 0; j < 4; j++)
+                in[k].c[j] = (uint8_t)rnd();
+        }
+        rej_vtx_xform(&c, flags, in, nv, o1);
+        rej_vtx_xform_scalar(&c, flags, in, nv, o2);
+        if (memcmp(o1, o2, nv * sizeof o1[0]) && fails++ < 5)
+            printf("form case %u: %u vertices differ between the forms\n", i, nv);
+        {
+            struct rej_tri_in ti;
+            struct rej_vtx rv[3];
+            uint32_t c1[0xb0 / 4], c2[0xb0 / 4];
+            unsigned l1 = 0, l2 = 0, r1, r2;
+            memset(&ti, 0, sizeof ti);
+            for (k = 0; k < 3; k++) {
+                rand_rec(&rv[k], rnd() % 4 == 0);
+                ti.v[k] = &rv[k];
+            }
+            ti.g = (rnd() % 2 ? 1u : 0) | (rnd() % 2 ? 4u : 0) | (rnd() % 2 ? 0x200000u : 0);
+            ti.tex = rnd() % 2 ? 2 : 0;
+            ti.tile = rnd() % 64;
+            ti.pass_neg = rnd() % 4 != 0;
+            ti.pass_pos = rnd() % 4 != 0;
+            ti.rcp_k = 8;
+            ti.dx_k = 0x4000;
+            ti.flags = rnd() % 4;
+            memset(c1, 0x5a, sizeof c1);
+            memset(c2, 0x5a, sizeof c2);
+            r1 = rej_tri_setup(&ti, c1, &l1);
+            r2 = rej_tri_setup_scalar(&ti, c2, &l2);
+            if ((r1 != r2 || (r1 == FX2_TRI_DRAW && (l1 != l2 || memcmp(c1, c2, l1)))) && fails++ < 5)
+                printf("form case %u: the triangle differs between the forms\n", i);
+        }
+    }
+    printf("test_rej: %u NEON-vs-scalar cases, %u failures%s\n", n, fails,
+#ifdef __aarch64__
+           " (NEON forms)"
+#else
+           " (no NEON on this host: both are the scalar form)"
+#endif
+    );
+    *fails_out += fails;
+    return n;
+}
+
 int main(int argc, char **argv)
 {
     unsigned n = argc > 1 ? (unsigned)atoi(argv[1]) : 2000, fails = 0;
@@ -463,13 +587,17 @@ int main(int argc, char **argv)
     fclose(fp);
     if (argc > 2)
         rs += (uint64_t)strtoull(argv[2], NULL, 0) * 0x2545f4914f6cdd1dull;
+    f2L = &l_lay;
     memset(&sa, 0, sizeof sa);
     sa.sa_handler = on_alarm;
     sigaction(SIGALRM, &sa, NULL);
     if (!getenv("REJ_ONLY") || !strcmp(getenv("REJ_ONLY"), "vtx"))
-        vtx_cases(n, &fails);
+        f2L = &l_lay;
+    vtx_cases(n, &fails);
     if (!getenv("REJ_ONLY") || !strcmp(getenv("REJ_ONLY"), "tri"))
         tri_cases(n, &fails);
+    if (!getenv("REJ_ONLY") || !strcmp(getenv("REJ_ONLY"), "form"))
+        form_cases(n * 4, &fails);
     printf("test_rej: %u failures; oracles:%s%s\n", fails,
 #ifdef REJ_VTX_ORACLE
            " vtx",

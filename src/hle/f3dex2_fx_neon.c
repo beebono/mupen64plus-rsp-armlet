@@ -14,6 +14,7 @@
 #include "f3dex2_fx.h"
 #include "f3dex2_fx_int.h"
 #include "hle_fx.h"
+#include "rej_fx.h"
 
 /* test builds only (-DFX2_NEON_MUTATE=n): a deliberate error in the NEON form only, to show that tools/hle/test_fx2.c catches it */
 #ifdef FX2_NEON_MUTATE
@@ -509,6 +510,137 @@ void fx2_mtx_mul(const struct fx2_mtx *a, const struct fx2_mtx *b, struct fx2_mt
         }
     }
     *out = r;
+}
+
+
+/* ---- the Rej vertex pipeline (rej_fx.h) --------------------------------------------------------------------------------------------------------------------------------------------- */
+/* The stages of fx2_vtx_xform with the differences of rej_project (rej_fx.c): the clip bits only of x y z against the guard band (a vertex outside it is marked: 0x7fff * 0x7fff goes into the
+ * viewport accumulator), no limit on the integer part of 1/w, the optional rounding of y (REJ_YQ), the record of 20 bytes without clip coordinates. The results are those of rej_vtx_xform_scalar. */
+void rej_vtx_xform(const struct fx2_vctx *c, unsigned flags, const struct fx2_vin *in, unsigned n, struct rej_vtx *out)
+{
+    unsigned i;
+    int16x4_t Pi[REJ_NSLOTS];
+    uint16x4_t Pf[REJ_NSLOTS];
+    int16_t Qi3[REJ_NSLOTS], T_i[REJ_NSLOTS], R1i[REJ_NSLOTS];
+    uint16_t Qf3[REJ_NSLOTS], T_f[REJ_NSLOTS], R1f[REJ_NSLOTS];
+    uint32_t R0[REJ_NSLOTS];
+    unsigned marked[REJ_NSLOTS];
+
+    if (use_scalar()) {
+        rej_vtx_xform_scalar(c, flags, in, n, out);
+        return;
+    }
+    for (i = 0; i < n; i++) {
+        const struct fx2_vin *vi = &in[i];
+        int16_t v[3] = { vi->x, vi->y, vi->z };
+        int32x4_t X2;
+        int16_t P3i;
+        uint16_t P3f, P2f;
+        hle_acc prod;
+        int32_t W2;
+        vtx_P4(&c->mp, v, &Pi[i], &Pf[i]);
+        P3i = vget_lane_s16(Pi[i], 3);
+        P3f = vget_lane_u16(Pf[i], 3);
+        P2f = vget_lane_u16(Pf[i], 2);
+        prod = (hle_acc)P3f * c->ratio + (((hle_acc)P3i * c->ratio) << 16);
+        W2 = (int32_t)((uint32_t)(uint16_t)hle_sclamp(prod) << 16 | (uint16_t)prod);
+        X2 = vsetq_lane_s32((int32_t)((uint32_t)(uint16_t)P3i << 16 | P2f), pack32(Pi[i], Pf[i]), 3);
+        marked[i] = (clipbits4(X2, vdupq_n_s32(W2)) & 0x0707) != 0;
+        {
+            v64 Q = mulk4(Pi[i], Pf[i], c->pn);
+            int64_t q3 = vgetq_lane_s64(Q.hi, 1);             /* lane 3 only */
+            Qi3[i] = hle_sclamp(q3);
+            Qf3[i] = hle_uclamp(q3);
+            R0[i] = hle_rcp32((int32_t)((uint32_t)(uint16_t)Qi3[i] << 16 | Qf3[i]));
+        }
+    }
+#pragma GCC unroll 4
+    for (i = 0; i < n; i++) {                           /* T = Q3 * R0; E = 4 - 4 T */
+        int16_t R0i = (int16_t)(R0[i] >> 16);
+        uint16_t R0f = (uint16_t)R0[i];
+        hle_acc tt = hle_wrap48(((hle_acc)Qf3[i] * R0f >> 16) + (hle_acc)Qi3[i] * R0f + (hle_acc)Qf3[i] * R0i);
+        hle_acc fu = hle_wrap48(tt + (((hle_acc)Qi3[i] * R0i) << 16));
+        T_i[i] = hle_sclamp(fu);
+        T_f[i] = hle_uclamp(tt);
+    }
+#pragma GCC unroll 4
+    for (i = 0; i < n; i++) {                           /* R1 = E * R0 */
+        int16_t R0i = (int16_t)(R0[i] >> 16), Ei;
+        uint16_t R0f = (uint16_t)R0[i], Ef;
+        hle_acc e1 = ((hle_acc)4 << 16) - (hle_acc)4 * T_f[i];
+        hle_acc e2 = e1 - (((hle_acc)4 * T_i[i]) << 16);
+        hle_acc t2, f2;
+        Ei = hle_sclamp(e2);
+        Ef = hle_uclamp(e1);
+        t2 = hle_wrap48(((hle_acc)Ef * R0f >> 16) + (hle_acc)Ei * R0f + (hle_acc)Ef * R0i);
+        f2 = hle_wrap48(t2 + (((hle_acc)Ei * R0i) << 16));
+        R1i[i] = hle_sclamp(f2);
+        R1f[i] = hle_uclamp(t2);
+    }
+    {
+        int16_t sc[4] = { c->scale[0], c->scale[1], c->scale[2], c->scale[3] };
+        int32_t base32[4] = { c->trans[0], (flags & REJ_YQ) ? hle_clamp16((int32_t)c->trans[1] + 2) : c->trans[1], c->trans[2], c->trans[3] + (int32_t)c->c31_3 };
+        v64 b = v64_shl16_s32(vld1q_s32(base32)), bm = b;
+        int16x4_t scale = vld1_s16(sc);
+        {
+            int64_t K = ((int64_t)0x7fff * c->c31_7) << 16;       /* the marked vertices' term */
+            bm.lo = vaddq_s64(b.lo, vdupq_n_s64(K));
+            bm.hi = vaddq_s64(b.hi, vdupq_n_s64(K));
+        }
+        for (i = 0; i < n; i++) {                       /* stage 5 and the rest of the record */
+            const struct fx2_vin *vi = &in[i];
+            struct rej_vtx *o = &out[i];
+            int16_t s = vi->s, tt = vi->t, fog;
+            uint8_t col[4] = { vi->c[0], vi->c[1], vi->c[2], vi->c[3] };
+            v64 t, fl, n2, t1, f1;
+            int16x4_t ndci, nni, Si;
+            uint16x4_t ndcf, nni_f, Sf;
+            int32x4_t pf;
+            if ((c->mode & FX2_LIGHTING)) {
+                int8_t nb[3] = { (int8_t)vi->c[0], (int8_t)vi->c[1], (int8_t)vi->c[2] };
+                uint8_t lo[4];
+                int16_t sg[2] = { 0, 0 };
+                lit_vertex(c, (i & 1) ? 0 : 1, nb, vi->c[3], lo, (c->mode & FX2_TEXGEN) != 0, sg);
+                memcpy(col, lo, 4);
+                if (c->mode & FX2_TEXGEN) {
+                    s = sg[0];
+                    tt = sg[1];
+                }
+            }
+            mm4s(v64_zero(), Pi[i], Pf[i], R1i[i], R1f[i], &t, &fl);
+            ndci = sclamp4(fl);
+            ndcf = uclamp4(t);
+            n2 = mulk4(ndci, ndcf, c->pn);
+            {
+                int16x4_t ni = sclamp4(n2);
+                uint16x4_t nf = uclamp4(n2);
+                nni = vcopy_lane_s16(ni, 3, ni, 2);
+                nni_f = vcopy_lane_u16(nf, 3, nf, 2);
+            }
+            pf = vmulq_s32(vreinterpretq_s32_u32(vmovl_u16(nni_f)), vmovl_s16(scale));
+            t1 = v64_wrap48(v64_addw_s32(marked[i] ? bm : b, pf));
+            f1 = v64_wrap48(v64_add(t1, v64_shl16_s32(vmull_s16(nni, scale))));
+            Si = sclamp4(f1);
+            Sf = uclamp4(t1);
+            o->sx = vget_lane_s16(Si, 0);
+            o->sy = (flags & REJ_YQ) ? (int16_t)(vget_lane_s16(Si, 1) & ~3) : vget_lane_s16(Si, 1);
+            o->szi = vget_lane_s16(Si, 2);
+            o->szf = vget_lane_u16(Sf, 2);
+            o->rwi = R1i[i];
+            o->rwf = R1f[i];
+            fog = vget_lane_s16(Si, 3);
+            if (c->mode & FX2_FOG)
+                col[3] = (uint8_t)(fog < 0x7f00 ? 0x7f00 : fog);
+            memcpy(o->col, col, 4);
+            o->s = (int16_t)(((int32_t)s * c->sc_s) >> 16);
+            o->t = (int16_t)(((int32_t)tt * c->sc_t) >> 16);
+        }
+    }
+}
+
+int rej_tri_setup(const struct rej_tri_in *in, uint32_t *cmd, unsigned *len)
+{
+    return rej_tri_setup_core(in, cmd, len, !use_scalar());
 }
 
 #endif
