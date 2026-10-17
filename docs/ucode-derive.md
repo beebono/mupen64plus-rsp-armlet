@@ -385,3 +385,20 @@ the fix, ran natively and differed (207 of 209).
 ## With the native Rej builds (merge of ucode-probe and native-rej, 2026-10-17)
 
 `derive_refs.c` is generated from the hand-written tables that `tools/derive_lib.py` reads back (`hle_f3dex2.c`, `hle_f3dex2_dialects.c`, `hle_s2dex2.c`, `f3dex.c`, `f3d.c` and their headers). The F3DEX 2.03 build and the Rej builds (F3DLX.Rej, F3DFLX.Rej, F3DEX.Rej, the XBUS F3DLX.Rej) are registered in `hle_rej.c`, which the tool does not read, and they are different microcodes (20-byte vertex records, other triangle code; hot list rows 8, 17, 19, 21, 24): as references they would not align with an unknown text above the family threshold. They are therefore **not** in the references; the regenerated `derive_refs.c` after the merge is byte-identical (`--check` passes). The static ids of `hle_rej.c` and the dynamic registry cannot collide: a derived build is found after the registered ones and `armlet_hle_find` takes the first, so a registered text is never re-derived.
+
+## S2DEX records that run (2026-10-17)
+
+The S2DEX 2.x front-end is data-driven now ([ucode-s2dex2.md](ucode-s2dex2.md) section 8): the record has two more pc fields, `ldtx_spr` and `ldtx_rect` (`PC_FIELDS` of `derive_f2.py`, `PC_LDTX_SPR` / `PC_LDTX_RECT` in `derive_int.h`; 0 for the
+other builds), the pcs where `G_OBJ_LOADTXTR` goes on for LDTX_SPRITE and LDTX_RECT. They are mapped like any handler pc that is not a jump table target: the instruction of the reference at that pc, found in the unknown text (`map_pc` / `conv_pc`,
+a unique run of six instruction shapes or the aligned word; the overlay A code lies at text + IMEM pc - 0x80 like the resident code). The leave-one-out validation compares 77 fields now; the three S2DEX records come out equal to the hand-written ones
+field by field (2.08 from the 2.06 reference: `ldtx` 0x6e0 -> 0x6e8 ...; 2.06 from 2.08: NEAR, one reference-only word; 2.05 [Safe] from 2.06: EXACT, `out_bytes` 792 and `pipe_sync` from the knob / pattern evidence as before). `dbuild_make` builds a
+runnable S2DEX build from such a record (the dialect commands run on the primary reference's `ext_cmd`; a handler the primary reference marks absent, 0 or 0xffff, may be absent; no reject mask is needed without `G_TRI1`), and the ucode cache stores the
+dialect table (format 2).
+
+**The data image of a loaded text.** `tools/ucode_dump_shim.c` writes a `L...` dump's `.data` as 0x180 zero bytes followed by RDRAM from the `G_RDPHALF_1` address; that address is the image of DMEM **0** (`G_LOAD_UCODE` fills DMEM 0x180 .. from
+address + 0x180), so the dump's bytes sit 0x180 too high. `derive_lib.Ucode`, `derive_c_check.c` and `armlet-probe-replay` drop the first 0x180 bytes of a loaded dump (the shim is unchanged, so the existing dumps stay valid). Before, the jump table
+and the overlay descriptors of the Kirby 64 and Ocarina of Time S2DEX references were read from the wrong bytes; the derivations came out right anyway (the pcs were mapped by alignment, not by the table), and nothing else in the leave-one-out,
+the 54 texts or the 786 pairs changed (`derive_c_check.sh`: 0 differences). At run time the probe reads the image the same way (`armlet_probe_note_load`).
+
+Results (`tools/derive_check.sh`, `tools/derive_c_check.sh`, `armlet-probe-replay --sync`): leave-one-out no unexplained mismatch, 77 fields; C against Python 54 texts / 28 leave-one-out / 6 mutants / 786 pairs, 0 differences;
+`derive_refs.c` regenerated, 14 F3DEX2-family references in step with the tables.
