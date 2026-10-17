@@ -6,6 +6,7 @@ the family, the verdict, the aligned and residual counts, the primary reference 
         --texts   every distinct text of the dumps against all the references (family auto)         [default]
         --loo     every registered build derived without its own record (the leave-one-out of derive_build.py validate)
         --stems   every (text, data) pair of the dumps (about 800; slow: the Python tool takes ~0.3 s each)
+        --shortcut every (text, data) pair, C only: the production shortcut (the other families are skipped when F3DEX2 explains the text) gives the result of computing all of them
         --mutants Donkey Kong 64's text with the deliberate errors of derive_build.py mutate: C and Python must agree on each and each must change the result
         --bin     the compiled derive_c_check (default: build it into a temp dir with cc)
 Exit status 1 when anything differs."""
@@ -142,7 +143,7 @@ def main():
         tmp = tempfile.mkdtemp(prefix="derive_c_check_")
         exe = build_tool(tmp)
     reg = B.Registry(args[0])
-    mode = "loo" if "--loo" in flags else "stems" if "--stems" in flags else "mutants" if "--mutants" in flags else "texts"
+    mode = "shortcut" if "--shortcut" in flags else "loo" if "--loo" in flags else "stems" if "--stems" in flags else "mutants" if "--mutants" in flags else "texts"
     bad = 0
     n = 0
     if mode in ("texts", "stems"):
@@ -157,6 +158,18 @@ def main():
             cl = by_stem.get(u.stem, "MISSING")
             bad += compare(pl, cl, u.stem[:20])
             n += 1
+    elif mode == "shortcut":
+        ucs = [u for u in reg.C.items if not u.loaded]
+        paths = [u.path for u in ucs]
+        full = run_c(exe, paths, [])
+        fast = subprocess.check_output([exe] + paths).decode().strip().split("\n")
+        for a, b in zip(full, fast):
+            n += 1
+            if a != b:
+                bad += 1
+                print("DIFF shortcut %s" % a.split(" ")[0][:20])
+        if len(full) != len(fast):
+            bad += 1
     elif mode == "mutants":
         n, bad = mutants(reg, exe)
     else:

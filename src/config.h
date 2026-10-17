@@ -14,5 +14,6 @@
 m64p_error armlet_config_startup(m64p_dynlib_handle core);
 void armlet_config_load(struct armlet_config *cfg);   /* section values, then the ARMLET_* environment overrides */
 void armlet_config_shutdown(void);
+const char *armlet_config_user_path(void);           /* the core's user config directory (the cache of the probe lives there); "" when unknown */
 
 #endif

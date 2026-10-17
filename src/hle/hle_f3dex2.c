@@ -55,6 +55,7 @@ static const struct f2_layout l_lay_std = {
     .light_raw = 0x1f8, .light_base = 0x200, .tg = 0x1d0, .light_scale = 0x1c6, .light_scale_zex = 0x1ce, .vtab = 0x380, .clipmask = 0x3cc, .culltab = 0x3c2, .in = 0x920, .in_end = 0x9c8,
     .jump_table = 0x36e, .mw_max = 14, .geom_def = F2_GEOM_DEF, .movemem_tab = 0x2f0, .moveword_adj = 10238, .desc_light = 0x410, .desc_clip = 0x418, .clip_planes = 0x180, .clip_masks = 0x3f8, .out_bytes = 344, .out_toggle = 0x208 };
 const struct f2_layout *f2L = &l_lay_std;
+const struct f2_layout *f3dex2_std_layout(void) { return &l_lay_std; }     /* (dbuild.c: the layout of a build whose table has none) */
 
 /* ---- the RDP buffer --------------------------------------------------------------------------------------------------------------------------------------------------------- */
 /* The flush of the RDP buffer (the microcode's code after every command that writes to it): the buffer holds s7 - (s6 - 344) bytes; the FIFO pointer in DMEM says where in RDRAM they

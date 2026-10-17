@@ -405,26 +405,60 @@ static int img_resolve(const struct dimg *im, unsigned pc, int cur_seg, int *out
 struct blk {
     int i, j, k;
 };
-struct kpos {
-    int64_t key;
-    int pos;
+
+/* the positions of every key in b, ascending, grouped by key (b2j of difflib; a nop's key is negative and unique, it can match nothing and is left out) */
+struct csr {
+    int nkeys;
+    int *start;                 /* nkeys + 1 */
+    int *pos;
 };
 
-static int kpos_cmp(const void *a, const void *b)
+static void csr_free(struct csr *c)
 {
-    const struct kpos *x = (const struct kpos *)a, *y = (const struct kpos *)b;
-    if (x->key != y->key)
-        return x->key < y->key ? -1 : 1;
-    return x->pos - y->pos;
+    free(c->start);
+    free(c->pos);
+    memset(c, 0, sizeof(*c));
 }
+
+static int csr_build(struct csr *c, int nkeys, const int64_t *b, int lb)
+{
+    int i, k;
+    c->nkeys = nkeys;
+    c->start = (int *)calloc((size_t)nkeys + 2, sizeof(int));
+    c->pos = (int *)malloc((size_t)(lb + 1) * sizeof(int));
+    if (!c->start || !c->pos) {
+        csr_free(c);
+        return -1;
+    }
+    for (i = 0; i < lb; i++)
+        if (b[i] >= 0 && b[i] < nkeys)
+            c->start[b[i] + 1]++;
+    for (k = 0; k < nkeys; k++)
+        c->start[k + 1] += c->start[k];
+    {
+        int *fill = (int *)malloc((size_t)nkeys * sizeof(int));
+        if (!fill) {
+            csr_free(c);
+            return -1;
+        }
+        memcpy(fill, c->start, (size_t)nkeys * sizeof(int));
+        for (i = 0; i < lb; i++)
+            if (b[i] >= 0 && b[i] < nkeys)
+                c->pos[fill[b[i]]++] = i;
+        free(fill);
+    }
+    return 0;
+}
+
+struct dctx {
+    int nkeys;
+    struct csr b2j;             /* of the unknown's keys: the b2j of the first pass of every pairing */
+};
 
 struct sm {
     const int64_t *a;
-    int la;
-    int lb;
-    struct kpos *b2j;           /* sorted by (key, position) */
-    int nb2j;
-    int *rlo, *rhi;             /* per a index: the range in b2j of its key */
+    int la, lb;
+    const struct csr *b2j;
     int *prev, *cur;            /* j2len arrays (lb + 1) */
     int *tprev, *tcur;          /* touched lists */
 };
@@ -433,13 +467,27 @@ static void sm_longest(struct sm *m, int alo, int ahi, int blo, int bhi, int *bi
 {
     int besti = alo, bestj = blo, bestsize = 0, i, nprev = 0, ncur, t;
     int *prev = m->prev, *cur = m->cur, *tprev = m->tprev, *tcur = m->tcur;
+    const struct csr *c = m->b2j;
     for (i = alo; i < ahi; i++) {
-        int r;
+        int r = 0, re = 0, key = (int)m->a[i];
         ncur = 0;
-        for (r = m->rlo[i]; r < m->rhi[i]; r++) {
-            int j = m->b2j[r].pos, k;
-            if (j < blo)
-                continue;
+        if (key >= 0 && key < c->nkeys) {
+            r = c->start[key];
+            re = c->start[key + 1];
+            if (blo > 0 && r < re && c->pos[r] < blo) {                 /* the first position at or after blo */
+                int lo = r, hi = re;
+                while (lo < hi) {
+                    int mid = (lo + hi) / 2;
+                    if (c->pos[mid] < blo)
+                        lo = mid + 1;
+                    else
+                        hi = mid;
+                }
+                r = lo;
+            }
+        }
+        for (; r < re; r++) {
+            int j = c->pos[r], k;
             if (j >= bhi)
                 break;
             k = (j > 0 ? prev[j - 1] : 0) + 1;
@@ -473,12 +521,12 @@ static int blk_cmp(const void *a, const void *b)
     return x->k - y->k;
 }
 
-/* the matching blocks with the adjacent ones merged (and no sentinel); returns the count, blocks malloc'ed */
-static int sm_blocks(const int64_t *a, int la, const int64_t *b, int lb, struct blk **out)
+/* the matching blocks with the adjacent ones merged (and no sentinel); returns the count, blocks malloc'ed. b2j is of b (the caller built it) */
+static int sm_blocks(const int64_t *a, int la, int lb, const struct csr *b2j, struct blk **out)
 {
     struct sm m;
     int (*stack)[4];
-    int sp = 0, n = 0, i, nb = 0, nm = 0;
+    int sp = 0, n = 0, i, nm = 0;
     struct blk *blocks, *merged;
     int ok = 1;
 
@@ -486,9 +534,7 @@ static int sm_blocks(const int64_t *a, int la, const int64_t *b, int lb, struct 
     m.a = a;
     m.la = la;
     m.lb = lb;
-    m.b2j = (struct kpos *)malloc((size_t)(lb + 1) * sizeof(struct kpos));
-    m.rlo = (int *)malloc((size_t)(la + 1) * sizeof(int));
-    m.rhi = (int *)malloc((size_t)(la + 1) * sizeof(int));
+    m.b2j = b2j;
     m.prev = (int *)calloc((size_t)lb + 2, sizeof(int));
     m.cur = (int *)calloc((size_t)lb + 2, sizeof(int));
     m.tprev = (int *)malloc((size_t)(lb + 2) * sizeof(int));
@@ -496,35 +542,9 @@ static int sm_blocks(const int64_t *a, int la, const int64_t *b, int lb, struct 
     stack = (int (*)[4])malloc((size_t)(la + lb + 4) * sizeof(*stack));
     blocks = (struct blk *)malloc((size_t)(la + lb + 4) * sizeof(struct blk));
     merged = (struct blk *)malloc((size_t)(la + lb + 4) * sizeof(struct blk));
-    if (!m.b2j || !m.rlo || !m.rhi || !m.prev || !m.cur || !m.tprev || !m.tcur || !stack || !blocks || !merged)
+    if (!m.prev || !m.cur || !m.tprev || !m.tcur || !stack || !blocks || !merged)
         ok = 0;
     if (ok) {
-        /* b2j: positions of every key (a nop's key is negative and unique: it can match nothing, so it is left out) */
-        for (i = 0; i < lb; i++)
-            if (b[i] >= 0) {
-                m.b2j[m.nb2j].key = b[i];
-                m.b2j[m.nb2j].pos = i;
-                m.nb2j++;
-            }
-        qsort(m.b2j, (size_t)m.nb2j, sizeof(struct kpos), kpos_cmp);
-        for (i = 0; i < la; i++) {
-            int lo = 0, hi = m.nb2j, l2;
-            m.rlo[i] = m.rhi[i] = 0;
-            if (a[i] < 0)
-                continue;
-            while (lo < hi) {
-                int mid = (lo + hi) / 2;
-                if (m.b2j[mid].key < a[i])
-                    lo = mid + 1;
-                else
-                    hi = mid;
-            }
-            l2 = lo;
-            while (l2 < m.nb2j && m.b2j[l2].key == a[i])
-                l2++;
-            m.rlo[i] = lo;
-            m.rhi[i] = l2;
-        }
         stack[sp][0] = 0; stack[sp][1] = la; stack[sp][2] = 0; stack[sp][3] = lb; sp++;
         while (sp) {
             int alo, ahi, blo, bhi, bi, bj, bk;
@@ -560,19 +580,18 @@ static int sm_blocks(const int64_t *a, int la, const int64_t *b, int lb, struct 
                 merged[nm].i = i1; merged[nm].j = j1; merged[nm].k = k1; nm++;
             }
         }
-        nb = nm;
     }
-    free(m.b2j); free(m.rlo); free(m.rhi); free(m.prev); free(m.cur); free(m.tprev); free(m.tcur); free(stack); free(blocks);
+    free(m.prev); free(m.cur); free(m.tprev); free(m.tcur); free(stack); free(blocks);
     if (!ok) {
         free(merged);
         return -1;
     }
     *out = merged;
-    return nb;
+    return nm;
 }
 
-/* L.align_keys: pr[i] = j for the aligned words (a = the reference, b = the unknown), -1 elsewhere */
-static int align_keys(const int64_t *ka, int la, const int64_t *kb, int lb, int minblock, int *pr)
+/* L.align_keys: pr[i] = j for the aligned words (a = the reference, b = the unknown), -1 elsewhere. first_b2j: the b2j of the whole of kb, shared by the pairings of one derivation */
+static int align_keys(const int64_t *ka, int la, const int64_t *kb, int lb, int minblock, int nkeys, const struct csr *first_b2j, int *pr)
 {
     int *ia = (int *)malloc((size_t)(la + 1) * sizeof(int)), *ib = (int *)malloc((size_t)(lb + 1) * sizeof(int));
     int64_t *a = (int64_t *)malloc((size_t)(la + 1) * sizeof(int64_t)), *b = (int64_t *)malloc((size_t)(lb + 1) * sizeof(int64_t));
@@ -592,12 +611,23 @@ static int align_keys(const int64_t *ka, int la, const int64_t *kb, int lb, int 
         ib[i] = i;
     while (na && nbb) {
         struct blk *bl = NULL;
+        struct csr local;
+        const struct csr *c = first_b2j;
         int nb, got = 0, q, k;
         for (i = 0; i < na; i++)
             a[i] = ka[ia[i]];
         for (i = 0; i < nbb; i++)
             b[i] = kb[ib[i]];
-        nb = sm_blocks(a, na, b, nbb, &bl);
+        memset(&local, 0, sizeof(local));
+        if (!first) {
+            if (csr_build(&local, nkeys, b, nbb)) {
+                rc = -1;
+                break;
+            }
+            c = &local;
+        }
+        nb = sm_blocks(a, na, nbb, c, &bl);
+        csr_free(&local);
         if (nb < 0) {
             rc = -1;
             break;
@@ -761,7 +791,7 @@ static int hunk_bounds(const struct pairing *P, const struct dimg *U, int j0, in
     return 1;
 }
 
-static int pairing_make(struct pairing *P, int ref, const struct dimg *U)
+static int pairing_make(struct pairing *P, int ref, const struct dimg *U, int nkeys, const struct csr *ub2j)
 {
     const struct derive_ref *dr = &derive_refs[ref];
     const struct dimg *R;
@@ -795,7 +825,7 @@ static int pairing_make(struct pairing *P, int ref, const struct dimg *U)
         ka[i] = R->cls[i] == C_NOP ? -2 * (int64_t)(i + 1) : (int64_t)R->sid[i];
     for (j = 0; j < U->n; j++)
         kb[j] = U->cls[j] == C_NOP ? -2 * (int64_t)(j + 1) - 1 : (int64_t)U->sid[j];
-    if (align_keys(ka, R->n, kb, U->n, 3, P->pr))
+    if (align_keys(ka, R->n, kb, U->n, 3, nkeys, ub2j, P->pr))
         goto fail;
     for (j = 0; j < U->n; j++)
         P->pu[j] = -1;
@@ -1447,7 +1477,7 @@ static int refs_of(const struct derive_in *in, int fam, int *list)
     return n;
 }
 
-static int derive_f2(const struct derive_in *in, struct dimg *U, const int *refs, int nrefs, struct f2work *out)
+static int derive_f2(const struct derive_in *in, struct dimg *U, const struct dctx *X, const int *refs, int nrefs, struct f2work *out)
 {
     struct pairing *prs = (struct pairing *)calloc((size_t)nrefs, sizeof(struct pairing));
     struct pairing *order[DERIVE_MAXREFS];
@@ -1467,7 +1497,7 @@ static int derive_f2(const struct derive_in *in, struct dimg *U, const int *refs
     if (!prs)
         return -1;
     for (i = 0; i < nrefs; i++) {
-        if (pairing_make(&prs[i], refs[i], U))
+        if (pairing_make(&prs[i], refs[i], U, X->nkeys, &X->b2j))
             goto done;
         ndone++;
         order[i] = &prs[i];
@@ -1857,7 +1887,7 @@ done:
 }
 
 /* ---- the variant families (derive_f1d.derive_variant): only what decides the family and the verdict --------------------------------------------------------------------- */
-static int derive_variant(const struct derive_in *in, struct dimg *U, const int *refs, int nrefs, struct f2work *out)
+static int derive_variant(const struct derive_in *in, struct dimg *U, const struct dctx *X, const int *refs, int nrefs, struct f2work *out)
 {
     struct pairing *prs = (struct pairing *)calloc((size_t)nrefs, sizeof(struct pairing));
     struct pairing *order[DERIVE_MAXREFS];
@@ -1869,7 +1899,7 @@ static int derive_variant(const struct derive_in *in, struct dimg *U, const int 
     if (!prs)
         return -1;
     for (i = 0; i < nrefs; i++) {
-        if (pairing_make(&prs[i], refs[i], U))
+        if (pairing_make(&prs[i], refs[i], U, X->nkeys, &X->b2j))
             goto done;
         ndone++;
         order[i] = &prs[i];
@@ -2005,6 +2035,7 @@ static int round2(unsigned num, unsigned den)
 int derive_run(const struct derive_in *in, struct derive_result *out)
 {
     struct dimg U;
+    struct dctx X;
     struct unkmap um;
     int fam, best = -1, rc = 0, refs[DERIVE_MAXREFS], nrefs;
     struct f2work *w[3];
@@ -2028,10 +2059,30 @@ int derive_run(const struct derive_in *in, struct derive_result *out)
         free(um.h); free(um.id);
         return -1;
     }
+    memset(&X, 0, sizeof(X));
+    X.nkeys = (int)derive_n_shapes + (int)um.next + 1;
+    {
+        int64_t *kb = (int64_t *)malloc((size_t)(U.n + 1) * sizeof(int64_t));
+        int j;
+        if (!kb) {
+            img_free(&U);
+            free(um.h); free(um.id);
+            return -1;
+        }
+        for (j = 0; j < U.n; j++)
+            kb[j] = U.cls[j] == C_NOP ? -2 * (int64_t)(j + 1) - 1 : (int64_t)U.sid[j];
+        if (csr_build(&X.b2j, X.nkeys, kb, U.n)) {
+            free(kb);
+            img_free(&U);
+            free(um.h); free(um.id);
+            return -1;
+        }
+        free(kb);
+    }
     for (fam = 0; fam < 3; fam++) {
         if (in->family != DERIVE_AUTO && in->family != fam)
             continue;
-        if (!in->full && in->family == DERIVE_AUTO && fam > 0 && w[0] && w[0]->aligned_num * 100u >= 95u * (unsigned)U.n && w[0]->verdict != DERIVE_NONE)
+        if (!in->full && in->family == DERIVE_AUTO && fam > 0 && w[0] && w[0]->aligned_num * 100u >= 60u * (unsigned)U.n && w[0]->verdict != DERIVE_NONE)
             continue;                                   /* the F3DEX2 family explains the text; the other families cannot beat it */
         nrefs = refs_of(in, fam, refs);
         if (!nrefs)
@@ -2043,9 +2094,9 @@ int derive_run(const struct derive_in *in, struct derive_result *out)
         }
         U.active = ~0u;
         if (fam == DERIVE_F3DEX2)
-            rc = derive_f2(in, &U, refs, nrefs, w[fam]);
+            rc = derive_f2(in, &U, &X, refs, nrefs, w[fam]);
         else
-            rc = derive_variant(in, &U, refs, nrefs, w[fam]);
+            rc = derive_variant(in, &U, &X, refs, nrefs, w[fam]);
         if (rc)
             break;
         udone[fam] = 1;
@@ -2098,6 +2149,7 @@ int derive_run(const struct derive_in *in, struct derive_result *out)
     for (fam = 0; fam < 3; fam++)
         free(w[fam]);
     (void)nfam;
+    csr_free(&X.b2j);
     img_free(&U);
     free(um.h);
     free(um.id);

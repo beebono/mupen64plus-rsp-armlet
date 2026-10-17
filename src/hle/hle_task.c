@@ -12,6 +12,7 @@
 #include "gfx_ucode.h"
 #include "hle.h"
 #include "hle_internal.h"
+#include "probe.h"
 
 #ifdef ARMLET_NATIVE
 #include "native/native.h"
@@ -167,6 +168,7 @@ void armlet_hle_init(struct armlet_ctx *c)
     const char *e;
     (void)c;
     memset(&H, 0, sizeof(H));
+    armlet_probe_init(c);
     H.poison_seed = 0x2545f491u;
     if ((e = getenv("ARMLET_DMEM_POISON")) && *e) {
         poison_parse(e);
@@ -193,6 +195,7 @@ void armlet_hle_init(struct armlet_ctx *c)
 
 void armlet_hle_reset(void)
 {
+    armlet_probe_reset();
     armlet_hle_core_reset();
     if (H.recording) {
         prsp_native_record(0);

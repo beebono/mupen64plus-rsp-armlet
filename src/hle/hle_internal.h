@@ -104,6 +104,26 @@ int armlet_hle_harness(const struct hle_ucode *uc, const PrspNativeSnap *before,
  * result: for snapshots that were changed after the capture (tools/rsp2c/fuzz_snaps.py) */
 int armlet_hle_harness_jit(const struct hle_ucode *uc, const PrspNativeSnap *before, void (*jit)(void *), void *jctx, char *out, size_t outsz, struct hle_harness_result *res);
 
+/* The probe (probe.c): a pair run of a build's front-end and the JIT on a canned task, compared. */
+struct hle_probe_opts {
+    int tol;                                    /* near-match tolerance for the RDP stream: shade coefficients only, 2 levels / 1/128 level per pixel (hle_core.c, stream_tolerable) */
+    /* a DMEM byte (address addr, native value na, JIT value nb) that the tolerance admits: nonzero; dmem is the native end state */
+    int (*dmem_ok)(const struct hle_ucode *u, const uint32_t *dmem, unsigned addr, unsigned na, unsigned nb);
+};
+enum { HLE_PROBE_EQUAL = 0, HLE_PROBE_DECLINED, HLE_PROBE_MISMATCH, HLE_PROBE_INCONCLUSIVE, HLE_PROBE_TOLERANT };
+struct hle_probe_out {
+    int status;                                 /* HLE_PROBE_*: equal; the front-end declined (why); differences (report); the JIT did not finish; equal within the tolerance */
+    const char *why;
+    char report[2048];
+    unsigned n_diff, n_events;
+    double native_us, jit_us;
+    uint64_t stream_len;
+};
+int armlet_hle_probe_pair(const struct hle_ucode *uc, const PrspNativeSnap *before, const struct hle_probe_opts *opts, uint32_t win_lo, uint32_t win_hi, uint32_t win2_lo, uint32_t win2_hi,
+                          struct hle_probe_out *out);   /* the RDRAM compared: the output ring [win_lo, win_hi) and the matrix stack [win2_lo, win2_hi) */
+int armlet_hle_register_dynamic(const struct hle_ucode *u);     /* a build derived at run time: found by armlet_hle_find and armlet_hle_next after the registered ones */
+void armlet_hle_unregister_dynamic(const struct hle_ucode *u);
+
 double armlet_hle_dmabench(const struct hle_ucode *uc, const PrspNativeSnap *before, unsigned iters, unsigned bytes, int record);
 double armlet_hle_bench(const struct hle_ucode *uc, const PrspNativeSnap *before, unsigned iters);   /* ns per front-end run, or -1 when it declines */
 
