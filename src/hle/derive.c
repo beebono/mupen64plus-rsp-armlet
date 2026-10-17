@@ -2158,7 +2158,7 @@ int derive_run(const struct derive_in *in, struct derive_result *out)
 }
 
 /* ---- field names ----------------------------------------------------------------------------------------------------------------------------------------------------- */
-static const char *const pc_names[DERIVE_NPC] = { "head", "copy", "sync", "segcopy", "ef", "ed", "tri1", "tri2", "vtx", "mtx", "geom", "enddl", "half2", "modvtx", "culldl", "branchz", "mvp", "tri4" };
+static const char *const pc_names[DERIVE_NPC] = { "head", "copy", "sync", "segcopy", "ef", "ed", "tri1", "tri2", "vtx", "mtx", "geom", "enddl", "half2", "modvtx", "culldl", "branchz", "mvp", "tri4", "ldtx_spr", "ldtx_rect" };
 static const char *const f2pcs_names[DERIVE_NF2PCS] = { "dl", "texture", "texrect", "half1", "moveword", "popmtx", "movemem", "omh", "oml" };
 static const char *const lay_names[DERIVE_NLAY] = { "mv", "p", "mvp", "persp_norm", "viewport_scale", "viewport_trans", "clip_ratio", "const31", "const30", "fog_mul", "fog_ofs", "texture",
     "tex_scale_s", "tex_scale_t", "geom", "mvp_valid", "lights_valid", "lights_size", "light_raw", "light_base", "tg", "light_scale", "light_scale_zex", "vtab", "clipmask", "culltab", "in",

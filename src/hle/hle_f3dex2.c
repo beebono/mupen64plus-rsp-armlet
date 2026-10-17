@@ -20,6 +20,7 @@
 #include "armlet.h"
 #include "gfx_ucode.h"
 #include "hle_f3dex2_int.h"
+#include "probe.h"
 
 #ifdef ARMLET_NATIVE
 
@@ -541,28 +542,47 @@ static void load_note(const struct hle_task *t)
 }
 
 /* The build a G_LOAD_UCODE loads: the one whose text is the 3912 bytes the command copies to IMEM 0x80 (f3dex2_build.load_key, the FNV of exactly those bytes: the overlay code behind them is not part of
- * the identity, as in the ucode id of a task). Only a build of this front-end (f3dex2_fam: the F3DEX2 dialects and S2DEX 2.x) can be taken over. The last two texts are remembered (compared with memcmp
- * against RDRAM, as gfx_ucode.c does), so that a task that loads the same text every time does not hash it every time. NULL: not a registered build. */
+ * the identity, as in the ucode id of a task). Only a build of this front-end (f3dex2_fam: the F3DEX2 dialects and S2DEX 2.x) can be taken over. The keys of the last two texts are remembered (compared with
+ * memcmp against RDRAM, as gfx_ucode.c does), so that a task that loads the same text every time does not hash it every time. NULL: not a registered (or latched) build. */
 static const struct hle_ucode *loaded_build(const struct hle_task *t, uint32_t src)
 {
-    static struct { uint8_t text[0xf48]; uint32_t addr; const struct hle_ucode *u; int used; } slot[2];
+    static struct { uint8_t text[0xf48]; uint32_t addr; uint64_t key; int used; } slot[2];
     static unsigned next;
     const struct hle_ucode *u = NULL;
-    uint64_t key;
+    uint64_t key = 0;
     unsigned i;
     for (i = 0; i < 2; i++)
-        if (slot[i].used && slot[i].addr == src && !memcmp(slot[i].text, t->rdram + src, 0xf48))
-            return slot[i].u;
-    key = armlet_ucode_hash(t->rdram, src, 0xf48);
-    while ((u = armlet_hle_next(u)) != NULL)
-        if (u->fam == &f3dex2_fam && ((const struct f3dex2_build *)u->fam_data)->load_key == MUT(250, key, ~key))
+        if (slot[i].used && slot[i].addr == src && !memcmp(slot[i].text, t->rdram + src, 0xf48)) {
+            key = slot[i].key;
             break;
-    i = next++ & 1;
-    memcpy(slot[i].text, t->rdram + src, 0xf48);
-    slot[i].addr = src;
-    slot[i].u = u;
-    slot[i].used = 1;
-    return u;
+        }
+    if (i == 2) {
+        key = armlet_ucode_hash(t->rdram, src, 0xf48);
+        i = next++ & 1;
+        memcpy(slot[i].text, t->rdram + src, 0xf48);
+        slot[i].addr = src;
+        slot[i].key = key;
+        slot[i].used = 1;
+    }
+    key = MUT(250, key, ~key);
+    /* a build the probe latched for this text (its id is the load key: probe.c) comes first, then the registered ones (the lookup is not memoised: a latch can come between two loads) */
+    u = armlet_hle_find(key);
+    if (u && u->fam == &f3dex2_fam && ((const struct f3dex2_build *)u->fam_data)->load_key == key) {
+        static const struct hle_ucode *logged[8];
+        static unsigned nlogged;
+        unsigned q;
+        for (q = 0; q < nlogged && logged[q] != u; q++)
+            ;
+        if (q == nlogged && nlogged < 8 && !strncmp(u->name, "derived", 7)) {   /* (once per latched build: the tests look for it) */
+            logged[nlogged++] = u;
+            armlet_log(M64MSG_INFO, "hle: G_LOAD_UCODE of %016llx runs the latched build \"%s\"", (unsigned long long)key, u->name);
+        }
+        return u;
+    }
+    for (u = armlet_hle_next(NULL); u; u = armlet_hle_next(u))
+        if (u->fam == &f3dex2_fam && ((const struct f3dex2_build *)u->fam_data)->load_key == key)
+            return u;
+    return NULL;
 }
 
 static int run_loop(struct f3 *f, int *handover)
@@ -620,6 +640,7 @@ static int run_loop(struct f3 *f, int *handover)
             f->nb = b;
             if (memcmp(t->rdram + src, t->rdram + cur, 0xf48)) {
                 const struct hle_ucode *nu = loaded_build(t, src);
+                armlet_probe_note_load(src, hle_dm32(t, 0xd8), 0x180 + (w0 & 0xfff) + 1);     /* (the probe derives a loaded text too; the G_RDPHALF_1 address is the image of DMEM 0: docs/design.md, "The probe and the ucode cache") */
                 if (f->trace)
                     fprintf(stderr, "  G_LOAD_UCODE text %08x key %016llx data %08x -> %s\n", src, (unsigned long long)armlet_ucode_hash(t->rdram, src, 0xf48), hle_dm32(t, 0xd8), nu ? nu->name : "(not registered)");
                 if (!nu || (t->ctx && !armlet_gfx_allowed(&t->ctx->cfg, nu->id))) {

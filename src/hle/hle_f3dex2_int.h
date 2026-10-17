@@ -36,6 +36,7 @@ struct f3dex2_build {
     uint64_t load_key;              /* FNV-1a-64 (armlet_ucode_hash) of the first 0xf48 bytes of the text: the part a G_LOAD_UCODE copies to IMEM, which names the build that command loads (loaded_build) */
     uint32_t reject_mask;           /* a triangle whose three clip-flag words have a common bit in this mask is rejected */
     uint16_t tri4;                  /* G_TRI4 (F3DEXBG): four triangles in one command, or 0 */
+    uint16_t ldtx_spr, ldtx_rect;   /* S2DEX: where G_OBJ_LOADTXTR's continuation table (DMEM 0x202) sends the LDTX_SPRITE and LDTX_RECT commands (the sprite and rectangle code behind the overlay's stubs), or 0 */
     const struct f2_layout *lay;    /* the DMEM layout when it is not the standard one */
     const struct f2_pcs *pcs;       /* the handlers of the commands below 0x170 when they are not at the standard pcs (S2DEX), or NULL */
     const uint16_t (*ext)[2];       /* dialect commands: { handler pc, kind (>= K_EXT) } pairs ending in { 0xffff, 0 }, run by ext_cmd */

@@ -142,5 +142,23 @@ and falls into it): **every handler that writes to the output buffer is followed
 as before). Nothing else changes in the semantics: the overlay code A (sprites, rectangles; resident in the text image) and B (backgrounds; text + 0x1198) are word for word the 2.06 code with the branch offsets and jump targets relocated by the 0xc / 0x10 bytes the inserted instructions move the resident code.
 
 The front-end parameterises that instead of copying: `f2_layout.out_bytes` (792) and `f2_layout.pipe_sync`; `after_emit`, which every handler's emission ends in (the generic RDP copies, `G_SETSCISSOR`, `G_RDPHALF_2`, `G_OBJ_LOADTXTR`, the rectangle, and the flush callback the background routines call after every strip), writes the sync first. A command that
-writes nothing (a sprite outside the scissor, a texture object whose bits are loaded, a background with nothing visible) jumps to the loop head and has none (mutations 308, 309). The kernels are the 2.08 ones, untouched; the continuation pcs of `G_OBJ_LOADTXTR` are derived from the build's own table (the handler of `G_OBJ_SPRITE` / `G_OBJ_RECTANGLE` + 0x20).
+writes nothing (a sprite outside the scissor, a texture object whose bits are loaded, a background with nothing visible) jumps to the loop head and has none (mutations 308, 309). The kernels are the 2.08 ones, untouched; the continuation pcs of `G_OBJ_LOADTXTR` are fields of the build record (`ldtx_spr` / `ldtx_rect`: 0x6f0 / 0xbb0 here, section 8).
 `G_OBJ_SPRITE` and the rotated forms still decline. What Ocarina of Time draws: `G_BG_COPY` only.
+
+## 8. The build record (data-driven, 2026-10-17)
+
+The front-end (`s2_ext_cmd` in `hle_s2dex2.c`) does not test which S2DEX build it runs; everything that differs between the three texts is a field of the `f3dex2_build` record (and its `f2_layout`), so a record that the derivation
+(`derive.c`, [ucode-derive.md](ucode-derive.md)) produces for an unknown S2DEX 2.x text runs with the same code (`dbuild_make`; the probe tries it on its S2DEX cases, [design.md](design.md#the-probe-and-the-ucode-cache)):
+
+| what differs | field | 2.08 (Worms) | 2.06 (Kirby 64, Resident Evil 2) | 2.05 [Safe] (Ocarina of Time) |
+|---|---|---|---|---|
+| loop head, handlers below 0x170 | `head`, `pcs` (`f2_pcs`), `copy` .. `enddl` | 0x1ac | 0x1a4 | 0x1a4 |
+| the dialect commands (the handler table) | `ext` | `G_OBJ_LOADTXTR` 0x558, `G_BG_1CYC` 0xb7c, `G_BG_COPY` 0x210, rectangle 0xb88, sprite 0x6c8, `G_SETSCISSOR` 0x1d8 | the same 8 lower from 0x184 on | as 2.06, behind 0x650 0xc .. 0x10 higher |
+| where `G_OBJ_LOADTXTR`'s continuation table (DMEM 0x202) sends LDTX_SPRITE / LDTX_RECT | `ldtx_spr`, `ldtx_rect` | 0x6e8, 0xba8 | 0x6e0, 0xba0 | 0x6f0, 0xbb0 |
+| output buffer size, sync in front of the flush check | `lay.out_bytes`, `lay.pipe_sync` | 800, 0 | 800, 0 | 792, 1 |
+| overlay descriptors (A, B) | `lay.desc_clip`, `lay.desc_light` | 0x314, 0x31c | the same | the same |
+| the text's identity for `G_LOAD_UCODE` | `load_key` | | | |
+
+Not in the record: the DMEM addresses of the S2DEX state (the object buffers 0x3a8 / 0x3b0 / 0x3c0, the render-mode words and tables, the scissor fields, the sync state at 0x2ae, the loaded-texture words at 0x2b0, the `G_OBJ_MOVEMEM` table
+at 0x388) and the vector constants. They are the same in the three texts, and the kernels (`s2dex2_rect.c`, `s2dex2_bg.c`) are written against them; an unknown text that moved one has instructions whose operand is no field of the record,
+so its derivation says NONE and no build is made. The `ldtx_*` fields were `handler + 0x20` of the sprite and rectangle commands before; they are the same values in the three builds, now derived from the text (the aligned instruction) rather than assumed.

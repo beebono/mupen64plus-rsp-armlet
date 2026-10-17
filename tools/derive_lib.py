@@ -191,6 +191,8 @@ class Ucode:
         self.data = open(base + ".data", "rb").read()
         self.ext = open(base + ".ext", "rb").read() if os.path.exists(base + ".ext") else b""
         self.loaded = self.stem.startswith("L")
+        if self.loaded:     # (ucode_dump_shim.c writes 0x180 zero bytes, then RDRAM from the G_RDPHALF_1 address: that address is the image of DMEM 0 (G_LOAD_UCODE fills DMEM 0x180 .. from it + 0x180))
+            self.data = self.data[0x180:]
         self.w = isa.words(self.text_b)
         self.h4k = fnv(self.text_b, 0x1000)
         self.hf80 = fnv(self.text_b, 0xf80)

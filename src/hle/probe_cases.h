@@ -9,7 +9,9 @@
 
 #include <stdint.h>
 
-enum { PROBE_CLIP, PROBE_ZNEG, PROBE_TRI, PROBE_MIX, PROBE_WILD, PROBE_MISC, PROBE_LIT, PROBE_MTX, PROBE_REJ, PROBE_BZ, PROBE_NCASES };
+enum { PROBE_CLIP, PROBE_ZNEG, PROBE_TRI, PROBE_MIX, PROBE_WILD, PROBE_MISC, PROBE_LIT, PROBE_MTX, PROBE_REJ, PROBE_BZ,
+       PROBE_S2RECT, PROBE_S2LDTX, PROBE_S2BG, PROBE_S2COPY, PROBE_S2MISC,     /* S2DEX 2.x */
+       PROBE_NCASES };
 extern const char *const probe_case_names[PROBE_NCASES];
 
 enum { PROBE_MEM = 0x1200 };            /* the bytes behind the base address a case uses */

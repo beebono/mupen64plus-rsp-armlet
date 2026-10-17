@@ -239,6 +239,11 @@ void ucache_from_rec(struct ucache_entry *e, const struct derive_rec *r)
     e->zex = r->zex;
     e->bz_z = r->bz_z;
     e->load_key = r->load_key;
+    e->n_ext = r->n_ext < DERIVE_MAXEXT ? r->n_ext : DERIVE_MAXEXT;
+    for (unsigned k = 0; k < e->n_ext; k++) {
+        e->ext[k][0] = (uint16_t)r->ext[k].pc;
+        e->ext[k][1] = r->ext[k].kind;
+    }
 }
 
 void ucache_to_rec(const struct ucache_entry *e, struct derive_rec *r)
@@ -254,4 +259,9 @@ void ucache_to_rec(const struct ucache_entry *e, struct derive_rec *r)
     r->zex = e->zex;
     r->bz_z = e->bz_z;
     r->load_key = e->load_key;
+    r->n_ext = (uint8_t)(e->n_ext < DERIVE_MAXEXT ? e->n_ext : DERIVE_MAXEXT);
+    for (unsigned k = 0; k < r->n_ext; k++) {
+        r->ext[k].pc = e->ext[k][0];
+        r->ext[k].kind = (uint8_t)e->ext[k][1];
+    }
 }

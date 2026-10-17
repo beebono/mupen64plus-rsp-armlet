@@ -4,7 +4,8 @@
  * A case is a block of RDRAM bytes (the display list at offset 0, matrices, vertices, lights, a viewport behind it) for an F3DEX2-family microcode. Everything is made from a seed with a
  * small PRNG of its own (the same bytes on every host). The cases of mksyn_ex2.py are ported without the ones that need another microcode (`load`, `s2`) or that the front-ends decline on
  * purpose (`bad`); `rej` and `bz` are new: they aim at the two things the derivation cannot be sure of from the text alone, the reject mask and the source of G_BRANCH_Z (docs/ucode-derive.md),
- * with inputs that make the two candidate values give different RDP streams every time.
+ * with inputs that make the two candidate values give different RDP streams every time. The S2DEX 2.x cases (s2rect, s2ldtx, s2bg, s2copy, s2misc) are mksyn_ex2.py's `s2` stage split by
+ * command group, without the commands the front-end declines (LDTX_SPRITE, LDTX_RECT_R, the sprite commands) and the undefined opcodes.
  *
  * Copyright (C) 2026 arMLEt contributors
  * SPDX-License-Identifier: GPL-2.0-or-later
@@ -560,7 +561,204 @@ static void bz_case(struct probe_case *c, struct dl *d, struct rng *r, unsigned 
     cmd(d, 0xdf000000, 0);
 }
 
-const char *const probe_case_names[PROBE_NCASES] = { "clip", "zneg", "tri", "mix", "wild", "misc", "lit", "mtx", "rej", "bz" };
+/* ---- S2DEX 2.x (after mksyn_ex2.py's s2 stage) ------------------------------------------------------------------------------------------------------------------------------ */
+static void be32(uint8_t *p, uint32_t v) { be16(p, v >> 16); be16(p + 2, v & 0xffff); }
+
+static void put_dl(struct probe_case *c, unsigned off, const struct dl *d)
+{
+    uint8_t t[8 * 16];
+    unsigned k;
+    for (k = 0; k < d->n && k < 16; k++) {
+        be32(t + 8 * k, d->w[k][0]);
+        be32(t + 8 * k + 4, d->w[k][1]);
+    }
+    put(c, off, t, 8 * k);
+}
+
+/* a uObjSprite (24 bytes): tame: on the screen, with the scales a game uses */
+static void s2_sprite(struct rng *r, uint8_t *o, int tame)
+{
+    static const unsigned sc[4] = { 0x400, 0x400, 0x200, 0x800 };
+    static const unsigned fl[5] = { 0, 0, 1, 0x10, 0x11 };
+    unsigned a;
+    be16(o, (unsigned)(tame ? randint(r, 0, 1200) : randint(r, -40, 1300)) & 0xffff);
+    a = randrange(r, 5);
+    be16(o + 2, tame || a < 4 ? CHOICE(r, sc) : 0x100 + randrange(r, 0xf00));
+    be16(o + 4, (8 + randrange(r, 56)) * 32);
+    be16(o + 6, 0);
+    be16(o + 8, (unsigned)(tame ? randint(r, 0, 900) : randint(r, -40, 980)) & 0xffff);
+    a = randrange(r, 5);
+    be16(o + 10, tame || a < 4 ? CHOICE(r, sc) : 0x100 + randrange(r, 0xf00));
+    be16(o + 12, (8 + randrange(r, 56)) * 32);
+    be16(o + 14, 0);
+    be16(o + 16, randrange(r, 40));
+    be16(o + 18, randrange(r, 0x200));
+    o[20] = (uint8_t)randrange(r, 5);
+    o[21] = (uint8_t)randrange(r, 4);
+    o[22] = (uint8_t)randrange(r, 16);
+    o[23] = (uint8_t)(tame ? 0 : CHOICE(r, fl));
+}
+
+/* a uObjBg (40 bytes); copy: G_BG_COPY's (unscaled) */
+static void s2_bg(struct rng *r, uint8_t *o, int copy)
+{
+    static const unsigned iws[3] = { 0x500, 0x2c0, 0x500 }, ihs[2] = { 0xc0, 0x88 }, fxs[3] = { 0xa4, 0x1c, 0 }, fys[3] = { 0x2e8, 0x2d8, 0 }, fmt[4] = { 0xfff4, 0xfff4, 0x0033, 0 };
+    unsigned iw = randrange(r, 4) < 3 ? CHOICE(r, iws) : 0x40 + randrange(r, 0xbc0), ih = randrange(r, 3) < 2 ? CHOICE(r, ihs) : 0x20 + randrange(r, 0x360), sc;
+    sc = !copy ? 0x400 : CHOICE(r, ((const unsigned[]){ 0x400, 0x400, 0x53, 0x200 }));
+    be16(o, randrange(r, 4) < 3 ? 0 : randrange(r, 0x400));
+    be16(o + 2, iw);
+    be16(o + 4, randrange(r, 4) < 3 ? CHOICE(r, fxs) : randrange(r, 0x300));
+    be16(o + 6, randrange(r, 3) < 2 ? iw : 0x40 + randrange(r, 0xbc0));
+    be16(o + 8, randrange(r, 3) < 2 ? 0 : randrange(r, 0x300));
+    be16(o + 10, ih);
+    be16(o + 12, randrange(r, 4) < 3 ? CHOICE(r, fys) : randrange(r, 0x300));
+    be16(o + 14, randrange(r, 3) < 2 ? ih : 0x20 + randrange(r, 0x360));
+    be32(o + 16, 0x00100000 + randrange(r, 0x4000) * 8);
+    be16(o + 20, CHOICE(r, fmt));
+    o[22] = (uint8_t)randrange(r, 5);
+    o[23] = (uint8_t)randrange(r, 4);
+    o[24] = (uint8_t)randrange(r, 2);
+    o[25] = (uint8_t)randrange(r, 16);
+    o[26] = 0;
+    o[27] = (uint8_t)(randrange(r, 3) == 2);
+    be16(o + 28, sc);
+    be16(o + 30, sc);
+    be32(o + 32, randrange(r, 3) == 0 ? 0 : randrange(r, 2) ? 0x17 : randrange(r, 0x100));
+    be16(o + 36, randrange(r, 0x100));
+    be16(o + 38, randrange(r, 0x200));
+}
+
+/* a uObjTxtr (24 bytes): a texture load (the load bits and their mask: a mask that covers the bits makes the second load of the object a no-op) */
+static void s2_txtr(struct rng *r, uint8_t *o)
+{
+    uint32_t sid = randrange(r, 1u << 16);
+    unsigned m = randrange(r, 3);
+    be32(o, 0x00001033);
+    be32(o + 4, 0x00100000 + randrange(r, 0x1000) * 8);
+    be32(o + 8, randrange(r, 0x7ff));
+    be32(o + 12, 0x100);
+    be32(o + 16, sid);
+    be32(o + 20, m == 0 ? 0 : m == 1 ? sid : 0xffffffff);
+}
+
+/* the start of every S2DEX case: segment 0 = 0, the scissor (its fields clip the sprites and backgrounds), the render mode */
+static void s2_head(struct dl *d, struct rng *r)
+{
+    cmd(d, 0xdb060000, 0);
+    cmd(d, 0xed000000 | (randrange(r, 40) << 14) | randrange(r, 40) * 4, ((1280 - randrange(r, 40) * 4) << 12) | (960 - randrange(r, 40) * 4));
+    cmd(d, 0x0b000000 | CHOICE(r, ((const unsigned[]){ 0, 8 })), randrange(r, 1u << 8) | (randrange(r, 4) << 3) | (randrange(r, 8) << 4));
+}
+
+static void s2_case(struct probe_case *c, struct dl *d, struct rng *r, unsigned kind)
+{
+    uint8_t o[48];
+    unsigned off = 0x400, n, i;
+    s2_head(d, r);
+    switch (kind) {
+    case PROBE_S2RECT:                                  /* sprite rectangles, tame and wild, with render mode changes between them */
+        n = 3 + randrange(r, 6);
+        for (i = 0; i < n; i++, off += 0x40) {
+            s2_sprite(r, o, randrange(r, 2));
+            put(c, off, o, 24);
+            cmd(d, 0x01000000, c->base + off);
+            if (randrange(r, 3) == 0)
+                cmd(d, 0x0b000000 | CHOICE(r, ((const unsigned[]){ 0, 8 })), randrange(r, 1u << 8) | (randrange(r, 4) << 3) | (randrange(r, 8) << 4));
+        }
+        break;
+    case PROBE_S2LDTX:                                  /* texture loads (an object loaded twice: the second writes nothing) and LDTX_RECT: the continuation pcs of G_OBJ_LOADTXTR */
+        n = 2 + randrange(r, 4);
+        for (i = 0; i < n; i++, off += 0x40) {
+            s2_txtr(r, o);
+            if (i == 0 || randrange(r, 2)) {
+                s2_sprite(r, o + 24, randrange(r, 5) < 3);
+                put(c, off, o, 48);
+                cmd(d, 0x0700002f | CHOICE(r, ((const unsigned[]){ 0, 0x100 })), c->base + off);
+            } else {
+                put(c, off, o, 24);
+                cmd(d, 0x05000017, c->base + off);
+                if (randrange(r, 5) < 2)
+                    cmd(d, 0x05000017, c->base + off);
+            }
+        }
+        break;
+    case PROBE_S2BG:                                    /* backgrounds in the 1-cycle mode (overlay B), a sprite between them (overlay A) */
+    case PROBE_S2COPY:                                  /* backgrounds in the COPY mode (the resident code) */
+        n = 1 + randrange(r, 3);
+        for (i = 0; i < n; i++, off += 0x40) {
+            s2_bg(r, o, kind == PROBE_S2COPY);
+            put(c, off, o, 40);
+            cmd(d, kind == PROBE_S2COPY ? 0x0a000000 : 0x09000000, c->base + off);
+            if (randrange(r, 2)) {
+                off += 0x40;
+                s2_sprite(r, o, 1);
+                put(c, off, o, 24);
+                cmd(d, 0x01000000, c->base + off);
+            }
+        }
+        break;
+    default: {                                          /* the other commands: G_SELECT_DL (taken or not), G_OBJ_MOVEMEM, display list calls and branches, texture rectangles (G_TEXRECT, G_RDPHALF_1 / _2),
+                                                         * other-mode, RDP copies, G_SETSCISSOR again */
+        struct dl sub;
+        uint32_t tgt = c->base + 0xc00;
+        memset(&sub, 0, sizeof(sub));
+        s2_sprite(r, o, 1);
+        put(c, 0xd00, o, 24);
+        cmd(&sub, 0x01000000, c->base + 0xd00);
+        cmd(&sub, 0xe7000000, 0);
+        cmd(&sub, 0xdf000000, 0);
+        put_dl(c, 0xc00, &sub);
+        n = 6 + randrange(r, 10);
+        for (i = 0; i < n; i++) {
+            switch (randrange(r, 9)) {
+            case 0:                                     /* G_SELECT_DL: the list at 0xc00, called when the flags word of the selector changes (selector = the address' byte 2) */
+                cmd(d, 0xe4000000 | (tgt & 0xffff), randrange(r, 2) ? 0 : rnd(r));
+                cmd(d, 0x04000000 | ((tgt >> 16) & 0xff), randrange(r, 2) ? 0xffffffff : rnd(r));
+                break;
+            case 1:
+                cmd(d, 0xde000000, tgt);
+                break;
+            case 2:                                     /* G_OBJ_MOVEMEM: uObjMtx (24 bytes, index 0) or uObjSubMtx (8 bytes, index 2) */
+                s2_sprite(r, o, 0);
+                put(c, 0xd40, o, 24);
+                if (randrange(r, 2))
+                    cmd(d, 0xdc170000, c->base + 0xd40);
+                else
+                    cmd(d, 0xdc070002, c->base + 0xd40);
+                break;
+            case 3:                                     /* a texture rectangle */
+                cmd(d, 0xe4000000 | (randrange(r, 1024) << 12) | randrange(r, 1024), (randrange(r, 8) << 24) | (randrange(r, 1024) << 12) | randrange(r, 1024));
+                cmd(d, 0xe1000000, rnd(r));
+                cmd(d, 0xf1000000, rnd(r));
+                break;
+            case 4:
+                cmd(d, 0xe3000a01, CHOICE(r, ((const uint32_t[]){ 0, 0x300000, 0x200000 })));
+                cmd(d, 0xe2001e01, 0x00500000);
+                break;
+            case 5:
+                cmd(d, 0xfa000000, rnd(r));
+                cmd(d, 0xfd100000, 0x00100000 + randrange(r, 0x1000) * 8);
+                cmd(d, 0xe6000000, 0);
+                break;
+            case 6:
+                cmd(d, 0xed000000 | (randrange(r, 40) << 14) | randrange(r, 40) * 4, ((1280 - randrange(r, 40) * 4) << 12) | (960 - randrange(r, 40) * 4));
+                break;
+            case 7:
+                s2_sprite(r, o, 1);
+                put(c, 0xd80 + 0x20 * (i & 7), o, 24);
+                cmd(d, 0x01000000, c->base + 0xd80 + 0x20 * (i & 7));
+                break;
+            default:
+                cmd(d, 0xef000000 | randrange(r, 1u << 24), rnd(r));
+                break;
+            }
+        }
+        break;
+    }
+    }
+    cmd(d, 0xdf000000, 0);
+}
+
+const char *const probe_case_names[PROBE_NCASES] = { "clip", "zneg", "tri", "mix", "wild", "misc", "lit", "mtx", "rej", "bz", "s2rect", "s2ldtx", "s2bg", "s2copy", "s2misc" };
 
 void probe_case_make(struct probe_case *c, unsigned kind, unsigned seed, uint32_t base)
 {
@@ -589,6 +787,9 @@ void probe_case_make(struct probe_case *c, unsigned kind, unsigned seed, uint32_
         break;
     case PROBE_REJ:
         rej_case(c, &d, &r, seed);
+        break;
+    case PROBE_S2RECT: case PROBE_S2LDTX: case PROBE_S2BG: case PROBE_S2COPY: case PROBE_S2MISC:
+        s2_case(c, &d, &r, kind);
         break;
     default:
         bz_case(c, &d, &r, seed);

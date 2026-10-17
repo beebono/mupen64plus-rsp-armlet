@@ -91,6 +91,11 @@ int main(int argc, char **argv)
                 fprintf(stderr, "%s: cannot read\n", argv[i]);
                 return 2;
             }
+            stem = strrchr(argv[i], '/');
+            if ((stem ? stem[1] : argv[i][0]) == 'L' && nd > 0x180) {      /* a loaded text: the data image starts 0x180 bytes in (derive_lib.Ucode) */
+                memmove(d, d + 0x180, nd - 0x180);
+                nd -= 0x180;
+            }
             for (k = 0; k < 1024; k++)
                 w[k] = (uint32_t)t[4 * k] << 24 | (uint32_t)t[4 * k + 1] << 16 | (uint32_t)t[4 * k + 2] << 8 | t[4 * k + 3];
             memset(&in, 0, sizeof(in));
