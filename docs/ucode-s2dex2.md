@@ -4,8 +4,8 @@ S2DEX is the 2D microcode: sprites (`uObjSprite`), backgrounds (`uObjBg`) and te
 
 | text | games | key / id | what it is |
 |---|---|---|---|
-| fifo 2.08 | Worms Armageddon (task start, id `b228360be43c0447`) | | the reference of the closed forms below |
-| fifo 2.06 | Kirby 64 (loaded by `G_LOAD_UCODE` in the middle of its F3DEX2 2.04H tasks, id `569252e49c5c6d3b`); Resident Evil 2 (task start, id `5f33af89e713878b`, 75 % of its graphics tasks) | `9748556461d85ab3` | one text: the handlers from 0x184 on are 8 bytes lower than Worms' ([ucode-f3dex2-dialects.md](ucode-f3dex2-dialects.md) sections 5.6 and 5.7) |
+| fifo 2.08 | Worms Armageddon (task start, id `fa171b4489d45ef2`) | | the reference of the closed forms below |
+| fifo 2.06 | Kirby 64 (loaded by `G_LOAD_UCODE` in the middle of its F3DEX2 2.04H tasks, id `c9655420d2f5f8cf`); Resident Evil 2 (task start, id `5f33af89e713878b`, 75 % of its graphics tasks) | `9748556461d85ab3` | one text: the handlers from 0x184 on are 8 bytes lower than Worms' ([ucode-f3dex2-dialects.md](ucode-f3dex2-dialects.md) sections 5.6 and 5.7) |
 | fifo 2.05 [Safe] | Ocarina of Time (loaded by `G_LOAD_UCODE` in the middle of its F3DZEX tasks) | `af535d1683a57fcb` | the 2.06 text with a pipe sync in front of every flush check, 792-byte output buffers, the handlers behind 0x650 0xc..0x10 higher ([section 7](#7-the-safe-build-s2dex-205-ocarina-of-time)) |
 
 The 1.06 / 1.07 builds of Yoshi's Story and Pokemon Puzzle League are not claimed ([section 6](#6-s2dex-1x)).

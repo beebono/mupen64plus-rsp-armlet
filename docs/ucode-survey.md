@@ -16,7 +16,7 @@ gets the native front-end? This is an offline survey over 63 games; nothing here
 
   | level | masked |
   |---|---|
-  | L0 | nothing (the exact bytes; what the FNV id keys on, except that the id covers only `ucode_size` bytes) |
+  | L0 | nothing (the exact bytes; what the FNV id keys on: since 2026-10-16 the whole 4 KiB, before that only `ucode_size` bytes, the reason for the five duplicate ids below) |
   | S | printable-ASCII runs (version banners) |
   | L1 | S + `j` / `jal` targets and branch offsets |
   | L2 | L1 + offsets of scalar loads / stores and of `LWC2` / `SWC2` (the DMEM layout) |

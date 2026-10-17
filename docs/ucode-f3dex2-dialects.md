@@ -9,11 +9,14 @@ handler pcs for the commands below 0x170 a `struct f2_pcs`, and commands the sta
 
 | id | build | games | what is different from the four |
 |---|---|---|---|
-| `ac310503c83b23ea`, `d2d1f9f2e7dfe1ab` | F3DEX 2.08 | Dr. Mario 64, RR64; WinBack (the main text), 007 TWINE, Hot Wheels, Hydro Thunder, Mario Golf / Tennis, Ogre Battle | only pcs (vertex 0x4f8, triangles 0x7bc / 0x7b4, MODIFYVTX 0xc80, CULLDL 0xc40, BRANCH_Z 0xc68); the two texts have identical code |
+| `d2d1f9f2e7dfe1ab` | F3DEX 2.08 | Dr. Mario 64, RR64; WinBack (the main text), 007 TWINE, Hot Wheels, Hydro Thunder, Mario Golf / Tennis, Ogre Battle | only pcs (vertex 0x4f8, triangles 0x7bc / 0x7b4, MODIFYVTX 0xc80, CULLDL 0xc40, BRANCH_Z 0xc68); Dr. Mario 64 / RR64 were registered as a second id (`ac310503c83b23ea`) until 2026-10-16: the same 4 KiB, hashed over a smaller `ucode_size` |
 | `33dc705a5e4d39ae` | F3DEX 2.03 | F-Zero X (its first text) | **Not registered** (removed 2026-10-16): pcs again (the old build: vertex 0x4e8, triangles 0x794 / 0x78c, `.head 0x18c`, `.copy 0x208`, `.sync 0x20c`, `.segcopy 0x218`, `.ef 0x238`, `.ed 0x244`, `.mtx 0x0f0`, `.geom 0x1d0`, `.enddl 0x1e4`, `.half2 0x1f8`, `.modvtx 0xc54`, `.culldl 0xc14`, `.branchz 0xc3c`, load key `0xd02467acf66d7396`, the 2.04 values with `zex` / `gen204` off), but the per-command handoff spike found its vertex clip-flag high halves wrong from the first `G_VTX`; the entry was masked only because every F-Zero X task declines at `G_LOAD_UCODE` of the F3DLX.Rej text (section 3). Re-register it only after fixing the vertex flags and checking it with a task that does not load |
-| `e80e52925f70b674` | F3DEXBG.NoN 2.08 | Conker's Bad Fur Day | section 2 |
-| `5dce3244420ce715` | F3DEX 2.04 | Buck Bumble, Cruis'n World | the generation before 2.05: the triangle code of F3DZEX, an unclamped screen z, another clipper tail, a lighting overlay with a slip; section 5 |
+| `e48f5dc9bed2fe3d` | F3DEXBG.NoN 2.08 | Conker's Bad Fur Day | section 2 |
+| `6635562b2dde31ae` | F3DEX 2.04 | Buck Bumble, Cruis'n World | the generation before 2.05: the triangle code of F3DZEX, an unclamped screen z, another clipper tail, a lighting overlay with a slip; section 5 |
 | `e857446754069ab5` | F3DEX 2.04H | Super Smash Bros.; Kirby 64 (loads S2DEX and back in every task: section 5.6) | 2.04 with `G_SPECIAL_1` (0xd5) added: 24 bytes inserted at 0x1b8, the pcs above it +0x18; section 5 |
+| `9875370e17e420ab` | F3DEX.NoN 2.08 | Banjo-Tooie, LEGO Racers, Star Wars Episode I Racer | the registered 2.08's pcs and constants with the `.NoN` reject mask 0x70b0 (derived by `tools/derive_build.py`: EXACT; [ucode-derive.md](ucode-derive.md)); section 6 |
+| `0bbec7c325e9cca8` | F3DEX 2.06 | Blues Brothers 2000, Harvest Moon 64, Gauntlet Legends (declines: section 6) | Donkey Kong 64's pcs with modvtx 0xc74 / culldl 0xc34 / branchz 0xc5c and the F3DZEX triangle code (`zex`): NEAR (one `init` word); section 6 |
+| `d8bde2727be1cf28` | F3DEX.NoN 2.07 | Tonic Trouble | Donkey Kong 64's 2.07 with the `.NoN` reject mask 0x70b0: EXACT; section 6 |
 
 ## 2. F3DEXBG.NoN 2.08
 
@@ -149,3 +152,19 @@ Ocarina of Time: 1471 of 1472 graphics tasks of 3700 frames native (was 544), 41
 same, too; so Kirby 64's S2DEX is 2.06, not 2.08 as this page and [ucode-s2dex2.md](ucode-s2dex2.md) called it before). The task-start entry `l_s2_re2` uses `l_b_s2_kirby`. It uses `G_BG_COPY` (backgrounds of its pre-rendered rooms), `G_SETSCISSOR`, `G_MOVEWORD`, the other-mode and combiner commands and
 fill rectangles, and in one of three tasks `G_LOAD_UCODE` of its F3DEX.Rej text (`95129dc7d307dd43`, "F3DEX.Rej fifo 2.06": not a build of this front-end), which declines the task: 4267 of 6464 graphics tasks of 3700 frames native (was 0; the rest are the tasks that load the F3DEX.Rej, 2196, and the first
 ones). Pokemon Puzzle League and SpaceStation Silicon Valley have a `G_LOAD_UCODE` too (F3DEX 1.x front-end, declines as before).
+
+## 6. Builds derived offline: F3DEX.NoN 2.08, F3DEX 2.06, F3DEX.NoN 2.07 (2026-10-16)
+
+[ucode-derive.md](ucode-derive.md) derived the records of three more texts from the registered builds (`tools/derive_build.py`: the aligned code, not a person's reading) and registered them as the survey's next F3DEX2 dialects. All three are the code of an
+existing build with other pcs and a reject mask, so the `struct f3dex2_build` is all there is (no layout, no `f2_pcs`, no extension): `l_b_ex2_208n`, `l_b_ex2_206`, `l_b_ex2_207n` in `hle_f3dex2_dialects.c`, with the standard dead ranges.
+
+| id | banner | games | records |
+|---|---|---|---|
+| `9875370e17e420ab` | F3DEX.NoN fifo 2.08 (Yoshitaka Yasumoto 1999) | Banjo-Tooie, LEGO Racers, Star Wars Episode I Racer | the pcs of the registered 2.08 (vertex 0x4f8, triangles 0x7bc / 0x7b4, MODIFYVTX 0xc80, CULLDL 0xc40, BRANCH_Z 0xc68), `reject_mask 0x70b0` (the `.NoN` mask), `load_key 0x6f36ef1549b31211` |
+| `0bbec7c325e9cca8` | F3DEX fifo 2.06 | Blues Brothers 2000, Harvest Moon 64 (Gauntlet Legends: the status poll time-out, [ucode-derive.md](ucode-derive.md#gauntlet-legends)) | Donkey Kong 64's head / copy / sync / ... pcs, vertex 0x4f0, triangles 0x7b4 / 0x7ac, MODIFYVTX 0xc74, CULLDL 0xc34, BRANCH_Z 0xc5c (Ocarina of Time's), `zex = 1` (the F3DZEX triangle code), **`bz_z = 1`** (the branch compares the screen z: `lw 28(vertex)`, not the clip w), `reject_mask 0x7070` (near clipping), `load_key 0x549ebb163e63b994` |
+| `d8bde2727be1cf28` | F3DEX.NoN fifo 2.07 | Tonic Trouble | Donkey Kong 64's pcs (vertex 0x4f0, MODIFYVTX 0xc78, CULLDL 0xc38, BRANCH_Z 0xc60), `reject_mask 0x70b0`, `load_key 0xa8d17cd78a5b4e14` |
+
+Donkey Kong 64's own entry (`48c7e653a6adcda8`) is also Rocket's text: the id covers the whole 4 KiB, so Rocket's tasks (`ucode_size` 0xf80) find it.
+
+Evidence: [ucode-derive.md](ucode-derive.md#registered-2026-10-16) (3700-frame gates against the reference pairing, `ARMLET_HLE_VERIFY=1` for 12 000 frames, poison runs, replays, synthetic and fuzzed tasks). The one thing a 3700-frame run did not see is `bz_z`: the F3DEX 2.06 text is the only build so far in which
+the triangle code (`zex`) and the branch (`G_BRANCH_Z`) come from different generations, which the synthetic `misc` case found.

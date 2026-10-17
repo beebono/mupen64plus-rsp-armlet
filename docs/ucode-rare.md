@@ -1,6 +1,6 @@
 # Rare's microcode (Diddy Kong Racing, Jet Force Gemini)
 
-Two builds with no version banner: Diddy Kong Racing (id `72a1416f6d8445c3`, text 0xf80 bytes, 1423 graphics tasks in the survey's 55 s) and Jet Force Gemini (`410cfbcf87378a9c`, 1563). Both are
+Two builds with no version banner: Diddy Kong Racing (id `909f82e8f8da6456`, text 0xf80 bytes, 1423 graphics tasks in the survey's 55 s) and Jet Force Gemini (`c2aca403f282af1b`, 1563). Both are
 one microcode for the whole game (every graphics task of both games runs it). It is a descendant of Fast3D (the 2.0H builds are its closest relatives in the survey, 77 % of the words) with
 a different command encoding and a different data flow: **the display list names its data by DMA**. Vertices, triangles, matrices and RDP command blocks are not in the list, they are fetched
 by the command itself from the address in w1, and the RDP lists go through a ring in DMEM (`DPC_STATUS.XBUS`), not through a FIFO in RDRAM. The two builds are 90 % the same code

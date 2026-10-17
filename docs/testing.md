@@ -555,3 +555,27 @@ tools/rsp2c/rsp2c.py --name bg_vtx_gen --entry 0x6d8 --stop 0x194 --stop 0x224 -
 scissor), also under qemu-aarch64 (without `HOST=1`). `S2RECT_VU=1` adds the instruction-by-instruction kernel that `s2dex2_rect.c` replaced as a second oracle (`tools/hle/oracle/s2dex2_rect_vu.c`, kept locally, ignored by git). A mutation
 of a closed form that the replays do not catch must be caught by this test (`tools/hle/mutcheck_dialects.sh` with `S2RECT_ORACLE` set does both). The lit-vertex translation was compared with `f3dexbg_fx.c` by one-off harnesses on
 captured and mutated command-entry states (results in the table above); they are not kept, the corpora being ROM-derived.
+
+## Ucode id over the whole 4 KiB, three derived F3DEX2 builds, the status poll time-out (2026-10-16)
+
+`ucode-derive.md` ("Registered") has the story; this is the evidence. Desktop x86_64, `GfxMode=hle`, against the reference pairing, devel 22b2d64 plus this branch.
+
+| check | result |
+|---|---|
+| ids: every registered id recomputed from the dumps (FNV of the 4 KiB); collisions | 10 ids changed, 3 duplicate entries merged (Dr. Mario 64 / RR64 into `d2d1`, Pokemon Puzzle League into `0472`, Quest 64 into `208a`); `hle_core.c` logs an error for two entries with one id (checked with a deliberate duplicate); Rocket has Donkey Kong 64's id |
+| 3700-frame gates, `ref` against `armlet-hle` and `armlet` (hash, state, 6 screenshots, audio) | identical: Banjo-Tooie, LEGO Racers, Star Wars Racer, Blues Brothers 2000, Harvest Moon 64, Tonic Trouble, Rocket, Gauntlet Legends, and (regression) Donkey Kong 64, Ocarina of Time, Paper Mario, Pokemon Snap, Banjo-Kazooie, Super Mario 64, Conker, Worms, Kirby 64, Super Smash Bros., Buck Bumble, Resident Evil 2, Diddy Kong Racing, Indiana Jones, F-Zero X |
+| the seven new games also with `ARMLET_HLE_VERIFY=1`, `+ ARMLET_HLE_EXACT=1`, `ARMLET_HLE_POISON=1`, `ARMLET_DMEM_POISON=mask`, `=ring`, 3700 f | identical to the reference (hash included); `=all`: state, pictures, audio identical, hash differs by design. No dead range added or removed |
+| native share, 3700 f | all but the first task of each of the seven games; Gauntlet Legends 2 of 3392 |
+| `ARMLET_HLE_VERIFY=1`, 12 000 f | 0 differences: Banjo-Tooie 5247 tasks, LEGO Racers 9535, Star Wars Racer 7743, Blues Brothers 12 031, Harvest Moon 18 047, Tonic Trouble 9087, Rocket 5887 |
+| Gauntlet Legends, verify | before the time-out rule 209 native, 207 differences; after: 2 native, 0 differences. Mutation 316 (rule off): 7 differences in 700 frames |
+| captured task replays (`armlet-native-replay`), x86 | 2165 equal, 0 mismatches, 308 declined (Indiana Jones by design): 411 snapshots of the new games, the earlier f204 / rare / indy sets (snapshots of the ten renamed builds had their header ids rewritten) |
+| the same, qemu-aarch64, NEON and scalar, a sample of 533 | 533 equal each, 0 mismatches |
+| synthetic tasks (`synth_ex2.sh`, 1000 seeds per case: clip zneg tri mix misc lit wild mtx; `bad` declines by design) on bases of `9875` (Banjo-Tooie, LEGO Racers, Star Wars Racer), `0bbe` (Blues Brothers, Harvest Moon), `d8bd` and Rocket; lit bases need the overlay rows (`addrows`: text + 8 KiB behind it from the dump added to the snapshot) | 0 differences everywhere; qemu NEON and scalar, 200 seeds per case on Blues Brothers and Tonic Trouble bases: 0 differences. **Before `bz_z`: `misc` 149 of 1000 differed on the 2.06 base** |
+| `fuzz_snaps.py` with `FUZZ_DONOR` (the base with overlay rows), 9 seeds x 30 copies per task, `--oracle` | about 126 000 perturbed tasks over the seven sets: 0 mismatches, 0 hung (equal 600 to 2200 of 2400 per seed, the rest declined) |
+| `fuzz_cmds.py`, opcodes 01 02 03 04 05 06 07 d9 da x w0lo / w0mid / w1lo, 8 copies | 25 000 equal-or-declined, 0 mismatches |
+| mutation checks of the new code | 316 (time-out rule): Gauntlet verify differs again; 317 (`bz_z`): `misc` 36 of 300; 318 / 319 / 320 (reject masks of the three records): `clip`/`tri` 43 / 33 of 300 (318, 319), `clip` / `zneg` / `wild` 3 / 3 / 13 of 1000 (320) |
+| `tools/derive_check.sh` (leave-one-out, now with the three records and `bz_z`) | no unexplained mismatch; mutation check caught |
+| builds | native, aarch64, rg35xxsp (glibc 2.17) clean; `--tools` native and aarch64 (NEON and scalar) |
+| recount, 64 games | mean JIT share 34.4 % to 23.4 %, `ucode-coverage.md` |
+
+A lesson for the harness: `armlet-native-replay --oracle` on a synthetic task whose overlay is missing from the snapshot can make the JIT loop for ever; always run it under `timeout` (`synth_ex2.sh` and `replay_each.sh` do).

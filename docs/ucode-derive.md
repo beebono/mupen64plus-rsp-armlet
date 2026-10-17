@@ -3,8 +3,8 @@
 The task-level path claims a graphics ucode by its exact id, and a build is a hand-written table (`struct f3dex2_build` + `f2_layout` + `f2_pcs` + the extension table, `f3dex_build`, `f3d_build`; [design.md](design.md#task-level-native-path)).
 [ucode-survey.md](ucode-survey.md) showed that most unregistered texts are a registered build with a few dozen relocated pcs and a handful of constants; [ucode-coverage.md](ucode-coverage.md) says which of them cost the
 most RSP time. `tools/derive_build.py` does what the person did by hand for the dialects ([ucode-f3dex2-dialects.md](ucode-f3dex2-dialects.md)): it aligns an unknown text with the registered builds, **derives the record**, and
-lists **every difference it cannot explain**. It is pure offline analysis of the dumps that `tools/ucode_dump_shim.c` writes; nothing in `src/hle` is changed or registered by it (the candidates in this page were registered
-only in a scratch build, to see whether the claim holds).
+lists **every difference it cannot explain**. It is pure offline analysis of the dumps that `tools/ucode_dump_shim.c` writes; nothing in `src/hle` is changed or registered by it. The four candidates that this page ended with
+were registered by hand from its records afterwards ([Registered](#registered-2026-10-16): three new builds, one alias, and what registering them found).
 
 ## Input
 
@@ -266,8 +266,8 @@ runs one of the texts was run for 70 s with `GfxMode = hle` and `ARMLET_HLE_VERI
 | F3DEX.NoN 1.23 `efe4` (record `l_non`) | NONE | Donald Duck | 1983 | **0** | 0 |
 
 Nine of ten games verify clean (26 935 tasks without a difference). **Gauntlet Legends fails with the same text that verifies in two other games**: its tasks differ in the RDP state words (DMEM 0xc0 .. 0xe8) and in IMEM 0 .. 0xc at the end, and 3502 of its tasks poll the RSP status more than the 30 000 times
-the front-end allows. It passes a 0xc00-byte data segment (the survey noted 257 data images and 529 607 tasks in 55 s): a property of the (text, data) pair, not of the build record. This is the case for the validator of the probe / latch phase to be per
-(text, data) pair, not per text. The NONE rows verifying clean says that NONE is "not proven", not "wrong".
+the front-end allows. It passes a 0xc00-byte data segment (the survey noted 257 data images and 529 607 tasks in 55 s) and it was first read as a property of the (text, data) pair, not of the build record. **That was wrong**: the cause is outside the text and the data
+([Registered](#registered-2026-10-16), "Gauntlet Legends"). The NONE rows verifying clean says that NONE is "not proven", not "wrong".
 
 ### Records
 
@@ -323,3 +323,45 @@ python3 -I tools/derive_build.py derive DUMPS 33dc705a5e4d39ae          # one te
 python3 -I tools/derive_build.py hot DUMPS STATS                        # STATS: the directory of tools/ucode_coverage_run.sh
 python3 -I tools/derive_build.py emit DUMPS cand.c KEY...               # the C of the records, for a scratch build
 ```
+
+## Registered (2026-10-16)
+
+The four candidates are in `src/hle/hle_f3dex2_dialects.c` (the records were taken from the tool's output; the jump tables of the five dumps and the three `load_key` values were re-read from the dumps by a second script, which agree field for field), after the ucode id
+change that the same session made: the id is the FNV-1a-64 of the whole 4 KiB, so the pairs of ids in the table above are one id each now ([design.md](design.md#graphics-ucode-identification); `docs/options.md` lists the ids that changed).
+
+| text | id | name in the table | verdict of the tool | native share, 3700 frames | `ARMLET_HLE_VERIFY=1`, 12 000 frames |
+|---|---|---|---|---|---|
+| F3DEX.NoN 2.08 | `9875370e17e420ab` | Banjo-Tooie, LEGO Racers, Star Wars Episode I Racer | EXACT | 1151 of 1152 / 2815 of 2816 / 2687 of 2688 | 5247 of 5248 / 9535 of 9536 / 7743 of 7744 tasks compared, 0 differences |
+| F3DEX 2.06 | `0bbec7c325e9cca8` | Blues Brothers 2000, Harvest Moon 64 (Gauntlet Legends: below) | NEAR | 3711 of 3712 / 5567 of 5568 | 12 031 of 12 032 / 18 047 of 18 048, 0 differences |
+| F3DEX.NoN 2.07 | `d8bde2727be1cf28` | Tonic Trouble | EXACT | 1599 of 1600 | 9087 of 9088, 0 differences |
+| F3DEX 2.07 | `48c7e653a6adcda8` | (Donkey Kong 64's entry) Rocket | alias | 1727 of 1728 | 5887 of 5888, 0 differences |
+
+(The first task of a run is never native: the counters are flushed before the result of the task in flight.) Rocket needed no entry: with the full-4 KiB id its tasks have Donkey Kong 64's id, and `ARMLET_HLE_STATS` counts them under that entry.
+
+**What registering found.**
+
+1. **`G_BRANCH_Z` of F3DEX 2.06 reads the screen z, not the clip w** (a derivation error; the tool's "flags" said clip w). The text of Blues Brothers 2000 has Ocarina of Time's triangle code (`zex`) but `lw 28(vertex)` in the branch (`lhu t9, 896(t9); lw t9, 28(t9)` at 0xc5c), not
+   the `lh 6(vertex)` of the F3DZEX builds. The front-end derived the source from `zex && !gen204`, which no 3700-frame game run notices (149 of 1000 seeds of the synthetic `misc` case differed, nothing else did). `f3dex2_build.bz_z` says "zex, but the branch compares the screen z"; mutation 317 switches it
+   off (36 of 300 `misc` seeds differ). `tools/derive_f2.py` now reads the branch instruction from the text and derives `bz_z` (the leave-one-out validation compares it: 75 fields now, `l_b_ex2_206` derived without its own table gives `bz_z = 1`).
+2. **The records' reject masks** (`0x70b0` for the `.NoN` texts, `0x7070` for the 2.06) are read from the immediates of the two places that use them; mutations 318 / 319 / 320 (the other value in the 2.08.NoN / 2.07.NoN / 2.06 record) are caught by the synthetic `clip`, `tri` and `wild` cases
+   (43 and 33 of 300 seeds on a 2.08.NoN and a 2.07.NoN base; 3, 3 and 13 of 1000 `clip`, `zneg`, `wild` seeds for the 2.06, which is the least observable one: the near-clipping masks differ in two bits).
+3. **Dead ranges.** The three new builds use the standard F3DEX2 table (`F3DEX2_DEAD`, the 21 ranges of [design.md](design.md)). `ARMLET_HLE_POISON=1`, `ARMLET_DMEM_POISON=mask` and `=ring` (hash included) and `=all` (state, pictures and audio identical, the hash stream differs by design) on all seven games, 3700
+   frames each: no change in any stream, so no range was added or removed. (The ranges are not proven *minimal* by this, only sufficient, as for the other builds.)
+4. **The tool and the registry.** `tools/derive_lib.py` maps a registered id to a loaded text (`L...` dump) only through its load key now; a table entry that holds the id of a loaded-only text (S2DEX 2.06 / 2.05 [Safe]) is the FNV of the 4 KiB that follow the load address, which is imaged differently from a task start and made the validation report six pcs
+   off by four. `hle_core.c` logs an error when two entries have one id.
+
+### Gauntlet Legends
+
+Gauntlet Legends is the same text as Blues Brothers 2000 and Harvest Moon 64 and is not a different data image problem. Two of its graphics tasks run natively (the first two) and match the JIT; every later task declined (3118 of 3392 in 3700 frames: "too many SP_STATUS polls") or, before
+the fix, ran natively and differed (207 of 209).
+
+- Its display lists contain a `G_DL` branch to itself (`de010000 e0211b58` at 0x211b58): the microcode spins on it until the CPU patches the list. Those tasks are the 3118 declines (30 000 commands, the JIT halts at 32 767 polls): the front-end rightly gives them to the JIT.
+  parallel-rsp's `run_rsp_task` cuts such a task with its status poll time-out and leaves the RSP running ("graphics ucode idles at 0xfc8" waiting for the CPU, `parallel.cpp`). The 0xc00-byte data segments are not the cause: the first 700 frames pass 0x800 bytes and
+  still differ; the 0xc00 images come later in the game (`seq.txt` of the survey run: 735 842 tasks with 0x800 bytes, 541 268 with 0xc00, 1541 more with the OS yield flag set, which are never offered to a front-end) and are the saved DMEM states that the game hands the microcode (255 distinct images).
+- **The time-out is the cause.** After the first poll time-out parallel-rsp sets `SP_STATUS_TIMEOUT` to 16 for good ("from now on, wait 16 times, not 0x7fff"), and the JIT then halts a task at its 16th `mfc0 SP_STATUS` into one register (one per command at the loop head) and finishes it in the next call. The
+  end state of a call is a part of a task; the 207 "differences" were the native run of the whole task against the JIT's first sixteen commands (DMEM 0xc4 .. 0xeb: the last scissor, texture rectangle and `G_RDPHALF` words that the JIT had not reached yet; IMEM 0 .. 0xc). The front-ends' poll limit (30 000, for 0x7fff) does not
+  model this, and it did not matter for any other game because none of them polls for the CPU.
+- **The fix is general, not per (text, data)**: `native_run` (`hle_core.c`, all families) declines a task when the snapshot of the JIT state has `sp_status_timeout != 0x7fff` ("the JIT's status poll timeout has dropped (an earlier task waited for the CPU)"). Gauntlet Legends: 3700 frames, `ARMLET_HLE_VERIFY=1`: 2 tasks
+  native, 0 differences, 3389 declined (before: 209 native, 207 differences); hash, state, screenshots and audio identical to the reference; the mutant (mutation 316) shows the 7 differences again in 700 frames. Nothing else changed: the other 22 games of the regression set were identical before and after.
+  The cost is that Gauntlet Legends stays on the JIT (its mean native share was 0 before, too).
+

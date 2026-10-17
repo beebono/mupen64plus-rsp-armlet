@@ -1517,7 +1517,7 @@ State after the clip (observed at 0xa8, [verified]):
 
 This section has the command-layer differences (10.1) and then, for G_VTX / G_TRI1, the parameter tables, the semantic differences and the groups of builds (10.2 to 10.9).
 
-**Correction (family B is not F3D).** The images called "family B" in the first version of this section (`gl` Glover `208a567e`, `ss` SpaceStation `047252e8`, `wo` Wipeout `19bd8c82`) are not Fast3D 2.0H. The banner strings in their data segments
+**Correction (family B is not F3D).** The images called "family B" in the first version of this section (`gl` Glover `208a567e`, `ss` SpaceStation `047252e8`, `wo` Wipeout `76c763bc`) are not Fast3D 2.0H. The banner strings in their data segments
 read `RSP Gfx ucode F3DEX 1.21` (Glover, the same microcode as Banjo-Kazooie), `F3DEX 1.23` (SpaceStation, Toy Story 2's) and `F3DLX 1.21` (Wipeout). The `RSP SW Version: 2.0H, 02-12-97` string found near them in the ROMs belongs to the
 Sprite2D microcode that the same games also carry (Glover `9d0d289f`). Their command layer (TRI2, MODIFYVTX, BRANCH_Z, G_VTX with 32 slots through a pointer table, the 16-byte G_MOVEMEM, the different G_MTX / G_DL rules) is F3DEX's, not F3D's, and is
 specified with the F3DEX 1.x functions, not here. The facts in this section about `gl`, `ss` and `wo` (the "B" columns, 10.5.4, 10.5.5) stay as observations of those images; they are not a description of an F3D build. Only `mm` and `tt` are 2.0H.
@@ -1837,8 +1837,8 @@ Poisoning **DMEM [0x000, 0xfc0)** (everything except the OSTask header) after ev
 | Pilotwings 64 (3e9b9c3a..) | 600 | 4 426 824 | 600 | 6/6 | identical | identical |
 | Wave Race 64 (fb483893..) | 354 | 2 779 390 | 354 | 6/6 | identical | identical |
 | Mischief Makers (4212d63f.., 2.0H, XBUS) | 600 | 1 037 411 | 600 | 6/6 | identical | identical |
-| Tetrisphere (88fa3c0a.., 2.0H) | 592 | 1 323 845 | 592 | 6/6 | identical | identical |
-| Wipeout 64 (19bd8c82.., 968dec0e..) | 600 | 160 719 | 600 | 6/6 | identical | identical |
+| Tetrisphere (0b574ecb.., 2.0H) | 592 | 1 323 845 | 592 | 6/6 | identical | identical |
+| Wipeout 64 (76c763bc.., 968dec0e..) | 600 | 160 719 | 600 | 6/6 | identical | identical |
 | Glover (208a567e.., 9d0d289f..) | 600 | 51 024 | 600 | 6/6 | identical | identical |
 | SpaceStation Silicon Valley (047252e8..) | 600 | 931 028 | 600 | 6/6 | identical | identical |
 
@@ -1856,10 +1856,10 @@ LI always also contains the OSTask header fields the boot code and the microcode
 | pw 3e9b9c3a (2.0D) | 400 | same as sm64 (0x940-0x950 for the polygon buffer) | same as sm64 |
 | wr fb483893 (2.0D) | 253 | 0x000-0xd10, 0xde0-0xf1e, 0xf20-0xf6e | 0xad0-0xae8, 0xaf0-0xaf8, 0xb40-0xb58, 0xba6-0xba8, 0xbae-0xbb0, 0xbe0-0xbe8, 0xbf0-0xc18 |
 | mm 4212d63f (2.0H family A) | 400 | 0x000-0x8ec, 0x8f0-0x926, 0x928-0x92e, 0x9e0-0xe20 | 0x830-0x838, 0x8f0-0x8f8, 0x926-0x928, 0x92e-0x930 |
-| tt 88fa3c0a (2.0H family A) | 400 | as sm64 | 0x8f0-0x8f8, 0x926-0x928, 0x92e-0x930 |
+| tt 0b574ecb (2.0H family A) | 400 | as sm64 | 0x8f0-0x8f8, 0x926-0x928, 0x92e-0x930 |
 | 208a567e (Glover, F3DEX 1.21; family B, not F3D) | 335 | 0x000-0x950, 0x9a0-0xcc0, 0xce0-0xd80, 0xde0-0xf1e (and the OSTask words 0xfc4-0xfc8) | 0xcc0-0xcc8, 0xcd0-0xcd8 |
 | 047252e8 (SpaceStation, F3DEX 1.23; family B, not F3D) | 166 | 0x000-0xd90, 0xde0-0xf1e, 0xfc4-0xfc8 | 0xb60-0xb98, 0xc26-0xc30, 0xc80-0xc98, 0xcf0-0xcf8 |
-| 19bd8c82 (Wipeout 64, F3DLX 1.21) | 334 | 0x000-0x800, 0x9a0-0xb28, 0xce0-0xce8, 0xfc4-0xfc8 | none |
+| 76c763bc (Wipeout 64, F3DLX 1.21) | 334 | 0x000-0x800, 0x9a0-0xb28, 0xce0-0xce8, 0xfc4-0xfc8 | none |
 | tasks of other microcode that ended at pc 0x1cc (047252e8 x234, 968dec0e x66, 9d0d289f x65) | 365 | 0x000-0x828 (Sprite2D) or 0x000-0x800 and 0x9a0-0xaf8 | none |
 
 (The "also OSTask" writes of the family B / Wipeout / SpaceStation builds are `0xfc4` flag words written by those microcodes at their end; the 2.0D builds and the family A 2.0H builds never write 0xfc0 and up.)
