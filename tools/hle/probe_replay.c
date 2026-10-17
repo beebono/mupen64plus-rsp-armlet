@@ -297,6 +297,10 @@ int main(int argc, char **argv)
                 fprintf(stderr, "%s: cannot read\n", argv[i]);
                 return 2;
             }
+            if (stem[0] == 'L' && nd > 0x180) {               /* a text a G_LOAD_UCODE loads: the dump's data is 0x180 zero bytes, then the image of DMEM 0 (derive_lib.Ucode); it is offered as loaded */
+                memmove(d, d + 0x180, nd - 0x180);
+                nd -= 0x180;
+            }
             if (!world) {
                 world_init();
                 world = 1;
@@ -342,6 +346,10 @@ int main(int argc, char **argv)
                 memset(&u, 0, sizeof(u));
                 u.id = armlet_ucode_hash(W.rdram, TA, 0x1000);
                 u.family = ARMLET_FAM_F3DEX2;
+                if (stem[0] == 'L') {                           /* as the front-end reports a G_LOAD_UCODE: the pair is keyed by the load key */
+                    armlet_probe_note_load(TA, DA, (uint32_t)nd);
+                    u.id = armlet_ucode_hash(W.rdram, TA, 0xf48);
+                }
                 for (calls = 0; calls < 400; calls++) {
                     armlet_probe_offer(&W.ctx, &u);
                     if (!armlet_probe_summary(u.id, &s) && s.outcome != PROBE_OUT_PENDING)

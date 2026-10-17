@@ -28,6 +28,9 @@ void armlet_probe_reset(void);                      /* RomClosed: forgets the pa
  * canned tasks a few at a time on the following calls. Never changes the task: the RSP state, the JIT's state and the RDRAM are as they were when it returns. */
 void armlet_probe_offer(struct armlet_ctx *c, const struct armlet_ucode_id *u);
 
+/* The front-end saw a G_LOAD_UCODE of the text at `text` with the data image at `data` (the image of DMEM 0, `len` bytes: the command fills DMEM 0x180 .. len from it): the next offer derives and probes that text too (S2DEX loaded by Kirby 64 and Ocarina of Time). */
+void armlet_probe_note_load(uint32_t text, uint32_t data, uint32_t len);
+
 /* Whether the native handler of `u` may run this task: a build that was latched for one (text, data) pair does not run another data image. Registered builds: always. */
 bool armlet_probe_gate(struct armlet_ctx *c, const struct armlet_ucode_id *u);
 
@@ -51,6 +54,7 @@ int armlet_probe_run_registered(struct armlet_ctx *c, const struct hle_ucode *u)
 static inline void armlet_probe_init(struct armlet_ctx *c) { (void)c; }
 static inline void armlet_probe_reset(void) {}
 static inline void armlet_probe_offer(struct armlet_ctx *c, const struct armlet_ucode_id *u) { (void)c; (void)u; }
+static inline void armlet_probe_note_load(uint32_t text, uint32_t data, uint32_t len) { (void)text; (void)data; (void)len; }
 static inline bool armlet_probe_gate(struct armlet_ctx *c, const struct armlet_ucode_id *u) { (void)c; (void)u; return true; }
 #endif
 

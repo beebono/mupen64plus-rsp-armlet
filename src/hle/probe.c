@@ -38,6 +38,8 @@ enum { PS_NEW, PS_PROBING, PS_DONE };
 struct pair {
     uint64_t tid, did;
     int state, outcome, latched, from_cache, force, experiment;
+    int loaded;                         /* a text that a G_LOAD_UCODE loads in the middle of a task (S2DEX in Kirby 64's and Ocarina of Time's): tid is its load key, and the canned tasks start with it */
+    uint32_t ta, da, ds;                /* the text, the data image and its size in the game's RDRAM */
     struct dbuild *b;
     struct derive_result dr;
     unsigned next, total;
@@ -58,6 +60,8 @@ static struct {
     int trace, check, force_cache;
     uint32_t std_sig;
     char why[96];
+    struct { uint32_t text, data, len; } note[4];          /* G_LOAD_UCODEs the front-end saw since the last offer (armlet_probe_note_load; a task loads S2DEX and its own text back) */
+    unsigned n_note;
 } P;
 
 static inline uint64_t now_ns(void)
@@ -173,14 +177,17 @@ int armlet_probe_summary(uint64_t text_id, struct probe_summary *o)
 static void schedule(struct pair *p, unsigned seeds)
 {
     static const unsigned random_kinds[] = { PROBE_CLIP, PROBE_ZNEG, PROBE_TRI, PROBE_MIX, PROBE_WILD, PROBE_MISC, PROBE_LIT, PROBE_MTX };
+    static const unsigned s2_kinds[] = { PROBE_S2RECT, PROBE_S2LDTX, PROBE_S2BG, PROBE_S2COPY, PROBE_S2MISC };
+    const int s2 = p->b && p->b->uc.fam_data && ((const struct f3dex2_build *)p->b->uc.fam_data)->ext;               /* a build with dialect commands (S2DEX 2.x): its own cases; it has no vertex or triangle code */
+    const unsigned *kinds = s2 ? s2_kinds : random_kinds, nk = s2 ? 5 : 8;
     unsigned k, s, n = 0;
-    for (s = 0; s < seeds; s++)
-        for (k = 0; k < sizeof(random_kinds) / sizeof(random_kinds[0]); k++)
+    for (s = 0; s < (s2 ? 2 * seeds : seeds); s++)
+        for (k = 0; k < nk; k++)
             if (n < MAX_TASKS) {
-                p->kind[n] = (uint8_t)random_kinds[k];
+                p->kind[n] = (uint8_t)kinds[k];
                 p->seed[n++] = (uint8_t)s;
             }
-    for (s = 0; s < 2; s++) {                           /* the targeted cases: the reject mask and G_BRANCH_Z, two variants each */
+    for (s = 0; s < 2 && !s2; s++) {                           /* the targeted cases: the reject mask and G_BRANCH_Z, two variants each */
         p->kind[n] = PROBE_REJ; p->seed[n++] = (uint8_t)s;
         p->kind[n] = PROBE_BZ; p->seed[n++] = (uint8_t)s;
     }
@@ -277,11 +284,9 @@ static int run_canned(struct armlet_ctx *c, struct pair *p, unsigned kind, unsig
         out->why = "the JIT's status poll time-out has dropped";
         return out->status;
     }
-    ta = g_real.dmem[0xfd0 >> 2] & 0x7ffffc;
-    da = g_real.dmem[0xfd8 >> 2] & 0x7ffffc;
-    ds = g_real.dmem[0xfdc >> 2];
-    if (!ds || ds > 0x1000)
-        ds = ds ? 0x1000 : 0x800;
+    ta = p->ta;
+    da = p->da;
+    ds = p->ds;
     /* the ring, the canned data and the matrix stack: three blocks at the top of RDRAM, clear of the text with its overlays (3 x 4 KiB) and of the data */
     lo = 0x7a0000;
     hi = 0x7c0000;
@@ -300,6 +305,8 @@ static int run_canned(struct armlet_ctx *c, struct pair *p, unsigned kind, unsig
     rd_bytes(c, ta, buf, 0x3000);
     priv_put(ta, buf, 0x3000);
     rd_bytes(c, da, buf, ds);
+    if (p->loaded)
+        memset(buf, 0, 0x180);                          /* (DMEM below 0x180: zeros, as the derivation saw it) */
     priv_put(da, buf, ds);
     probe_case_make(&cs, kind, seed, base);
     priv_put(base, cs.mem, PROBE_MEM);
@@ -313,6 +320,9 @@ static int run_canned(struct armlet_ctx *c, struct pair *p, unsigned kind, unsig
     g_pb.dmem[0xff4 >> 2] = cs.dl_bytes;
     g_pb.dmem[0xff8 >> 2] = base + 0x1600;              /* the yield area (the canned tasks do not yield) */
     g_pb.dmem[0xfc4 >> 2] = 0;                          /* flags: no yield */
+    g_pb.dmem[0xfd0 >> 2] = ta;                         /* OSTask.ucode, ucode_data, ucode_data_size: the game's task's own, or the loaded text with the data image its G_LOAD_UCODE named */
+    g_pb.dmem[0xfd8 >> 2] = da;
+    g_pb.dmem[0xfdc >> 2] = ds;
     g_pb.cr[4] &= ~3u;                                  /* SP_STATUS: not halted, not broken */
     g_pb.cr[2] = g_pb.cr[3] = 0xff8;                    /* the DMA length registers, as any earlier task leaves them (the lean front-end writes the ring without a DMA and leaves them as they are) */
     g_pb.pc = *c->rsp.SP_PC_REG & 0xfff;                /* the pc the task starts at (the front-end reads the JIT's pc field, the JIT SP_PC) */
@@ -487,7 +497,7 @@ static void start_probe(struct armlet_ctx *c, struct pair *p, const char *src)
 
 static void first_sight(struct armlet_ctx *c, struct pair *p, const struct armlet_ucode_id *u, uint64_t did, uint32_t da, unsigned ds)
 {
-    uint32_t text[1024], ta = armlet_dmem32(c, ARMLET_TASK_UCODE) & 0x7ffffc, i;
+    uint32_t text[1024], ta = p->ta, i;
     static uint8_t data[0x1000], ext[0x2000];
     struct derive_in in;
     const struct ucache_entry *ce = ucache_find(p->tid, did);
@@ -555,6 +565,8 @@ static void first_sight(struct armlet_ctx *c, struct pair *p, const struct armle
     }
 
     rd_bytes(c, da, data, ds);
+    if (p->loaded)
+        memset(data, 0, 0x180);                         /* a loaded text: DMEM below 0x180 is not loaded; zeros, as in the canned tasks */
     {
         size_t el = 0x2000;
         if (ta + 0x3000 > 0x800000)
@@ -607,6 +619,13 @@ static void first_sight(struct armlet_ctx *c, struct pair *p, const struct armle
         p->dr.rec.pc[PC_TRI1] = PMUT(342, p->dr.rec.pc[PC_TRI1], p->dr.rec.pc[PC_TRI1] + 8);
         p->dr.rec.zex = (uint8_t)PMUT(343, p->dr.rec.zex, !p->dr.rec.zex);
         p->dr.rec.lay[LY_OUT_BYTES] = PMUT(344, p->dr.rec.lay[LY_OUT_BYTES], p->dr.rec.lay[LY_OUT_BYTES] - 8);
+        /* (S2DEX: the continuation pc of LDTX_RECT, the output buffer size, the pipe sync of the Safe build, the handlers from 0x184 on 8 bytes lower as in the 2.06 text) */
+        p->dr.rec.pc[PC_LDTX_RECT] = PMUT(400, p->dr.rec.pc[PC_LDTX_RECT], p->dr.rec.pc[PC_LDTX_RECT] + 8);
+        p->dr.rec.lay[LY_OUT_BYTES] = PMUT(401, p->dr.rec.lay[LY_OUT_BYTES], p->dr.rec.lay[LY_OUT_BYTES] + 8);
+        p->dr.rec.lay[LY_PIPE_SYNC] = PMUT(402, p->dr.rec.lay[LY_PIPE_SYNC], !p->dr.rec.lay[LY_PIPE_SYNC]);
+        for (i = 0; i < p->dr.rec.n_ext; i++)
+            if (p->dr.rec.ext[i].pc >= 0x184)
+                p->dr.rec.ext[i].pc = PMUT(403, p->dr.rec.ext[i].pc, p->dr.rec.ext[i].pc - 8);
         if (p->force) {
             const struct hle_ucode *reg = dbuild_registered(p->dr.rec.load_key);
             if (reg) {
@@ -632,15 +651,81 @@ static void first_sight(struct armlet_ctx *c, struct pair *p, const struct armle
     start_probe(c, p, "derived");
 }
 
+void armlet_probe_note_load(uint32_t text, uint32_t data, uint32_t len)
+{
+    unsigned i;
+    if (!P.init)
+        return;
+    text &= 0x7ffff8;
+    data &= 0x7ffff8;
+    for (i = 0; i < P.n_note; i++)
+        if (P.note[i].text == text && P.note[i].data == data)
+            return;
+    if (P.n_note < sizeof(P.note) / sizeof(P.note[0])) {
+        P.note[P.n_note].text = text;
+        P.note[P.n_note].data = data;
+        P.note[P.n_note++].len = len;
+    }
+}
+
+/* A text loaded by G_LOAD_UCODE (armlet_probe_note_load): a pair of its own, keyed by its load key (the identity loaded_build looks a build up by) and its data image. Registered: only with ARMLET_PROBE_FORCE.
+ * Returns 1 when it derived a new pair (enough work for this graphics task). */
+static int offer_loaded(struct armlet_ctx *c, uint32_t ta, uint32_t da, uint32_t ds)
+{
+    uint64_t key, did;
+    struct pair *p;
+    int registered;
+    if (!ds || ds > 0x1000)
+        ds = ds ? 0x1000 : 0x800;
+    ds = (ds + 3) & ~3u;
+    if (ta + 0x1000 > 0x800000 || da + ds > 0x800000)
+        return 0;
+    key = armlet_ucode_hash((const unsigned char *)c->rsp.RDRAM, ta, 0xf48);
+    registered = dbuild_registered(key) != NULL;
+    if (registered && !c->cfg.probe_force)
+        return 0;
+    {
+        unsigned i;
+        for (i = 0; i < PAIR_MAX; i++)                  /* one pair per loaded text: its data image is not what names it (the bytes in front of the loaded part change from task to task in Kirby 64), and a latched loaded build is not bound to one */
+            if (P.pairs[i].state && P.pairs[i].loaded && P.pairs[i].tid == key)
+                return 0;
+    }
+    did = armlet_ucode_hash((const unsigned char *)c->rsp.RDRAM, da + 0x180, ds > 0x180 ? ds - 0x180 : 0);   /* (the part the command loads) */
+    p = new_pair(key, did);
+    if (!p)
+        return 0;
+    p->force = registered;
+    p->loaded = 1;
+    p->ta = ta;
+    p->da = da;
+    p->ds = ds;
+    armlet_log(M64MSG_INFO, "probe: ucode %016" PRIx64 " (loaded by G_LOAD_UCODE from %08x, data %08x)", key, ta, da);
+    first_sight(c, p, NULL, did, da, ds);
+    return 1;
+}
+
 void armlet_probe_offer(struct armlet_ctx *c, const struct armlet_ucode_id *u)
 {
     uint32_t da, ds;
     uint64_t did;
     struct pair *p;
     int registered;
+    unsigned i;
 
     if (!P.init)
         return;
+    while (P.n_note) {                                  /* (one derivation per graphics task; the notes of the same texts come again with the next tasks) */
+        P.n_note--;
+        if (offer_loaded(c, P.note[P.n_note].text, P.note[P.n_note].data, P.note[P.n_note].len)) {
+            P.n_note = 0;
+            return;
+        }
+    }
+    for (i = 0; i < PAIR_MAX; i++)                      /* the loaded texts' canned tasks run on whatever graphics task comes, before the task's own */
+        if (P.pairs[i].loaded && P.pairs[i].state == PS_PROBING && P.step) {
+            probe_steps(c, &P.pairs[i], P.step);
+            return;
+        }
     registered = armlet_hle_find(u->id) != NULL;
     if (registered && !c->cfg.probe_force)
         return;
@@ -658,6 +743,9 @@ void armlet_probe_offer(struct armlet_ctx *c, const struct armlet_ucode_id *u)
         if (!p)
             return;                                     /* (more pairs than the table holds: the rest are not probed) */
         p->force = registered;
+        p->ta = armlet_dmem32(c, ARMLET_TASK_UCODE) & 0x7ffffc;
+        p->da = da;
+        p->ds = ds;
         first_sight(c, p, u, did, da, ds);
         return;                                         /* (the first canned tasks run on the next graphics task: the derivation took long enough for this one) */
     }
@@ -676,6 +764,11 @@ int armlet_probe_run_registered(struct armlet_ctx *c, const struct hle_ucode *u)
     memset(&p, 0, sizeof(p));
     p.b = b;
     p.tid = u->id;
+    p.ta = armlet_dmem32(c, ARMLET_TASK_UCODE) & 0x7ffffc;
+    p.da = armlet_dmem32(c, ARMLET_TASK_UCODE_DATA) & 0x7ffffc;
+    p.ds = armlet_dmem32(c, ARMLET_TASK_UCODE_DATA_SIZE);
+    if (!p.ds || p.ds > 0x1000)
+        p.ds = p.ds ? 0x1000 : 0x800;
     schedule(&p, c->cfg.probe_seeds ? c->cfg.probe_seeds : 3);
     for (i = 0; i < p.total; i++) {
         struct hle_probe_out o;
