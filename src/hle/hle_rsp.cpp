@@ -13,6 +13,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <new>
 
 #include "m64p_plugin.h"
 
@@ -120,7 +121,7 @@ static void prof_dump(void)
 
 extern "C" int hle_rsp_run(struct hle_task *t, struct hle_cpu *c)
 {
-	CPUState &s = RSP::cpu.get_state();
+	CPUState &s = t->dx ? *static_cast<CPUState *>(t->dx->cpu) : RSP::cpu.get_state();	// (a detached replay has a register file and vector unit of its own)
 	uint32_t *r = c->r;
 	int pending = 0, ran = 0;
 	unsigned ptarget = 0;
@@ -241,9 +242,7 @@ extern "C" int hle_rsp_run(struct hle_task *t, struct hle_cpu *c)
 					uint32_t v;
 					if ((rd & 15) == 4)
 					{
-						int mode = PRSP_NATIVE_MODE_CONTINUE;
-						v = prsp_native_mfc0(4, rt, &mode);
-						if (mode != PRSP_NATIVE_MODE_CONTINUE)
+						if (hle_poll_status(t, rt, &v))
 							return hle_decline(t, "SP_STATUS polled too often (the JIT would halt)");
 					}
 					else
@@ -340,3 +339,42 @@ extern "C" int hle_rsp_run(struct hle_task *t, struct hle_cpu *c)
 		c->pc = next;
 	}
 }
+
+#ifdef ARMLET_NATIVE
+// the detached replay's register file and vector unit (hle_internal.h, struct hle_dx)
+extern "C" void *hle_dx_cpu_new(void)
+{
+	return new (std::nothrow) CPUState();
+}
+
+extern "C" void hle_dx_cpu_free(void *cpu)
+{
+	delete static_cast<CPUState *>(cpu);
+}
+
+extern "C" uint32_t *hle_dx_cpu_sr(void *cpu)
+{
+	return static_cast<CPUState *>(cpu)->sr;
+}
+
+extern "C" void hle_dx_cpu_load(void *cpu, const PrspNativeSnap *o, uint32_t *dmem, uint32_t *imem, uint32_t *rdram)
+{
+	CPUState &s = *static_cast<CPUState *>(cpu);
+	s.pc = o->pc;
+	s.has_delay_slot = o->has_delay_slot;
+	s.branch_target = o->branch_target;
+	s.dirty_blocks = o->dirty_blocks;
+	memcpy(s.sr, o->sr, sizeof(o->sr));
+	for (int i = 0; i < 32; i++)
+		memcpy(s.cp2.regs[i].e, o->vr[i], 16);
+	for (int i = 0; i < 3; i++)
+		memcpy(s.cp2.flags[i].e, o->flags[i], 32);
+	memcpy(s.cp2.acc.e, o->acc, 48);
+	s.cp2.div_out = o->div_out;
+	s.cp2.div_in = o->div_in;
+	s.cp2.dp_flag = o->dp_flag;
+	s.dmem = dmem;
+	s.imem = imem;
+	s.rdram = rdram;
+}
+#endif

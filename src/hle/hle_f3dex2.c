@@ -20,6 +20,7 @@
 #include "armlet.h"
 #include "gfx_ucode.h"
 #include "hle_f3dex2_int.h"
+#include "latch.h"
 #include "probe.h"
 
 #ifdef ARMLET_NATIVE
@@ -195,6 +196,8 @@ static int cmd_vtx(struct f3 *f)
 
     if (n == 0 || n > 32)
         return hle_decline(t, "G_VTX with an unusual count");
+    if (lit && hle_cmd(t, LATCH_K_LIT))
+        return HLE_DECLINE;
     if (MUT(224, hle_dm32(t, F2_GEOM) & ~f2L->geom_def, 0))        /* (as for the triangles, tri_consts) */
         return hle_decline(t, "geometry mode bits the build does not define");
     if (MUT(221, ((w0 & 0xfff) > 0x40 || (w0 & 1) || (w0 & 0xfff) < 2 * n || (w0 & 0xf00000)), 0))
@@ -269,6 +272,16 @@ static int cmd_vtx(struct f3 *f)
         for (i = 0; i < n + (n & 1); i++)
             f2_ld_vin(t, s4 + 16 * i, &in[i]);
     fx2_vtx_xform(&c, in, n, out);
+    if (t->gate || t->cmds) {                           /* (the latch policy's data situations) */
+        uint32_t fo = 0;
+        int wn = 0;
+        for (i = 0; i < n; i++) {
+            fo |= out[i].flags;
+            wn |= hle_wneg(out[i].cx[3], out[i].cf[3]);
+        }
+        if (hle_vtx_kinds(t, fo, wn))
+            return HLE_DECLINE;
+    }
     if (f->trace)
         for (i = 0; i < n; i++)
             fprintf(stderr, "    v%u in=(%d %d %d) clip=(%d.%04x %d.%04x %d.%04x %d.%04x) flags=%08x\n", first_slot(first, i), in[i].x, in[i].y, in[i].z, out[i].cx[0], out[i].cf[0], out[i].cx[1], out[i].cf[1], out[i].cx[2], out[i].cf[2], out[i].cx[3], out[i].cf[3], out[i].flags);
@@ -411,7 +424,7 @@ static int tri_setup(struct f3 *f, const struct fx2_vtx *const v[3], const struc
         return HLE_OK;
     }
     if (r != FX2_TRI_DRAW)
-        return HLE_OK;
+        return hle_cmd(t, LATCH_K_TRI_CULL) ? HLE_DECLINE : HLE_OK;
     memcpy(&t->dmem[f->s7 >> 2], cmd, len);
     f->s7 += len;
     return after_emit(f);
@@ -427,6 +440,10 @@ static int do_clip(struct f3 *f, const struct fx2_vtx *const v[3])
     unsigned p, k;
     int dummy = 0, rc;
 
+    if (hle_cmd(t, LATCH_K_CLIP))
+        return HLE_DECLINE;
+    if ((hle_wneg(v[0]->cx[3], v[0]->cf[3]) || hle_wneg(v[1]->cx[3], v[1]->cf[3]) || hle_wneg(v[2]->cx[3], v[2]->cf[3])) && hle_cmd(t, LATCH_K_NEARCLIP))
+        return HLE_DECLINE;
     if (f->ov == OV_UNKNOWN)
         return hle_decline(t, "unknown overlay");
     if (f->ov == OV_LIGHT)                              /* the lighting overlay's entry loads the clipping overlay */
@@ -467,7 +484,7 @@ static int do_tri(struct f3 *f, uint32_t word)
     for (k = 0; k < 3; k++)
         fl[k] = hle_dm32(t, sv[k] + 0x24);
     if (fl[0] & fl[1] & fl[2] & f->b->reject_mask)
-        return HLE_OK;
+        return hle_cmd(t, LATCH_K_TRI_REJECT) ? HLE_DECLINE : HLE_OK;
     for (k = 0; k < 3; k++)
         f2_ld_vtx_lite(t, sv[k], &v[k]);
     if (f->trace) {
@@ -567,20 +584,22 @@ static const struct hle_ucode *loaded_build(const struct hle_task *t, uint32_t s
     key = MUT(250, key, ~key);
     /* a build the probe latched for this text (its id is the load key: probe.c) comes first, then the registered ones (the lookup is not memoised: a latch can come between two loads) */
     u = armlet_hle_find(key);
+    if (u && !hle_build_usable(t, u))                   /* a derived build that is not latched is not taken over, and neither is a registered one in its place (ARMLET_PROBE_FORCE: the text is as unknown) */
+        return NULL;
     if (u && u->fam == &f3dex2_fam && ((const struct f3dex2_build *)u->fam_data)->load_key == key) {
         static const struct hle_ucode *logged[8];
         static unsigned nlogged;
         unsigned q;
         for (q = 0; q < nlogged && logged[q] != u; q++)
             ;
-        if (q == nlogged && nlogged < 8 && !strncmp(u->name, "derived", 7)) {   /* (once per latched build: the tests look for it) */
+        if (!t->dx && q == nlogged && nlogged < 8 && !strncmp(u->name, "derived", 7)) {   /* (once per latched build: the tests look for it) */
             logged[nlogged++] = u;
             armlet_log(M64MSG_INFO, "hle: G_LOAD_UCODE of %016llx runs the latched build \"%s\"", (unsigned long long)key, u->name);
         }
         return u;
     }
     for (u = armlet_hle_next(NULL); u; u = armlet_hle_next(u))
-        if (u->fam == &f3dex2_fam && ((const struct f3dex2_build *)u->fam_data)->load_key == key)
+        if (u->fam == &f3dex2_fam && ((const struct f3dex2_build *)u->fam_data)->load_key == key && hle_build_usable(t, u))
             return u;
     return NULL;
 }
@@ -616,6 +635,8 @@ static int run_loop(struct f3 *f, int *handover)
         f->polls++;
         f->k1 += 8;
         kd = f->kind[w0 >> 24];
+        if (hle_cmd(t, w0 >> 24))                       /* (the latch policy's command-kind gate; the count of a replay under validation) */
+            return HLE_DECLINE;
         t_cmd = g_prof ? ticks() : 0;
         if (f->trace)
             fprintf(stderr, "CMD %5u k0=%08x op=%02x kind=%u w0=%08x w1=%08x out=%u entry=%04x\n", f->ncmd++, f->k0 + f->k1, w0 >> 24, kd, w0, w1, f->total + (f->s7 - (f->s6 - OUT_BYTES)), hle_dm16(t, JUMP_TABLE + 2 * (int)(int8_t)(w0 >> 24)));
@@ -634,19 +655,25 @@ static int run_loop(struct f3 *f, int *handover)
                                                          * the loop works with (f3_bind) once the interpreter has run the loaded microcode's initialisation; any other text declines */
             uint32_t src = w1 & 0x7ffff8, cur = f->uc0 & 0x7ffff8;
             if (src + 0x1000 > 0x800000 || cur + 0xf48 > 0x800000) {
-                load_note(t);
+                if (!t->dx)
+                    load_note(t);
                 return hle_decline(t, "G_LOAD_UCODE outside RDRAM");
             }
             f->nb = b;
             if (memcmp(t->rdram + src, t->rdram + cur, 0xf48)) {
                 const struct hle_ucode *nu = loaded_build(t, src);
-                armlet_probe_note_load(src, hle_dm32(t, 0xd8), 0x180 + (w0 & 0xfff) + 1);     /* (the probe derives a loaded text too; the G_RDPHALF_1 address is the image of DMEM 0: docs/design.md, "The probe and the ucode cache") */
+                if (!t->dx)                             /* (a replay under validation leaves the probe's and the decline statistics' state alone) */
+                    armlet_probe_note_load(src, hle_dm32(t, 0xd8), 0x180 + (w0 & 0xfff) + 1);     /* (the probe derives a loaded text too; the G_RDPHALF_1 address is the image of DMEM 0: docs/design.md, "The probe and the ucode cache") */
                 if (f->trace)
                     fprintf(stderr, "  G_LOAD_UCODE text %08x key %016llx data %08x -> %s\n", src, (unsigned long long)armlet_ucode_hash(t->rdram, src, 0xf48), hle_dm32(t, 0xd8), nu ? nu->name : "(not registered)");
                 if (!nu || (t->ctx && !armlet_gfx_allowed(&t->ctx->cfg, nu->id))) {
-                    load_note(t);
+                    if (!t->dx)
+                        load_note(t);
                     return hle_decline(t, "G_LOAD_UCODE of another ucode");
                 }
+                if (hle_cmd(t, LATCH_K_LOAD))
+                    return HLE_DECLINE;
+                f->nu = nu;
                 f->nb = (const struct f3dex2_build *)nu->fam_data;
                 f->nsrc = src;
             }
@@ -791,6 +818,8 @@ static int run_loop(struct f3 *f, int *handover)
                 if (!m)
                     break;
                 if (a == z) {
+                    if (hle_cmd(t, LATCH_K_CULLDL))
+                        return HLE_DECLINE;
                     rc = do_enddl(f, handover);
                     if (*handover)
                         return rc;
@@ -806,6 +835,8 @@ static int run_loop(struct f3 *f, int *handover)
             unsigned vs = hle_dm16(t, F2_VTAB + (w0 & 0xfff));
             uint32_t z = b->zex && MUT(259, !b->gen204, 1) && MUT(246, 1, 0) && MUT(317, !b->bz_z, 1) ? (uint32_t)(int32_t)(int16_t)hle_dm16(t, vs + 6) : hle_dm32(t, vs + 0x1c);   /* F3DZEX compares the integer part of the clip w (`lh 6(vertex)`), the others (F3DEX2 2.04 / 2.04H, which have the `zex` triangle constants, too) the screen z */
             if ((int32_t)(z - w1) < 0) {                /* a branch (no stack) to the address G_RDPHALF_1 left at 0xd8 */
+                if (hle_cmd(t, LATCH_K_BRZ))
+                    return HLE_DECLINE;
                 f->k0 = seg_addr(t, hle_dm32(t, 0xd8));
                 if (MUT(240, f->k0 & 7, 0))
                     f->bad = "unaligned display list address";
@@ -966,7 +997,7 @@ static int f3dex2_run(struct hle_task *t, const struct hle_ucode *u)
         if (g_prof)
             atexit(prof_dump);
     }
-    if (load_known(t))
+    if (!t->dx && load_known(t))
         return hle_decline(t, "an earlier task with these pointers loaded another ucode");
     f2L = b->lay ? b->lay : &l_lay_std;
     hle_cpu_init(t, &c, t->start_pc, 1u << 22);
@@ -1044,6 +1075,7 @@ static int f3dex2_run(struct hle_task *t, const struct hle_ucode *u)
         f.polls += MUT(249, 1, -(int)f.polls + 1);      /* (the count of SP_STATUS polls is the task's, not the build's: the JIT halts at 32767 of them whichever microcode makes them; the reloaded one polls once more before the first command) */
         if (f.nb != f.b) {
             t->switched = 1;
+            hle_bind(t, f.nu);                          /* (the loaded build's gate, or its counting in a replay that validates it) */
             if (MUT(254, 1, 0))
                 f.uc0 = f.nsrc;
         }

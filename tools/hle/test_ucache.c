@@ -55,7 +55,7 @@ static void patch(const char *p, long off, unsigned char xor_)
 
 int main(void)
 {
-    char dir[] = "/tmp/ucache_test_XXXXXX", path[300], cmd[400];
+    char dir[] = "/tmp/ucache_test_XXXXXX", path[300], cmd[800];
     struct ucache_entry e;
     const struct ucache_entry *f;
     unsigned i;
@@ -213,6 +213,80 @@ int main(void)
     ucache_close();
     CHECK(ucache_open(path) == 3 && ucache_find(1, 1) && ucache_find(2, 2) && ucache_find(3, 3), "entries of two processes are merged");
     ucache_close();
+
+    /* the latch state (format 5): round trip; a permanent unlatch is never undone, by this process or by another that stores an older latched state later */
+    unlink(path);
+    ucache_open(path);
+    e = mk(7, 7, 7);
+    e.latch = UC_LATCH_LATCHED;
+    e.strikes = 1;
+    e.matches = 40;
+    e.evidence_milli = 24500;
+    e.distinct = 9;
+    e.kinds[0] = 0x8000000000000001ull;
+    e.kinds[4] = 0xf;
+    CHECK(ucache_store(&e) == 0, "store a latched entry");
+    ucache_close();
+    ucache_open(path);
+    {
+        struct ucache_entry g;
+        CHECK(ucache_get(7, 7, &g) == 0 && g.latch == UC_LATCH_LATCHED && g.strikes == 1 && g.matches == 40 && g.evidence_milli == 24500 && g.distinct == 9 &&
+              g.kinds[0] == 0x8000000000000001ull && g.kinds[4] == 0xf, "the latch state survives the file");
+        CHECK(ucache_get(7, 8, &g) != 0, "ucache_get misses another key");
+    }
+    e.latch = UC_LATCH_DEAD;
+    e.strikes = 2;
+    CHECK(ucache_store(&e) == 0, "store the unlatch");
+    e.latch = UC_LATCH_LATCHED;                         /* a later store of a latched state (a session that loaded the entry before the unlatch) */
+    e.strikes = 1;
+    CHECK(ucache_store(&e) == 0, "store a latched state again");
+    f = ucache_find(7, 7);
+    CHECK(f && f->latch == UC_LATCH_DEAD && f->strikes == 2, "an unlatch for good stays, with its strikes");
+    ucache_close();
+    {
+        pid_t pid = fork();
+        if (!pid) {                                     /* another process that knows only the latched state stores it after this one unlatched */
+            struct ucache_entry c = mk(7, 7, 7);
+            c.latch = UC_LATCH_LATCHED;
+            c.strikes = 1;
+            ucache_open(path);
+            ucache_store(&c);
+            ucache_close();
+            _exit(0);
+        }
+        waitpid(pid, NULL, 0);
+    }
+    CHECK(ucache_open(path) == 1 && (f = ucache_find(7, 7)) && f->latch == UC_LATCH_DEAD, "another process cannot latch a build that was unlatched for good");
+    ucache_close();
+    {   /* two files merged on load: the older-seq dead entry wins over a newer latched one */
+        char p2[320];
+        struct ucache_entry d = mk(9, 9, 9), l = mk(9, 9, 9);
+        snprintf(p2, sizeof(p2), "%s.b", path);
+        unlink(path);
+        unlink(p2);
+        d.latch = UC_LATCH_DEAD;
+        d.strikes = 3;
+        ucache_open(path);
+        ucache_store(&d);                               /* seq 1 in path */
+        ucache_close();
+        l.latch = UC_LATCH_LATCHED;
+        ucache_open(p2);
+        ucache_store(&l);
+        ucache_store(&l);
+        ucache_store(&l);                               /* seq 3 in p2 */
+        ucache_close();
+        snprintf(cmd, sizeof(cmd), "cat '%s' > '%s.c'", p2, path);
+        CHECK(system(cmd) == 0, "shell copy");
+        ucache_open(path);                              /* the dead entry in memory ... */
+        snprintf(cmd, sizeof(cmd), "mv '%s.c' '%s'", path, path);
+        CHECK(system(cmd) == 0, "shell copy");                              /* ... and a file that says latched (newer) under it */
+        e = mk(10, 10, 10);
+        ucache_store(&e);                               /* the store merges the file in */
+        f = ucache_find(9, 9);
+        CHECK(f && f->latch == UC_LATCH_DEAD && f->strikes == 3, "a merge keeps the unlatch for good and the strikes");
+        ucache_close();
+        unlink(p2);
+    }
 
     /* an unwritable directory, and a disabled cache */
     ucache_open("/proc/no/such/dir/armlet.cache");

@@ -31,8 +31,11 @@ void armlet_probe_offer(struct armlet_ctx *c, const struct armlet_ucode_id *u);
 /* The front-end saw a G_LOAD_UCODE of the text at `text` with the data image at `data` (the image of DMEM 0, `len` bytes: the command fills DMEM 0x180 .. len from it): the next offer derives and probes that text too (S2DEX loaded by Kirby 64 and Ocarina of Time). */
 void armlet_probe_note_load(uint32_t text, uint32_t data, uint32_t len);
 
-/* Whether the native handler of `u` may run this task: a build that was latched for one (text, data) pair does not run another data image. Registered builds: always. */
+/* Whether a native handler may run this task (docs/design.md, "The background validator and the latch policy"): a derived build only once it latched, for the (text, data) pair it was
+ * derived for, and not when this task is one the validator samples (it then runs on the JIT and is captured). Registered builds: yes, unless the task is sampled for a loaded text. */
 bool armlet_probe_gate(struct armlet_ctx *c, const struct armlet_ucode_id *u);
+/* the native handler declined the task (the JIT runs it): the validator may take it (a command kind a latched build has not validated; a G_LOAD_UCODE of a candidate text) */
+void armlet_probe_declined(struct armlet_ctx *c, const struct armlet_ucode_id *u);
 
 /* A pair's outcome, for the offline harness and the tests */
 enum { PROBE_OUT_NONE, PROBE_OUT_NO_CANDIDATE, PROBE_OUT_UNSUPPORTED, PROBE_OUT_PASS, PROBE_OUT_PASS_TOL, PROBE_OUT_FAIL, PROBE_OUT_INCONCLUSIVE, PROBE_OUT_PENDING };
@@ -56,6 +59,7 @@ static inline void armlet_probe_reset(void) {}
 static inline void armlet_probe_offer(struct armlet_ctx *c, const struct armlet_ucode_id *u) { (void)c; (void)u; }
 static inline void armlet_probe_note_load(uint32_t text, uint32_t data, uint32_t len) { (void)text; (void)data; (void)len; }
 static inline bool armlet_probe_gate(struct armlet_ctx *c, const struct armlet_ucode_id *u) { (void)c; (void)u; return true; }
+static inline void armlet_probe_declined(struct armlet_ctx *c, const struct armlet_ucode_id *u) { (void)c; (void)u; }
 #endif
 
 #ifdef __cplusplus

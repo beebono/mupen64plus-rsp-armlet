@@ -74,6 +74,8 @@ struct hle_dead_range {
 
 struct hle_task;
 struct hle_ucode;
+struct hle_gate;                    /* the command-kind gate of a derived build (probe.c, validate.c; docs/design.md "The background validator and the latch policy") */
+struct hle_dx;                      /* a detached replay: the task runs on memories and registers of its own, off the emulation thread (validate.c) */
 
 struct hle_family {
     const char *name;               /* "f3dex2" */
@@ -101,6 +103,7 @@ struct hle_ucode {
     uint32_t live_sregs;            /* with HLE_F_REGS_LIVE: bit r = scalar register r is read by a later task */
     const struct hle_dead_range *dead;  /* DMEM masks, or NULL */
     unsigned n_dead;
+    struct hle_gate *gate;          /* a build the probe derived: which command kinds it may run (latch policy); NULL for the registered builds (everything) */
 };
 
 /* Registration: a table entry in the section "hle_ucodes" (no shared file to edit). */
@@ -123,6 +126,9 @@ struct hle_task {
     unsigned start_pc;              /* SP_PC at the start of the task */
     int log;                        /* nonzero: RDRAM writes and RDP register writes are logged for the commit (the task-level run; not the step routine) */
     int switched;                   /* set by a family that took another build over in the middle of the task (G_LOAD_UCODE): the verify compare of the RDP stream ignores the scratch bytes behind one-byte commands */
+    struct hle_dx *dx;              /* a detached replay (validate.c): the SP registers, the DMA, the RDP lists and the interpreter's registers are its own; NULL for the real run */
+    const struct hle_gate *gate;    /* the gate of the build the loop runs now (hle_bind), or NULL */
+    uint32_t *cmds;                 /* the command kinds the loop ran, counted (a detached replay of the build under validation), or NULL */
 };
 
 /* DMEM accessors (big-endian view). DMEM and RDRAM are arrays of 32-bit words that are also accessed as halfwords and bytes: through types that may alias. */
@@ -155,6 +161,20 @@ int hle_mtc0(struct hle_task *t, unsigned rd, uint32_t value);
 int hle_poll_status(struct hle_task *t, unsigned rt, uint32_t *value);
 /* The end of the task as the BREAK instruction makes it (SP_STATUS BROKE | HALT, MI_INTR when INTR_BREAK is set); end_pc is the pc the RSP is left at. */
 void hle_break(struct hle_task *t, unsigned end_pc);
+
+/* The command-kind hook of a front-end's loop (docs/design.md, "The background validator and the latch policy"): `kind` is the command's opcode byte, or a risky path (LATCH_K_CLIP,
+ * LATCH_K_LIT, LATCH_K_LOAD, LATCH_K_CULLDL in latch.h). Counts it for a replay under validation; declines the task (nonzero: the caller returns HLE_DECLINE) when the build is a latched
+ * derived build that has not run this kind in a validated task. Costs one test when neither applies. */
+int hle_cmd_slow(struct hle_task *t, unsigned kind);
+static inline int hle_cmd(struct hle_task *t, unsigned kind) { return (t->gate || t->cmds) ? hle_cmd_slow(t, kind) : 0; }
+/* The data situations of a G_VTX (latch.h): the OR of the vertices' clip-flag words, and whether one has clip w <= 0. Nonzero: declined (as hle_cmd). */
+int hle_vtx_kinds_slow(struct hle_task *t, uint32_t flags_or, int wneg);
+static inline int hle_vtx_kinds(struct hle_task *t, uint32_t flags_or, int wneg) { return (t->gate || t->cmds) ? hle_vtx_kinds_slow(t, flags_or, wneg) : 0; }
+static inline int hle_wneg(int16_t wi, uint16_t wf) { return wi < 0 || (wi == 0 && wf == 0); }
+/* The loop works with build `u` from now on (the task's own at the start, a G_LOAD_UCODE's afterwards): its gate, and the counting of a replay under validation */
+void hle_bind(struct hle_task *t, const struct hle_ucode *u);
+/* Whether a derived build may be taken over by a G_LOAD_UCODE: latched (in a replay under validation: any that is not unlatched for good). Registered builds: always. */
+int hle_build_usable(const struct hle_task *t, const struct hle_ucode *u);
 
 /* nonzero in the exact-events mode (ARMLET_HLE_EXACT=1): a front-end then does every SP DMA and every IMEM load the microcode does, in its order, instead of only what the external effects need */
 int hle_exact(void);

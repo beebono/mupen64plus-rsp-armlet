@@ -10,6 +10,8 @@
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
 #include <inttypes.h>
+#include <pthread.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -24,6 +26,7 @@
 #include "f3dex_bld.h"
 #include "f3d_bld.h"
 #include "derive.h"
+#include "gate.h"
 #include "hle.h"
 #include "hle_f3dex2_int.h"
 #include "hle_internal.h"
@@ -31,6 +34,7 @@
 #include "native/native_internal.h"
 #include "probe_cases.h"
 #include "ucache.h"
+#include "validate.h"
 
 #define PAIR_MAX 16
 #define MAX_TASKS 128
@@ -57,6 +61,17 @@ struct pair {
     const char *first_diff, *incon_why;
     char note[200];
     char first_report[600];
+    /* the latch policy (docs/design.md, "The background validator and the latch policy"): a pair whose probe passed has a candidate build (b, registered with its gate) */
+    int pol;                            /* the policy runs for this pair */
+    struct hle_gate gate;               /* what the build may run (read by the front-ends' loops) */
+    _Atomic int lstate;                 /* LATCH_*: the emulation thread's view of ls.state */
+    _Atomic unsigned interval;          /* a latched build: one in this many tasks is validated */
+    _Atomic unsigned tasks;             /* graphics tasks of the pair since it became a candidate */
+    unsigned tick;                      /* (emulation thread) the sampling count */
+    struct latch_state ls;              /* under P.pl, on the validator thread */
+    uint64_t t_cand;                    /* when it became a candidate (ns) */
+    unsigned stored_strikes, prior_matches, prior_mismatches;
+    int near, open;
 };
 
 static struct {
@@ -68,7 +83,14 @@ static struct {
     char why[96];
     struct { uint32_t text, data, len; } note[4];          /* G_LOAD_UCODEs the front-end saw since the last offer (armlet_probe_note_load; a task loads S2DEX and its own text back) */
     unsigned n_note;
+    struct latch_cfg lc;                                    /* GfxLatchPolicy */
+    int validator;                                          /* the validator thread runs (the latch policy decides; else ARMLET_PROBE_LATCH latches a pass at once) */
+    int latch_now, tol, ltrace;
+    unsigned loaded_rr;                                     /* (round robin over the loaded candidates) */
 } P;
+
+static pthread_mutex_t l_pl = PTHREAD_MUTEX_INITIALIZER;   /* the pairs' latch_state (the validator thread's results; RomClosed) */
+static void pol_result(void *owner, const struct val_result *r);
 
 static inline uint64_t now_ns(void)
 {
@@ -114,17 +136,41 @@ void armlet_probe_init(struct armlet_ctx *c)
     if (!strcmp(path, "off"))
         path = "";
     (void)ucache_open(path);
-    armlet_log(M64MSG_INFO, "probe on: unknown graphics ucodes are derived and probed (cache %s%s%s%s)", ucache_path()[0] ? ucache_path() : "off", c->cfg.probe_latch ? ", latching a pass" : "",
+    P.lc = c->cfg.latch;
+    P.latch_now = c->cfg.probe_latch;
+    P.tol = c->cfg.probe_tol;
+    P.ltrace = (e = getenv("ARMLET_LATCH_TRACE")) && *e && *e != '0';
+    if (!P.latch_now)
+        P.validator = armlet_valid_start(&P.lc, pol_result) == 0;
+    armlet_log(M64MSG_INFO, "probe on: unknown graphics ucodes are derived and probed (cache %s%s%s%s)", ucache_path()[0] ? ucache_path() : "off",
+               c->cfg.probe_latch ? ", latching a pass at once (ARMLET_PROBE_LATCH)" : P.validator ? ", latching after background validation" : ", no validator: nothing latches",
                c->cfg.probe_force ? ", also the registered ucodes" : "", c->cfg.probe_tol ? ", near-match tolerance" : "");
+    if (P.validator)
+        armlet_log(M64MSG_INFO, "latch policy: evidence %.1f, %u distinct (NEAR x %.2f), %u strikes, sampling 1/%u .. 1/%u (halving every %u), %u capture slots", P.lc.evidence, P.lc.distinct,
+                   P.lc.near_mul, P.lc.strikes, P.lc.sample_first, P.lc.sample_last, P.lc.sample_decay, P.lc.queue);
 }
+
+static void store_pol(struct pair *p);
 
 void armlet_probe_reset(void)
 {
     unsigned i;
+    if (P.validator)
+        armlet_valid_stop();                        /* first: nothing replays a build any more */
+    P.validator = 0;
     for (i = 0; i < PAIR_MAX; i++) {
-        if (P.pairs[i].latched && P.pairs[i].b)
-            armlet_hle_unregister_dynamic(&P.pairs[i].b->uc);
-        free(P.pairs[i].b);
+        struct pair *p = &P.pairs[i];
+        if (p->pol) {
+            p->open = 0;                            /* (a clean end) */
+            if (atomic_load(&p->lstate) != LATCH_DEAD && !P.latch_now && (!p->force || P.force_cache))
+                store_pol(p);                       /* (the evidence and the kinds validated this session) */
+            armlet_log(M64MSG_INFO, "latch: ucode %016" PRIx64 " data %016" PRIx64 ": %s, %u tasks equal, %u different, evidence %.2f, %u distinct, %u strikes", p->tid, p->did,
+                       p->ls.state == LATCH_LATCHED ? "latched" : p->ls.state == LATCH_DEAD ? "unlatched for good" : "candidate", p->ls.matches, p->ls.mismatches, p->ls.evidence, p->ls.distinct, p->ls.strikes);
+            latch_free(&p->ls);
+        }
+        if (p->latched && p->b)
+            armlet_hle_unregister_dynamic(&p->b->uc);
+        free(p->b);
     }
     memset(P.pairs, 0, sizeof(P.pairs));
     ucache_close();
@@ -521,14 +567,158 @@ static void store_entry(struct pair *p, int probe_result)
     (void)ucache_store(&e);
 }
 
-static void latch(struct armlet_ctx *c, struct pair *p)
+/* ---- the latch policy (docs/design.md, "The background validator and the latch policy") ------------------------------------------------------------------------------------------ */
+/* the pair's cache entry with its latch state (the record, the verdict and the probe's counts as first_sight / finish stored them). Under l_pl or with the validator stopped. */
+static void store_pol(struct pair *p)
 {
-    if (!c->cfg.probe_latch || !p->b || p->latched)
+    struct ucache_entry e;
+    unsigned k;
+    memset(&e, 0, sizeof(e));
+    e.text_id = p->tid;
+    e.data_id = p->did;
+    e.verdict = (uint8_t)p->dr.verdict;
+    e.family = (uint8_t)p->dr.family;
+    e.probe = (uint8_t)(p->outcome == PROBE_OUT_PASS_TOL ? UC_PROBE_PASS_TOL : UC_PROBE_PASS);
+    e.primary = (uint16_t)p->dr.primary;
+    e.n_equal = (uint16_t)p->n_equal; e.n_tol = (uint16_t)p->n_tol; e.n_declined = (uint16_t)p->n_declined; e.n_mismatch = (uint16_t)p->n_mismatch; e.n_inconclusive = (uint16_t)p->n_inconclusive;
+    ucache_from_rec(&e, &p->dr.rec);
+    e.latch = (uint8_t)(p->ls.state == LATCH_LATCHED ? UC_LATCH_LATCHED : p->ls.state == LATCH_DEAD ? UC_LATCH_DEAD : UC_LATCH_NONE);
+    e.strikes = (uint8_t)(p->ls.strikes > 255 ? 255 : p->ls.strikes);
+    e.near = (uint8_t)p->near;
+    e.open = (uint8_t)p->open;
+    e.matches = p->prior_matches + p->ls.matches;
+    e.mismatches = p->prior_mismatches + p->ls.mismatches;
+    e.evidence_milli = (uint32_t)(p->ls.evidence * 1000.0);
+    e.distinct = p->ls.distinct;
+    for (k = 0; k < LATCH_KWORDS && k < 5; k++)
+        e.kinds[k] = p->ls.kinds[k];
+    if ((!p->force || P.force_cache) && !p->experiment)
+        (void)ucache_store(&e);
+}
+
+static void gate_publish(struct pair *p)
+{
+    unsigned k;
+    for (k = 0; k < LATCH_KWORDS; k++)
+        atomic_store_explicit(&p->gate.kinds[k], p->ls.kinds[k], memory_order_relaxed);
+    atomic_store_explicit(&p->interval, latch_sample_interval(&p->ls, &P.lc), memory_order_relaxed);
+    atomic_store_explicit(&p->gate.dead, p->ls.state == LATCH_DEAD, memory_order_release);
+    atomic_store_explicit(&p->gate.latched, p->ls.state == LATCH_LATCHED, memory_order_release);
+    atomic_store_explicit(&p->lstate, p->ls.state, memory_order_release);
+}
+
+/* A pair's probe passed (or the cache says it did): its build becomes a candidate, or stays latched from an earlier session (ce, with its validated kinds), or is never tried
+ * again (unlatched for good). Registers the build: its gate keeps it from running until it latches. */
+static void pol_start(struct pair *p, const struct ucache_entry *ce)
+{
+    unsigned k;
+    if (!p->b || p->pol)
         return;
-    if (armlet_hle_register_dynamic(&p->b->uc) == 0) {
-        p->latched = 1;
-        armlet_log(M64MSG_INFO, "probe: ucode %016" PRIx64 " latched as \"%s\"", p->tid, p->b->name);
+    p->near = p->dr.verdict == DERIVE_NEAR || p->outcome == PROBE_OUT_PASS_TOL || (ce && ce->near);
+    if (ce && ce->open && ce->strikes && ce->latch == UC_LATCH_NONE && !P.latch_now) {
+        /* the last session that used it ended without RomClosed / PluginShutdown while it was suspended: it may have caused that (a crash); unlatched for good */
+        struct ucache_entry d = *ce;
+        d.latch = UC_LATCH_DEAD;
+        d.open = 0;
+        if (!p->force || P.force_cache)
+            (void)ucache_store(&d);
+        snprintf(p->note, sizeof(p->note), "unlatched for good: suspended when an earlier session ended uncleanly");
+        armlet_log(M64MSG_WARNING, "latch: ucode %016" PRIx64 " data %016" PRIx64 ": suspended when the last session ended without closing the ROM; unlatched for good", p->tid, p->did);
+        return;
     }
+    if (ce && ce->latch == UC_LATCH_DEAD) {
+        snprintf(p->note, sizeof(p->note), "cached: unlatched for good after %u different tasks", ce->mismatches);
+        armlet_log(M64MSG_INFO, "latch: ucode %016" PRIx64 " data %016" PRIx64 ": unlatched for good in an earlier session (%u strikes); not tried again", p->tid, p->did, ce->strikes);
+        return;
+    }
+    if (!P.latch_now && !P.validator)
+        return;
+    if (latch_init(&p->ls, &P.lc, p->near, ce ? ce->strikes : 0))
+        return;
+    p->stored_strikes = ce ? ce->strikes : 0;
+    p->prior_matches = ce ? ce->matches : 0;
+    p->prior_mismatches = ce ? ce->mismatches : 0;
+    p->b->uc.gate = &p->gate;
+    if (P.latch_now) {                              /* ARMLET_PROBE_LATCH=1 (tests): latched at once, every command kind, never sampled */
+        p->ls.state = LATCH_LATCHED;
+        atomic_store(&p->gate.open, 1);
+    } else if (ce && ce->latch == UC_LATCH_LATCHED) {
+        p->ls.state = LATCH_LATCHED;                /* (latched in an earlier session: native at once, under the gate and the sampling, which starts again at its first rate) */
+        p->ls.evidence = ce->evidence_milli / 1000.0;
+        p->ls.distinct = ce->distinct;
+        for (k = 0; k < LATCH_KWORDS && k < 5; k++)
+            p->ls.kinds[k] = ce->kinds[k];
+    }
+    p->open = 1;                                    /* the session marker: cleared by the store at RomClosed */
+    if (!P.latch_now)
+        store_pol(p);
+    if (armlet_hle_register_dynamic(&p->b->uc)) {
+        latch_free(&p->ls);
+        p->b->uc.gate = NULL;
+        return;
+    }
+    p->latched = 1;                                 /* (registered) */
+    p->pol = 1;
+    p->t_cand = now_ns();
+    gate_publish(p);
+    {   /* (its dead DMEM ranges, in the form of tools/equiv's EXTRA_MASKS: a test of a game with a derived build needs them on both sides) */
+        char m[600];
+        size_t n = 0;
+        for (k = 0; k < p->b->uc.n_dead && n + 24 < sizeof(m); k++)
+            n += (size_t)snprintf(m + n, sizeof(m) - n, "%s%x-%x", k ? "," : "", p->b->uc.dead[k].lo, p->b->uc.dead[k].hi);
+        m[n] = 0;
+        armlet_log(M64MSG_INFO, "latch: masks %016" PRIx64 ":%s", p->b->uc.id, m);
+    }
+    armlet_log(M64MSG_INFO, "latch: ucode %016" PRIx64 " data %016" PRIx64 " \"%s\": %s", p->tid, p->did, p->b->name,
+               P.latch_now ? "latched at once (ARMLET_PROBE_LATCH)" : p->ls.state == LATCH_LATCHED ? "latched in an earlier session: native under the gate, sampled" :
+               p->near ? "a NEAR candidate: validating real tasks" : "a candidate: validating real tasks");
+}
+
+/* the validator's outcome for a pair (validator thread) */
+static void pol_result(void *owner, const struct val_result *r)
+{
+    struct pair *p = (struct pair *)owner;
+    int ev = LATCH_EV_NONE;
+    pthread_mutex_lock(&l_pl);
+    if (!p->pol || p->ls.state == LATCH_DEAD) {
+        pthread_mutex_unlock(&l_pl);
+        return;
+    }
+    if (P.ltrace)
+        armlet_log(M64MSG_INFO, "latch: %016" PRIx64 " %s fp %016" PRIx64 " (%.0f us)%s%s%s", p->tid,
+                   r->outcome == VAL_MATCH ? (r->tol ? "equal (tolerance)" : "equal") : r->outcome == VAL_MISMATCH ? "DIFFERS" : r->outcome == VAL_DECLINED ? "declined" : r->outcome == VAL_INCONCLUSIVE ? "inconclusive" : "without the build",
+                   r->fp, r->replay_us, r->why ? ": " : "", r->why ? r->why : "", r->outcome == VAL_MISMATCH && r->report ? r->report : "");
+    if (r->outcome == VAL_MATCH) {
+        ev = latch_match(&p->ls, &P.lc, r->fp, r->hist);
+        if (ev == LATCH_EV_LATCH)
+            armlet_log(M64MSG_INFO, "latch: ucode %016" PRIx64 " data %016" PRIx64 " LATCHED after %u equal tasks (evidence %.2f, %u distinct) in %.2f s, %u graphics tasks of the pair", p->tid, p->did,
+                       p->ls.matches, p->ls.evidence, p->ls.distinct, (double)(now_ns() - p->t_cand) / 1e9, atomic_load(&p->tasks));
+    } else if (r->outcome == VAL_MISMATCH) {
+        ev = latch_mismatch(&p->ls, &P.lc);
+        armlet_log(M64MSG_WARNING, "latch: ucode %016" PRIx64 " data %016" PRIx64 ": a real task differs (strike %u): %s\n%.700s", p->tid, p->did, p->ls.strikes,
+                   ev == LATCH_EV_DEAD ? "UNLATCHED for good" : "suspended, validating again", r->report ? r->report : "");
+    } else if (r->outcome == VAL_IRRELEVANT && p->ls.state == LATCH_LATCHED) {
+        p->ls.post++;                               /* (a loaded build's sampling decays on the tasks that did not load it too) */
+    }
+    gate_publish(p);
+    if (ev != LATCH_EV_NONE)
+        store_pol(p);
+    pthread_mutex_unlock(&l_pl);
+}
+
+static int near_dmem_ok(const struct hle_ucode *u, const uint32_t *dmem, unsigned addr, unsigned na, unsigned nb);
+
+/* arms a capture of the next JIT run for pair p (cand); run: the build the task starts with */
+static int pol_arm(struct pair *p, const struct hle_ucode *run)
+{
+    struct val_target t;
+    memset(&t, 0, sizeof(t));
+    t.owner = p;
+    t.cand = &p->b->uc;
+    t.run = run;
+    t.tol = P.tol && p->near;
+    t.dmem_ok = near_dmem_ok;
+    return armlet_valid_arm(&t);                    /* (-1: no free slot, counted) */
 }
 
 static void finish(struct armlet_ctx *c, struct pair *p)
@@ -546,8 +736,34 @@ static void finish(struct armlet_ctx *c, struct pair *p)
     pr = out == PROBE_OUT_PASS ? UC_PROBE_PASS : out == PROBE_OUT_PASS_TOL ? UC_PROBE_PASS_TOL : out == PROBE_OUT_FAIL ? UC_PROBE_FAIL : UC_PROBE_NONE;
     if ((!p->force || P.force_cache) && !p->experiment && out != PROBE_OUT_INCONCLUSIVE)
         store_entry(p, pr);
+#ifdef ARMLET_HLE_MUTATE
+    if ((ARMLET_HLE_MUTATE == 440 || ARMLET_HLE_MUTATE == 441 || ARMLET_HLE_MUTATE == 443) && (out == PROBE_OUT_PASS || out == PROBE_OUT_PASS_TOL)) {
+        /* test builds: a record that is wrong in a way the probe did not see (the build is remade from it after the probe passed): the validator must catch it on real tasks.
+         * 440: the reject mask's near-plane bits (F3DEX2 / F3DEX 1.x / F3D); 441: a wrong G_CULLDL (F3DEX2: its reject mask; F3D: its own mask; F3DEX 1.x: the form);
+         * 443: an attribute every task shows (F3DEX2: zex; F3DEX 1.x: NoN; F3D: the clip flag word) */
+        const char *why = NULL;
+        struct dbuild *nb = (struct dbuild *)calloc(1, sizeof(*nb));
+        if (ARMLET_HLE_MUTATE == 443)
+            p->dr.family == DERIVE_F3D ? (void)(p->dr.rec.f3[F3F_FV] ^= 1) : p->dr.family == DERIVE_F3DEX1 ? (void)(p->dr.rec.non ^= 1) : (void)(p->dr.rec.zex ^= 1);
+        else if (ARMLET_HLE_MUTATE == 440)
+            p->dr.rec.reject_mask ^= 0x40;
+        else if (p->dr.family == DERIVE_F3D)
+            p->dr.rec.culldl_mask ^= 0x8f8f;
+        else if (p->dr.family == DERIVE_F3DEX1)
+            p->dr.rec.culldl_off = !p->dr.rec.culldl_off;
+        else
+            p->dr.rec.reject_mask ^= 0x4000;
+        if (nb && !dbuild_make(nb, p->tid, &p->dr, &why)) {
+            free(p->b);
+            p->b = nb;
+            armlet_log(M64MSG_INFO, "probe: ucode %016" PRIx64 ": test build %d: the record is changed after the probe passed", p->tid, ARMLET_HLE_MUTATE);
+        } else
+            free(nb);
+    }
+#endif
+    (void)c;
     if (out == PROBE_OUT_PASS || out == PROBE_OUT_PASS_TOL)
-        latch(c, p);
+        pol_start(p, NULL);
     else if (!p->latched) {
         free(p->b);
         p->b = NULL;
@@ -573,7 +789,8 @@ static void first_sight(struct armlet_ctx *c, struct pair *p, const struct armle
     uint32_t text[1024], ta = p->ta, i;
     static uint8_t data[0x1000], ext[0x2000];
     struct derive_in in;
-    const struct ucache_entry *ce = ucache_find(p->tid, did);
+    struct ucache_entry ce_copy;
+    const struct ucache_entry *ce = ucache_get(p->tid, did, &ce_copy) == 0 ? &ce_copy : NULL;
     uint64_t t0;
     const char *why = NULL;
 
@@ -630,7 +847,7 @@ static void first_sight(struct armlet_ctx *c, struct pair *p, const struct armle
             p->outcome = ce->probe == UC_PROBE_PASS ? PROBE_OUT_PASS : PROBE_OUT_PASS_TOL;
             snprintf(p->note, sizeof(p->note), "cached: the probe passed");
             armlet_log(M64MSG_INFO, "probe: ucode %016" PRIx64 " data %016" PRIx64 ": cached, derived %s, probe passed", p->tid, p->did, derive_verdict_name(ce->verdict));
-            latch(c, p);
+            pol_start(p, ce);
             return;
         }
         start_probe(c, p, "from the cache");
@@ -800,7 +1017,19 @@ static int offer_loaded(struct armlet_ctx *c, uint32_t ta, uint32_t da, uint32_t
     return 1;
 }
 
+static void offer_locked(struct armlet_ctx *c, const struct armlet_ucode_id *u);
+
 void armlet_probe_offer(struct armlet_ctx *c, const struct armlet_ucode_id *u)
+{
+    if (!P.init)
+        return;
+    if (armlet_hle_fe_trylock())                    /* (the validator is replaying: the derivation and the canned tasks wait for a later task) */
+        return;
+    offer_locked(c, u);
+    armlet_hle_fe_unlock();
+}
+
+static void offer_locked(struct armlet_ctx *c, const struct armlet_ucode_id *u)
 {
     uint32_t da, ds;
     uint64_t did;
@@ -808,8 +1037,6 @@ void armlet_probe_offer(struct armlet_ctx *c, const struct armlet_ucode_id *u)
     int registered;
     unsigned i;
 
-    if (!P.init)
-        return;
     while (P.n_note) {                                  /* (one derivation per graphics task; the notes of the same texts come again with the next tasks) */
         P.n_note--;
         if (offer_loaded(c, P.note[P.n_note].text, P.note[P.n_note].data, P.note[P.n_note].len)) {
@@ -880,27 +1107,106 @@ int armlet_probe_run_registered(struct armlet_ctx *c, const struct hle_ucode *u)
     return (int)bad;
 }
 
-bool armlet_probe_gate(struct armlet_ctx *c, const struct armlet_ucode_id *u)
+static uint64_t task_did(struct armlet_ctx *c, int *ok)
 {
-    unsigned i;
     uint32_t da, ds;
-    uint64_t did;
-    if (!P.init)
-        return true;
-    for (i = 0; i < PAIR_MAX; i++)
-        if (P.pairs[i].latched && P.pairs[i].tid == u->id)
-            break;
-    if (i == PAIR_MAX)
-        return true;
     ds = armlet_dmem32(c, ARMLET_TASK_UCODE_DATA_SIZE);
     if (!ds || ds > 0x1000)
         ds = ds ? 0x1000 : 0x800;
     ds = (ds + 3) & ~3u;
     da = armlet_dmem32(c, ARMLET_TASK_UCODE_DATA) & 0x7ffffc;
-    if (da + ds > 0x800000)
-        return false;
-    did = armlet_ucode_hash((const unsigned char *)c->rsp.RDRAM, da, ds);
-    return did == P.pairs[i].did;
+    *ok = da + ds <= 0x800000;
+    return *ok ? armlet_ucode_hash((const unsigned char *)c->rsp.RDRAM, da, ds) : 0;
+}
+
+/* a loaded text's pair in the given latch state (round robin), or NULL */
+static struct pair *loaded_pair(int state)
+{
+    unsigned i;
+    for (i = 0; i < PAIR_MAX; i++) {
+        struct pair *p = &P.pairs[(P.loaded_rr + i) % PAIR_MAX];
+        if (p->loaded && p->pol && atomic_load_explicit(&p->lstate, memory_order_acquire) == state) {
+            P.loaded_rr = (P.loaded_rr + i + 1) % PAIR_MAX;
+            return p;
+        }
+    }
+    return NULL;
+}
+
+/* the build a task of ucode u starts with when a loaded text is validated in it: a registered build, or a latched derived one */
+static const struct hle_ucode *host_build(const struct armlet_ucode_id *u)
+{
+    const struct hle_ucode *h = armlet_hle_find(u->id);
+    if (h && h->gate && !atomic_load_explicit(&h->gate->latched, memory_order_acquire))
+        h = NULL;                                   /* (a host that is itself only a candidate: its loaded texts are not validated in its tasks) */
+    return h && h->fam == &f3dex2_fam ? h : NULL;
+}
+
+bool armlet_probe_gate(struct armlet_ctx *c, const struct armlet_ucode_id *u)
+{
+    unsigned i;
+    uint64_t did;
+    struct pair *p = NULL, *lp;
+    int ok, st;
+    if (!P.init)
+        return true;
+    for (i = 0; i < PAIR_MAX; i++)
+        if (P.pairs[i].state && !P.pairs[i].loaded && P.pairs[i].tid == u->id && (P.pairs[i].pol || P.pairs[i].force))
+            break;
+    if (i < PAIR_MAX) {
+        did = task_did(c, &ok);
+        for (i = 0; i < PAIR_MAX && !p; i++)
+            if (P.pairs[i].state && !P.pairs[i].loaded && P.pairs[i].tid == u->id && P.pairs[i].did == did && ok)
+                p = &P.pairs[i];
+        if (!p || !p->pol)
+            return false;                           /* (another data image, or a forced ucode before its build is a candidate: as an unknown ucode, the JIT) */
+        atomic_fetch_add_explicit(&p->tasks, 1, memory_order_relaxed);
+        st = atomic_load_explicit(&p->lstate, memory_order_acquire);
+        if (st == LATCH_CAND) {
+            if (P.validator)
+                (void)pol_arm(p, &p->b->uc);        /* every task the validator has room for, until the build latches */
+            return false;
+        }
+        if (st != LATCH_LATCHED)
+            return false;                           /* (unlatched for good: the JIT) */
+        if (P.validator && ++p->tick >= atomic_load_explicit(&p->interval, memory_order_relaxed) && pol_arm(p, &p->b->uc) == 0) {
+            p->tick = 0;                            /* a latched build's sample: this task runs on the JIT and is validated (no free slot: the next task) */
+            return false;
+        }
+        return true;
+    }
+    /* a task of another ucode: a latched loaded text is sampled in the tasks that may load it */
+    if (P.validator && (lp = loaded_pair(LATCH_LATCHED)) != NULL) {
+        const struct hle_ucode *h = host_build(u);
+        if (h && ++lp->tick >= atomic_load_explicit(&lp->interval, memory_order_relaxed) && pol_arm(lp, h) == 0) {
+            lp->tick = 0;
+            return false;
+        }
+    }
+    return true;
+}
+
+void armlet_probe_declined(struct armlet_ctx *c, const struct armlet_ucode_id *u)
+{
+    const char *why = armlet_hle_last_why();
+    struct pair *lp;
+    unsigned i;
+    if (!P.init || !P.validator || !why)
+        return;
+    if (why == hle_gate_why) {                      /* a latched build met a command kind it has not run in a validated task: the JIT runs the task, the validator takes it */
+        for (i = 0; i < PAIR_MAX; i++)
+            if (P.pairs[i].pol && !P.pairs[i].loaded && P.pairs[i].tid == u->id && atomic_load(&P.pairs[i].lstate) == LATCH_LATCHED) {
+                pol_arm(&P.pairs[i], &P.pairs[i].b->uc);
+                return;
+            }
+        if ((lp = loaded_pair(LATCH_LATCHED)) != NULL && host_build(u))
+            pol_arm(lp, host_build(u));
+        return;
+    }
+    /* a task that declined at the G_LOAD_UCODE of a text that is a candidate: the validator takes it (the JIT runs it anyway) */
+    if ((!strcmp(why, "G_LOAD_UCODE of another ucode") || !strcmp(why, "an earlier task with these pointers loaded another ucode")) && (lp = loaded_pair(LATCH_CAND)) != NULL && host_build(u))
+        pol_arm(lp, host_build(u));
+    (void)c;
 }
 
 #endif

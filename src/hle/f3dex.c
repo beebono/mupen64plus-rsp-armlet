@@ -17,6 +17,7 @@
 #include <string.h>
 
 #include "hle.h"
+#include "latch.h"
 #include "f3dex_fx.h"
 #include "f3dex_dmem.h"
 #include "f3dex_bld.h"
@@ -429,6 +430,8 @@ static int cmd_vtx(struct f3dex_task *f, uint32_t w0, uint32_t w1)
     s = fetch(f, seg(f, w1), w0 & 0x3ff);               /* the class-0 DMA comes first */
     if (geom & F3DEX_G_LIGHTING) {
         uint32_t l = hle_dm32(t, f->L->lights);
+        if (hle_cmd(t, LATCH_K_LIT))
+            return HLE_DECLINE;
         if (f->ov != OV_LIGHT) {
             load_overlay(f, 2);
             f->ov = OV_LIGHT;
@@ -456,6 +459,16 @@ static int cmd_vtx(struct f3dex_task *f, uint32_t w0, uint32_t w1)
         f3dex_load_vin(&in[i], s.img, s.base + 16 * i, s.ram);
     if (fx_vtx(&ctx, in, cnt, out))
         return hle_decline(t, "G_VTX: state outside what the native code supports");
+    if (t->gate || t->cmds) {                           /* (the latch policy's data situations) */
+        uint32_t fo = 0;
+        int wn = 0;
+        for (i = 0; i < cnt; i++) {
+            fo |= out[i].flags;
+            wn |= hle_wneg(out[i].cx[3], out[i].cf[3]);
+        }
+        if (hle_vtx_kinds(t, fo, wn))
+            return HLE_DECLINE;
+    }
     for (i = 0; i < cnt; i++) {
         unsigned a = f->L->vbuf + 0x28u * ((v0x2 >> 1) + i);
         f3dex_store_vtx(&out[i], t->dmem, a);
@@ -499,7 +512,7 @@ static int tri_one(struct f3dex_task *f, unsigned a0, unsigned a1, unsigned a2, 
     *res = rc;
     if (f->trace) fprintf(stderr, "F3DEX tri %u %u %u flat %u -> rc %d len %u geom %08x f=%04x %04x %04x\n", a0, a1, a2, aflat, rc, len, ti.geom, v[0].flags, v[1].flags, v[2].flags);
     if (rc == F3DEX_TRI_REJECT || rc == F3DEX_TRI_CULL || rc == F3DEX_TRI_DEGEN)
-        return HLE_OK;
+        return hle_cmd(t, rc == F3DEX_TRI_REJECT ? LATCH_K_TRI_REJECT : LATCH_K_TRI_CULL) ? HLE_DECLINE : HLE_OK;
     if (rc == F3DEX_TRI_OK)
         return emit_bytes(f, cmd, len, 1);
     {   /* clipping */
@@ -507,6 +520,10 @@ static int tri_one(struct f3dex_task *f, unsigned a0, unsigned a1, unsigned a2, 
         struct f3dex_clip_out co;
         const struct f3dex_vtx *vp[3] = { &v[0], &v[1], &v[2] };
         unsigned i;
+        if (hle_cmd(t, LATCH_K_CLIP))
+            return HLE_DECLINE;
+        if ((hle_wneg(v[0].cx[3], v[0].cf[3]) || hle_wneg(v[1].cx[3], v[1].cf[3]) || hle_wneg(v[2].cx[3], v[2].cf[3])) && hle_cmd(t, LATCH_K_NEARCLIP))
+            return HLE_DECLINE;
         if (f->ov != OV_CLIP) {
             load_overlay(f, 1);
             f->ov = OV_CLIP;
@@ -679,6 +696,8 @@ static int f3dex_run(struct hle_task *t, const struct hle_ucode *u)
         f.k0 += 8;
         f.gp -= 8;
         op = w0 >> 24;
+        if (hle_cmd(t, op))                             /* (the latch policy's command-kind gate; the count of a replay under validation) */
+            return HLE_DECLINE;
         if (f.trace) fprintf(stderr, "F3DEX cmd %u: %08x %08x\n", f.ncmds, w0, w1);
         if (op >= 0xc0) {                               /* the RDP commands: copied, the segment address of the image commands resolved */
             if (op >= 0xfd)
@@ -732,6 +751,8 @@ static int f3dex_run(struct hle_task *t, const struct hle_ucode *u)
             case K1_BRANCHZ: {
                 unsigned va = hle_dm16(t, L->vtab + (w0 & 0xfff));
                 uint32_t vz = hle_dm32(t, va + 0x1c);
+                if ((int32_t)(vz - w1) <= 0 && hle_cmd(t, LATCH_K_BRZ))
+                    return HLE_DECLINE;
                 if ((int32_t)(vz - w1) <= 0 && jump_to(&f, seg(&f, hle_dm32(t, L->half1))) != HLE_OK)
                     return HLE_DECLINE;
                 break;
@@ -808,7 +829,10 @@ static int f3dex_run(struct hle_task *t, const struct hle_ucode *u)
                     }
                 }
                 if (acc != 0) {
-                    int e = enddl(&f);
+                    int e;
+                    if (hle_cmd(t, LATCH_K_CULLDL))
+                        return HLE_DECLINE;
+                    e = enddl(&f);
                     if (e > 0)
                         goto end;
                     if (e < 0)

@@ -10,6 +10,7 @@
 #include <stdlib.h>
 
 #include "hle.h"
+#include "latch.h"
 #include "native/native.h"
 
 #ifdef __cplusplus
@@ -26,6 +27,7 @@ struct hle_stream {
     size_t cap;
     unsigned (*size)(unsigned first_byte);      /* the ucode's own sizing of a command, or NULL */
     uint32_t cmd_pos, cmd_end, ignore_from;     /* the command being parsed, carried over from one list to the next (a command split over lists normalises as one) */
+    uint64_t keep;                              /* bytes kept at most (0: HLE_STREAM_KEEP) */
 };
 
 static inline void hle_stream_reset(struct hle_stream *s, const struct hle_ucode *uc)
@@ -75,7 +77,7 @@ static inline void hle_stream_add(struct hle_stream *s, const PrspNativeEvent *e
         }
         s->cmd_pos++;
         s->hash = (s->hash ^ byte) * 0x100000001b3ull;
-        if (s->len < HLE_STREAM_KEEP) {
+        if (s->len < (s->keep ? s->keep : HLE_STREAM_KEEP)) {
             if (s->len >= s->cap) {
                 s->cap = s->cap ? s->cap * 2 : 1u << 16;
                 s->bytes = (uint8_t *)realloc(s->bytes, s->cap);
@@ -124,8 +126,59 @@ struct hle_probe_out {
 int armlet_hle_probe_pair(const struct hle_ucode *uc, const PrspNativeSnap *before, const struct hle_probe_opts *opts, uint32_t win_lo, uint32_t win_hi, uint32_t win2_lo, uint32_t win2_hi,
                           uint32_t *rdram, struct hle_probe_out *out);
 void armlet_hle_set_rdram(uint32_t *rdram);                      /* probe_rdram.cpp */
-int armlet_hle_register_dynamic(const struct hle_ucode *u);     /* a build derived at run time: found by armlet_hle_find and armlet_hle_next after the registered ones */
+int armlet_hle_register_dynamic(const struct hle_ucode *u);
+const struct hle_ucode *armlet_hle_find_registered(uint64_t id);  /* the static table only (not the builds the probe registered) */     /* a build derived at run time: found by armlet_hle_find and armlet_hle_next after the registered ones */
 void armlet_hle_unregister_dynamic(const struct hle_ucode *u);
+
+/* ---- the detached replay (validate.c; docs/design.md "The background validator and the latch policy") -------------------------------------------------------------------------
+ * A front-end runs a captured task on memories and registers of its own (hle_task.dx): DMEM, IMEM, an 8 MiB RDRAM holding the rows the JIT's run read, the SP / DPC registers, MI_INTR, the
+ * status-poll counters and an RSP register file and vector unit for the interpreter's parts. The SP register writes are done here as the fork's RSP_MTC0 does them (DMA, SP_STATUS, the
+ * semaphore, DPC_START / END / STATUS; a DPC_END takes the list as the video plugin does, START = CURRENT = END), nothing reaches the fork, the video plugin or the game's RDRAM: it runs on any thread.
+ * The front-ends' own static state is shared with the emulation thread: the replay holds the front-end lock (armlet_hle_fe_*), which the emulation thread only ever tries. */
+struct hle_dx {
+    void *cpu;                                  /* an RSP::CPUState of its own (hle_rsp.cpp) */
+    uint32_t *dmem, *imem;                      /* 1024 host words each */
+    uint8_t *rdram;                             /* 8 MiB */
+    uint32_t crv[16], irq;
+    uint32_t *cr[16];
+    int16_t mfc0_count[32];
+    int32_t timeout;
+    const char *why;
+    unsigned end_pc;
+    int broke, switched;
+    struct hle_stream st;                       /* the RDP lists, as the verify compare takes them */
+    struct hle_dx_wr { uint32_t a, n; } *wr;    /* the RDRAM rows the run wrote (DMA, hle_rdram_write) */
+    size_t n_wr, cap_wr;
+    const struct hle_ucode *cand;               /* the build under validation (its commands are counted in hist) */
+    uint32_t hist[LATCH_NKINDS];
+};
+void *hle_dx_cpu_new(void);                     /* hle_rsp.cpp */
+void hle_dx_cpu_free(void *cpu);
+void hle_dx_cpu_load(void *cpu, const PrspNativeSnap *s, uint32_t *dmem, uint32_t *imem, uint32_t *rdram);
+uint32_t *hle_dx_cpu_sr(void *cpu);
+/* Runs build `uc` on the task that starts in `s0` (its RDRAM rows already in dx->rdram); dx->cand set by the caller. HLE_OK (the task ended: dx holds the end state) or HLE_DECLINE (dx->why). */
+int armlet_hle_dx_run(struct hle_dx *dx, const struct hle_ucode *uc, const PrspNativeSnap *s0);
+/* The JIT's run of the same task: its end state, its RDP stream (bytes kept or not), the RDRAM rows it wrote outside the ring with their final bytes */
+struct hle_dx_jit {
+    const PrspNativeSnap *s1;
+    const struct hle_stream *st;
+    const struct hle_dx_wr *wr;                 /* (a, n) of each row, the bytes one after the other in wr_bytes */
+    size_t n_wr;
+    const uint8_t *wr_bytes;
+};
+/* Compares the replay's end state with the JIT's as the verify compare does (external effects; the probe's near-match tolerance when opts->tol). Returns the number of differences
+ * (0: equal); *tol_used: equal only within the tolerance. The first ones are described in rep. */
+unsigned armlet_hle_dx_compare(const struct hle_dx *dx, const struct hle_ucode *uc, const struct hle_dx_jit *j, const struct hle_probe_opts *opts, char *rep, size_t repsz, int *tol_used);
+/* the front-end lock: the validator takes it around a replay; the emulation thread only tries it (the JIT runs the task when it is taken) */
+void armlet_hle_fe_enable(int on);              /* off: no locking at all (no validator) */
+int armlet_hle_fe_trylock(void);                /* 0: taken (or locking is off) */
+void armlet_hle_fe_lock(void);
+void armlet_hle_fe_unlock(void);
+uint64_t armlet_hle_fe_busy(void);
+void armlet_hle_core_init(void);
+int hle_dead_dmem_of(const struct hle_ucode *u, unsigned byte);      /* the byte is in one of the build's dead DMEM ranges */                /* the path's settings (before a validator thread starts) */              /* tasks the emulation thread gave to the JIT because the lock was taken */
+const char *armlet_hle_last_why(void);
+extern const char hle_gate_why[];               /* the decline reason of the command-kind gate */
 
 double armlet_hle_dmabench(const struct hle_ucode *uc, const PrspNativeSnap *before, unsigned iters, unsigned bytes, int record);
 double armlet_hle_bench(const struct hle_ucode *uc, const PrspNativeSnap *before, unsigned iters);   /* ns per front-end run, or -1 when it declines */

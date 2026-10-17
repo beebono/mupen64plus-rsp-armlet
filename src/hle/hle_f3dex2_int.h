@@ -85,6 +85,7 @@ struct f3 {
     int trace, watch;
     uint32_t nsrc;                  /* with nb != b: the address of the text it is loaded from (uc0 after the switch) */
     uint32_t uc0;                   /* the address of the text this run is for: OSTask.ucode at the start, the text address of the last G_LOAD_UCODE that switched builds */
+    const struct hle_ucode *nu;     /* the hle_ucode of nb (its gate: hle_bind at the switch) */
     const struct f3dex2_build *nb;  /* the build a G_LOAD_UCODE that was handed to the interpreter loads (b: the same text), taken over when the reloaded microcode reaches its first command fetch */
     unsigned ho_pc;                 /* where the interpreter takes over when the loop hands the task back: the G_ENDDL handler, or 0xfac (G_LOAD_UCODE) */
     uint16_t wval;

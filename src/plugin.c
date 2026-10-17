@@ -48,6 +48,7 @@ EXPORT m64p_error CALL PluginShutdown(void)
 {
     if (!l_init)
         return M64ERR_NOT_INIT;
+    armlet_hle_reset();                 /* (a shutdown without RomClosed: the validator stops and the latch state is stored as a clean close; harmless after RomClosed) */
     armlet_config_shutdown();
     armlet_log_set(NULL, NULL);
     l_init = 0;
