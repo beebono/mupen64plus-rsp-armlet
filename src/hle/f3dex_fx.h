@@ -23,10 +23,12 @@ extern "C" {
 #endif
 
 /* ---- the builds -------------------------------------------------------------------------------------------------------------------------------------------------------------------- */
+struct f3dex_layout;
 struct f3dex_build {
     uint16_t reject_mask;           /* trivial-reject clip-flag mask: 0x7070, NoN 0x7030 */
     uint8_t non;                    /* F3DEX.NoN: no "z <= -w" bit in the first compare; the sign of w instead (clip flags of the second vertex of a pair) */
     uint8_t dlx;                    /* F3DLX: G_CLIPPING (geometry bit 23) optional, screen y rounded, the F3DLX triangle code */
+    const struct f3dex_layout *lay; /* the DMEM layout (f3dex_dmem.h; not used by the functions of this file, only by the loaders); NULL: f3dex_lay_std */
 };
 extern const struct f3dex_build f3dex_build_dex;        /* F3DEX 1.21, 1.23, 0.95 */
 extern const struct f3dex_build f3dex_build_non;        /* F3DEX.NoN 1.22 */

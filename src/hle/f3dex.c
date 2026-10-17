@@ -6,7 +6,8 @@
  * CPU and the RDP can observe, and DMEM outside the build's dead ranges, equals what the microcode leaves. Anything the code does not implement declines the task (the JIT runs it).
  *
  * The semantics are docs/ucode-f3dex/ (dl, rdp, state, mtx, light, clip) (dl.md: the loop and the task start, rdp.md: the flush, state.md, mtx.md, light.md, clip.md); the numbers of the sections in the comments refer to those.
- * The builds (ucode ids as gfx_ucode.c computes them) are data at the end.
+ * A build is data (struct f3dex1_build, f3dex_bld.h): the reject mask, the NoN and LX variants, the DMEM layout and the handler pcs; the commands are dispatched through the build's own handler
+ * tables in DMEM, so no code here tests which build it runs. The registered builds (ucode ids as gfx_ucode.c computes them) are at the end; dbuild.c makes one from a derived record.
  *
  * Copyright (C) 2026 arMLEt contributors
  * SPDX-License-Identifier: GPL-2.0-or-later
@@ -18,6 +19,7 @@
 #include "hle.h"
 #include "f3dex_fx.h"
 #include "f3dex_dmem.h"
+#include "f3dex_bld.h"
 
 /* test builds only (scripts/build.sh native --tools --hmut=N, tools/hle/mutcheck_fuzz.sh): a deliberate error N, to show that the tests catch it (docs/testing.md) */
 #ifdef ARMLET_HLE_MUTATE
@@ -102,22 +104,19 @@ static void fx_clip(const struct f3dex_vctx *c, const struct f3dex_vtx *const v[
 }
 
 /* ---- the builds ------------------------------------------------------------------------------------------------------------------------------------------------------------------ */
-struct f3dex_bld {
-    const struct f3dex_build *fx;
-    uint8_t v095;                       /* F3DEX / F3DLX 0.95: other opcodes, the DL depth byte at 0x110, other CULLDL, no BRANCH_Z / MODIFYVTX / LOAD_UCODE */
-};
-
 enum { OV_TEXT = 0, OV_CLIP = 1, OV_LIGHT = 2 };   /* what is in the overlay window: the text image (stubs that load the others), the clipper, the lighting code */
 
 #define STAGE_MAX 4096                  /* bytes staged before a sync */
-#define OUTBUF 0xce0
-#define WINDOW 0x9a0
-#define OPERAND 0xae0
-#define RETSTACK 0x398
+
+/* the command kinds: what a handler pc of the build's tables is (classify) */
+enum { K1_BAD = 0, K1_NOP0, K1_NOP, K1_MTX, K1_MOVEMEM, K1_VTX, K1_DL, K1_LOADUC, K1_BRANCHZ, K1_TRI2, K1_MODVTX, K1_HALF2, K1_HALF1, K1_PERSP, K1_QUAD, K1_CLRGEOM, K1_SETGEOM, K1_ENDDL,
+       K1_OML, K1_OMH, K1_TEXTURE, K1_MOVEWORD, K1_POPMTX, K1_CULLDL, K1_TRI1 };
 
 struct f3dex_task {
     struct hle_task *t;
-    const struct f3dex_bld *b;
+    const struct f3dex1_build *b;
+    const struct f3dex_layout *L;
+    uint8_t kind[256];
     uint32_t k0;                        /* RDRAM address of the next command */
     int gp;                             /* bytes left in the command window */
     int ov;
@@ -131,14 +130,13 @@ struct f3dex_task {
     uint32_t junk;                      /* bit k: slot k was loaded by an F3DLX G_VTX with G_CLIPPING off: the microcode's clip flags there are junk, ours are 0 */
     int exact;                          /* issue the DMA reads of the microcode (window, operand buffer): DMEM as the microcode leaves it, the SP register write events */
     const struct f3dex_build *fx;
-    unsigned depth;                     /* DMEM address of the DL stack depth byte */
 };
 
 static inline void st32u(struct hle_task *t, unsigned a, uint32_t v)       /* unaligned big-endian word, wrapping at 4 KiB */
 {
     hle_st8(t, a, (uint8_t)(v >> 24)); hle_st8(t, a + 1, (uint8_t)(v >> 16)); hle_st8(t, a + 2, (uint8_t)(v >> 8)); hle_st8(t, a + 3, (uint8_t)v);
 }
-static inline uint32_t seg(struct hle_task *t, uint32_t x) { return hle_dm32(t, 0x160 + 4 * ((x >> 24) & 0xf)) + (x & 0xffffff); }
+static inline uint32_t seg(const struct f3dex_task *f, uint32_t x) { return hle_dm32(f->t, f->L->segs + 4 * ((x >> 24) & 0xf)) + (x & 0xffffff); }
 
 /* ---- the RDP FIFO: the microcode's flush of the output buffer (rdp.md 5, F3DLX: 9) ----------------------------------------------------------------------------------------------- */
 /* The output side. The microcode DMAs every command to the FIFO at once and writes DPC_END; only the result is observable (the bytes in RDRAM, the stream the RDP sees, the final DPC and
@@ -161,7 +159,7 @@ static int sync_out_(struct f3dex_task *f)
         if (f->trace) fprintf(stderr, "F3DEX sync dma %08x n %u (end %08x dirty %d)\n", f->pend_ptr, f->pend_n, f->vend, f->vend_dirty);
         uint64_t d0 = P.prof ? now_ns() : 0;
         hle_rdram_write(t, f->pend_ptr, f->stage, f->pend_n);
-        hle_st32(t, 0x128, f->pend_ptr + f->pend_n);
+        hle_st32(t, f->L->rdp_wp, f->pend_ptr + f->pend_n);
         if (P.prof) { P.ns_dma += DT(d0); P.ndma++; P.bytes_dma += f->pend_n; }
         f->pend_n = 0;
     }
@@ -234,7 +232,7 @@ static int out_chunk(struct f3dex_task *f, const uint8_t *cmd, unsigned n)
 static int flush_(struct f3dex_task *f, unsigned n)
 {
     struct hle_task *t = f->t;
-    uint32_t ptr = hle_dm32(t, 0x128), fend = f->fend, fstart = f->fstart;
+    uint32_t ptr = hle_dm32(t, f->L->rdp_wp), fend = f->fend, fstart = f->fstart;
     if (n == 0)
         return HLE_OK;
     if ((int32_t)(fend - (ptr + n)) < 0) {
@@ -250,8 +248,8 @@ static int flush_(struct f3dex_task *f, unsigned n)
         if (!((int32_t)(ptr - cur) >= 0) && !((int32_t)((ptr + n) - cur) < 0))
             return hle_decline(t, "FIFO full (the RDP would have to catch up)");
     }
-    hle_dma_write(t, OUTBUF, ptr, n - 1);
-    hle_st32(t, 0x128, ptr + n);
+    hle_dma_write(t, f->L->outbuf, ptr, n - 1);
+    hle_st32(t, f->L->rdp_wp, ptr + n);
     if (!f->fx->dlx)
         hle_mtc0(t, 9, ptr + n);
     return HLE_OK;
@@ -272,12 +270,12 @@ static int emit_bytes(struct f3dex_task *f, const uint8_t *cmd, unsigned len, in
     uint64_t t0 = P.prof ? now_ns() : 0;
     if (f->trace) { fprintf(stderr, "F3DEX emit %u:", len); for (i = 0; i < len && i < 16; i++) fprintf(stderr, " %02x", cmd[i]); fprintf(stderr, "\n"); }
     if (f->exact) {
-        if (f->fx->dlx) { hle_mtc0(f->t, 9, hle_dm32(f->t, 0x128)); }
+        if (f->fx->dlx) { hle_mtc0(f->t, 9, hle_dm32(f->t, f->L->rdp_wp)); }
         for (i = 0; i < len; i += 4)
-            hle_st32(f->t, OUTBUF + i, (uint32_t)cmd[i] << 24 | (uint32_t)cmd[i + 1] << 16 | (uint32_t)cmd[i + 2] << 8 | cmd[i + 3]);
+            hle_st32(f->t, f->L->outbuf + i, (uint32_t)cmd[i] << 24 | (uint32_t)cmd[i + 1] << 16 | (uint32_t)cmd[i + 2] << 8 | cmd[i + 3]);
         r = flush(f, len);
         if (r == HLE_OK && !tri && f->fx->dlx)
-            hle_mtc0(f->t, 9, hle_dm32(f->t, 0x128));
+            hle_mtc0(f->t, 9, hle_dm32(f->t, f->L->rdp_wp));
         return r == HLE_OK ? HLE_OK : HLE_DECLINE;
     }
     dlx_publish(f);                                         /* W1 / W3 */
@@ -331,8 +329,8 @@ static struct src fetch(struct f3dex_task *f, uint32_t dram, uint32_t lenreg)
     if (MUT(243, ring_hit(f, dram, ((lenreg & 0x3ff) | 7) + 1), 0))
         f->bad = "a read from inside the RDP output ring";
     if (f->exact) {
-        hle_dma_read(f->t, OPERAND, dram, lenreg);
-        s.img = f->t->dmem; s.base = OPERAND; s.ram = 0;
+        hle_dma_read(f->t, f->L->operand, dram, lenreg);
+        s.img = f->t->dmem; s.base = f->L->operand; s.ram = 0;
     } else {
         s.img = (const uint32_t *)f->t->rdram; s.base = dram & 0x7ffff8; s.ram = 1;
     }
@@ -341,13 +339,13 @@ static struct src fetch(struct f3dex_task *f, uint32_t dram, uint32_t lenreg)
 static inline unsigned dma_bytes(uint32_t w0) { return ((w0 & 0x3ff) | 7) + 1; }
 
 /* ---- matrices (mtx.md) -------------------------------------------------------------------------------------------------------------------------------------------------------- */
-static void mvp_recompute(struct hle_task *t)
+static void mvp_recompute(const struct f3dex_task *f)
 {
     struct f3dex_mtx mv, pj, mp;
-    f3dex_load_mtx(&mv, t->dmem, F3DEX_DM_MV, 0);
-    f3dex_load_mtx(&pj, t->dmem, F3DEX_DM_PROJ, 0);
+    f3dex_load_mtx(&mv, f->t->dmem, f->L->mv, 0);
+    f3dex_load_mtx(&pj, f->t->dmem, f->L->proj, 0);
     fx_mtx_mul(&mv, &pj, &mp);
-    f3dex_store_mtx(&mp, t->dmem, F3DEX_DM_MVP);
+    f3dex_store_mtx(&mp, f->t->dmem, f->L->mvp);
 }
 
 static int cmd_mtx(struct f3dex_task *f, uint32_t w0, uint32_t w1)
@@ -356,19 +354,19 @@ static int cmd_mtx(struct f3dex_task *f, uint32_t w0, uint32_t w1)
     unsigned fl = (w0 >> 16) & 0xff;
     struct src s;
     struct f3dex_mtx N, T, R;
-    unsigned cur = (fl & 1) ? F3DEX_DM_PROJ : F3DEX_DM_MV;
+    unsigned cur = (fl & 1) ? f->L->proj : f->L->mv;
     if (dma_bytes(w0) < 64)
         return hle_decline(t, "G_MTX operand shorter than a matrix");
-    s = fetch(f, seg(t, w1), w0 & 0x3ff);
+    s = fetch(f, seg(f, w1), w0 & 0x3ff);
     f3dex_load_mtx(&N, s.img, s.base, s.ram);
-    hle_st8(t, 0x12c, 0xff);
+    hle_st8(t, f->L->lights, 0xff);
     if (!(fl & 1) && (fl & 4)) {
-        uint32_t ptr = hle_dm32(t, 0x134), lim = hle_dm32(t, 0x15c);
+        uint32_t ptr = hle_dm32(t, f->L->mtx_sp), lim = hle_dm32(t, f->L->mtx_lim);
         if (ptr != lim) {
             if (MUT(244, ring_hit(f, ptr, dma_bytes(w0)), 0))       /* (the output is staged and written later: a write into the ring now would be ordered differently from the microcode's) */
                 return hle_decline(t, "matrix push into the RDP output ring");
-            hle_st32(t, 0x134, ptr + 64);
-            hle_dma_write(t, F3DEX_DM_MV, ptr, w0 & 0x3ff);
+            hle_st32(t, f->L->mtx_sp, ptr + 64);
+            hle_dma_write(t, f->L->mv, ptr, w0 & 0x3ff);
         }
     }
     if (fl & 2) {
@@ -378,21 +376,21 @@ static int cmd_mtx(struct f3dex_task *f, uint32_t w0, uint32_t w1)
         fx_mtx_mul(&N, &T, &R);
     }
     f3dex_store_mtx(&R, t->dmem, cur);
-    mvp_recompute(t);
+    mvp_recompute(f);
     return HLE_OK;
 }
 
 static int cmd_popmtx(struct f3dex_task *f)
 {
     struct hle_task *t = f->t;
-    uint32_t ptr = hle_dm32(t, 0x134), base = hle_dm32(t, 0xfe0);
-    hle_st8(t, 0x12c, 0xff);
+    uint32_t ptr = hle_dm32(t, f->L->mtx_sp), base = hle_dm32(t, 0xfe0);      /* (OSTask.dram_stack) */
+    hle_st8(t, f->L->lights, 0xff);
     if ((int32_t)(base - ptr) >= 0)
         return HLE_OK;
     ptr -= 64;
-    hle_dma_read(t, F3DEX_DM_MV, ptr, 63);
-    hle_st32(t, 0x134, ptr);
-    mvp_recompute(t);
+    hle_dma_read(t, f->L->mv, ptr, 63);
+    hle_st32(t, f->L->mtx_sp, ptr);
+    mvp_recompute(f);
     return HLE_OK;
 }
 
@@ -400,10 +398,10 @@ static int cmd_movemem(struct f3dex_task *f, uint32_t w0, uint32_t w1)
 {
     struct hle_task *t = f->t;
     unsigned idx = (w0 >> 16) & 0xff, dest, n, i;
-    struct src s = fetch(f, seg(t, w1), w0 & 0x3ff);
+    struct src s = fetch(f, seg(f, w1), w0 & 0x3ff);
     if (idx < 0x80 || idx > 0x9e || (idx & 1))
         return hle_decline(t, "G_MOVEMEM index outside the table");
-    dest = hle_dm16(t, 0x270 + idx);
+    dest = hle_dm16(t, f->L->mm_tab + idx);
     n = 16 - (dest & 15);                               /* LQV + SQV: up to the next 16-byte boundary */
     if (n > dma_bytes(w0))
         return hle_decline(t, "G_MOVEMEM length shorter than the bytes stored");
@@ -423,14 +421,14 @@ static int cmd_vtx(struct f3dex_task *f, uint32_t w0, uint32_t w1)
     struct f3dex_vin in[32];
     struct f3dex_vtx out[32];
     struct src s;
-    uint32_t geom = hle_dm32(t, 0x114);
+    uint32_t geom = hle_dm32(t, f->L->geom);
     if ((v0x2 & 1) || (v0x2 >> 1) + cnt > 32 || dma_bytes(w0) < 16 * cnt)
         return hle_decline(t, "G_VTX slot range or length unusual");
     if (MUT(239, geom & ~F3DEX_G_DEFINED, 0))               /* (bits the microcode's mode word has no meaning for steer its vertex and triangle code in ways the struct-level functions do not model) */
         return hle_decline(t, "geometry mode bits the build does not define");
-    s = fetch(f, seg(t, w1), w0 & 0x3ff);               /* the class-0 DMA comes first */
+    s = fetch(f, seg(f, w1), w0 & 0x3ff);               /* the class-0 DMA comes first */
     if (geom & F3DEX_G_LIGHTING) {
-        uint32_t l = hle_dm32(t, 0x12c);
+        uint32_t l = hle_dm32(t, f->L->lights);
         if (f->ov != OV_LIGHT) {
             load_overlay(f, 2);
             f->ov = OV_LIGHT;
@@ -443,13 +441,13 @@ static int cmd_vtx(struct f3dex_task *f, uint32_t w0, uint32_t w1)
                 return hle_decline(t, "G_VTX: light count unusual");
             for (k = 0; k <= nrec; k++)
                 for (i = 0; i < 3; i++)
-                    raw[k][i] = (int8_t)hle_dm8(t, 0x1b8 + 32 * k + i);
-            f3dex_load_mtx(&mv, t->dmem, F3DEX_DM_MV, 0);
+                    raw[k][i] = (int8_t)hle_dm8(t, f->L->light + 0x18 + 32 * k + i);
+            f3dex_load_mtx(&mv, t->dmem, f->L->mv, 0);
             fx_relight(&mv, raw, nrec, res);
             for (k = 0; k <= nrec; k++)
                 for (i = 0; i < 8; i++)
-                    hle_st8(t, 0x1c0 + 32 * k + i, (uint8_t)res[k][i & 3]);
-            hle_st32(t, 0x12c, l & 0xfff);
+                    hle_st8(t, f->L->light + 0x20 + 32 * k + i, (uint8_t)res[k][i & 3]);
+            hle_st32(t, f->L->lights, l & 0xfff);
         }
     }
     if (f3dex_load_vctx(&ctx, t->dmem, f->fx))
@@ -459,7 +457,7 @@ static int cmd_vtx(struct f3dex_task *f, uint32_t w0, uint32_t w1)
     if (fx_vtx(&ctx, in, cnt, out))
         return hle_decline(t, "G_VTX: state outside what the native code supports");
     for (i = 0; i < cnt; i++) {
-        unsigned a = F3DEX_VSLOT((v0x2 >> 1) + i);
+        unsigned a = f->L->vbuf + 0x28u * ((v0x2 >> 1) + i);
         f3dex_store_vtx(&out[i], t->dmem, a);
         if (f->fx->dlx && !(geom & F3DEX_G_CLIPPING)) f->junk |= 1u << ((v0x2 >> 1) + i); else f->junk &= ~(1u << ((v0x2 >> 1) + i));
         if (f->trace && (v0x2 >> 1) + i == 19) fprintf(stderr, "F3DEX slot17 sy %04x (vtx cmd %08x %08x)\n", (uint16_t)out[i].sy, w0, w1);
@@ -479,24 +477,24 @@ static int tri_one(struct f3dex_task *f, unsigned a0, unsigned a1, unsigned a2, 
     uint8_t cmd[0xc0];
     unsigned len = 0, k, ad[3] = { a0, a1, a2 };
     int rc;
-    if (MUT(239, hle_dm32(t, 0x114) & ~F3DEX_G_DEFINED, 0))
+    if (MUT(239, hle_dm32(t, f->L->geom) & ~F3DEX_G_DEFINED, 0))
         return hle_decline(t, "geometry mode bits the build does not define");
     for (k = 0; k < 3; k++) {
         if ((ad[k] & 1) || ad[k] >= 64)
             return hle_decline(t, "G_TRI: vertex index outside the buffer");
-        f3dex_load_vtx(&v[k], t->dmem, F3DEX_VSLOT(ad[k] >> 1));
+        f3dex_load_vtx(&v[k], t->dmem, f->L->vbuf + 0x28u * (ad[k] >> 1));
         ti.v[k] = &v[k];
     }
     if ((aflat & 1) || aflat >= 64)
         return hle_decline(t, "G_TRI: vertex index outside the buffer");
-    f3dex_load_vtx(&vf, t->dmem, F3DEX_VSLOT(aflat >> 1));
-    if (f->fx->dlx && (hle_dm32(t, 0x114) & F3DEX_G_CLIPPING) && (f->junk & ((1u << (a0 >> 1)) | (1u << (a1 >> 1)) | (1u << (a2 >> 1)))))
+    f3dex_load_vtx(&vf, t->dmem, f->L->vbuf + 0x28u * (aflat >> 1));
+    if (f->fx->dlx && (hle_dm32(t, f->L->geom) & F3DEX_G_CLIPPING) && (f->junk & ((1u << (a0 >> 1)) | (1u << (a1 >> 1)) | (1u << (a2 >> 1)))))
         return hle_decline(t, "F3DLX triangle with clipping on uses a vertex loaded with clipping off");
     ti.b = f->fx;
     ti.flat = &vf;
-    ti.geom = hle_dm32(t, 0x114);
-    ti.persp = hle_dm16(t, 0x112);
-    ti.tile_byte = hle_dm8(t, 0x122);
+    ti.geom = hle_dm32(t, f->L->geom);
+    ti.persp = hle_dm16(t, f->L->persp);
+    ti.tile_byte = hle_dm8(t, f->L->texture + 2);
     rc = fx_tri(&ti, cmd, &len);
     *res = rc;
     if (f->trace) fprintf(stderr, "F3DEX tri %u %u %u flat %u -> rc %d len %u geom %08x f=%04x %04x %04x\n", a0, a1, a2, aflat, rc, len, ti.geom, v[0].flags, v[1].flags, v[2].flags);
@@ -552,7 +550,7 @@ static int cmd_quad(struct f3dex_task *f, uint32_t w1)
     for (i = 0; i < 4; i++) {
         if ((ad[i] & 1) || ad[i] >= 64)
             return hle_decline(t, "G_QUAD: vertex index outside the buffer");
-        y[i] = (int16_t)hle_dm16(t, F3DEX_VSLOT(ad[i] >> 1) + 26);
+        y[i] = (int16_t)hle_dm16(t, f->L->vbuf + 0x28u * (ad[i] >> 1) + 26);
     }
     d13 = y[2] - y[0]; if (d13 < 0) d13 = -d13;
     d24 = y[3] - y[1]; if (d24 < 0) d24 = -d24;
@@ -572,11 +570,11 @@ static int cmd_quad(struct f3dex_task *f, uint32_t w1)
 static int enddl(struct f3dex_task *f)
 {
     struct hle_task *t = f->t;
-    int d = (int8_t)hle_dm8(t, f->depth) - 4;
+    int d = (int8_t)hle_dm8(t, f->L->depth) - 4;
     if (d < 0)
         return 1;
-    f->k0 = hle_dm32(t, RETSTACK + d);
-    hle_st8(t, f->depth, (uint8_t)d);
+    f->k0 = hle_dm32(t, f->L->retstack + d);
+    hle_st8(t, f->L->depth, (uint8_t)d);
     f->gp = 0;
     return (f->k0 & 7) ? -1 : 0;
 }
@@ -589,14 +587,43 @@ static int jump_to(struct f3dex_task *f, uint32_t a)
     return (a & 7) ? hle_decline(f->t, "display list address not 8-byte aligned") : HLE_OK;
 }
 
+/* The kind of a handler pc of the build's tables. Class 0 (0x00 .. 0x3f) DMAs the operand first, class 2 (0x80 .. 0xbf) does not: a kind that belongs to the other class is not a command (BAD). */
+static unsigned classify(const struct f3dex1_build *b, int cls0, unsigned h)
+{
+    static const uint8_t kind_of_pc[F1_NPC] = { K1_BAD, K1_NOP, K1_MTX, K1_MOVEMEM, K1_VTX, K1_DL, K1_LOADUC, K1_BRANCHZ, K1_TRI2, K1_MODVTX, K1_HALF2, K1_HALF1, K1_PERSP, K1_QUAD,
+                                                 K1_CLRGEOM, K1_SETGEOM, K1_ENDDL, K1_OML, K1_OMH, K1_TEXTURE, K1_MOVEWORD, K1_POPMTX, K1_CULLDL, K1_TRI1 };
+    unsigned k;
+    if (h == b->pc[F1PC_nop])
+        return cls0 ? K1_NOP0 : K1_NOP;
+    for (k = F1PC_mtx; k < F1_NPC; k++)
+        if (b->pc[k] && h == b->pc[k]) {
+            unsigned kd = kind_of_pc[k];
+            int c0 = kd == K1_MTX || kd == K1_MOVEMEM || kd == K1_VTX || kd == K1_DL;
+            return c0 == cls0 ? kd : K1_BAD;
+        }
+    return K1_BAD;
+}
+
+/* the opcodes of the GBI (class 0: 0x00 .. 0x09, class 2: 0xaf .. 0xbf) through the build's handler tables (class 0 at jt0 + 2 op, class 2 at jt2 + 2 (op & 0x7f): dl.md 3.6); the other cells of the
+ * overlapping tables are not handler pointers, and the other opcodes no game issues: BAD */
+static void make_kinds(struct f3dex_task *f)
+{
+    unsigned op;
+    memset(f->kind, K1_BAD, sizeof(f->kind));
+    for (op = 0x00; op <= 0x09; op++)
+        f->kind[op] = (uint8_t)classify(f->b, 1, hle_dm16(f->t, f->L->jt0 + 2 * op) & 0xffc);
+    for (op = 0xaf; op <= 0xbf; op++)
+        f->kind[op] = (uint8_t)classify(f->b, 0, hle_dm16(f->t, f->L->jt2 + 2 * (op & 0x7f)) & 0xffc);
+}
+
 static int f3dex_run(struct hle_task *t, const struct hle_ucode *u)
 {
-    const struct f3dex_bld *b = (const struct f3dex_bld *)u->fam_data;
+    const struct f3dex1_build *b = (const struct f3dex1_build *)u->fam_data;
+    const struct f3dex_layout *L = f3dex_lay(&b->fx);
     struct f3dex_task f;
     struct hle_cpu c;
     int rc;
     static int exact = -1;
-    const unsigned half1 = b->v095 ? 0xb3 : 0xb4, half2 = b->v095 ? 0xb2 : 0xb3;
 
     if (exact < 0) {
         exact = 0;
@@ -606,20 +633,22 @@ static int f3dex_run(struct hle_task *t, const struct hle_ucode *u)
     memset(&f, 0, sizeof(f));
     f.t = t;
     f.b = b;
-    f.fx = b->fx;
+    f.L = L;
+    f.fx = &b->fx;
     f.exact = exact;
     { static int tr = -1; if (tr < 0) tr = getenv("F3DEX_TRACE") != NULL; f.trace = tr; }
-    f.depth = b->v095 ? 0x110 : 0x148;
     t->fam = &f;
     if (hle_dm32(t, 0xfc4) & 1)
         return hle_decline(t, "yielded task");
     if (*t->cr[4] & 0x80)
         return hle_decline(t, "yield request pending");
+    if (L->vtab < L->mw_tab + 2)
+        return hle_decline(t, "the build's G_MOVEWORD table has no room");
 
     /* the boot code and the microcode's initialisation, on the interpreter, up to the command loop head */
     uint64_t tt0 = P.prof ? now_ns() : 0, ti0 = tt0;
     hle_cpu_init(t, &c, t->start_pc, 1u << 16);
-    c.stop_pc = 0x058;
+    c.stop_pc = b->pc[F1PC_head];
     rc = hle_rsp_run(t, &c);
     if (P.prof) P.ns_init += now_ns() - ti0;
     if (rc == HLE_OK)
@@ -629,13 +658,14 @@ static int f3dex_run(struct hle_task *t, const struct hle_ucode *u)
     f.k0 = c.r[HLE_REG_K0] - 320;                       /* $26 = the address after the first window */
     f.gp = 320;
     f.ov = OV_TEXT;
-    f.wp = hle_dm32(t, 0x128);
-    f.fstart = hle_dm32(t, 0x150);
-    f.fend = hle_dm32(t, 0x154);
+    f.wp = hle_dm32(t, L->rdp_wp);
+    f.fstart = hle_dm32(t, L->fifo);
+    f.fend = hle_dm32(t, L->fifo + 4);
     if (f.wp & 7)
         return hle_decline(t, "RDP write pointer not 8-byte aligned");
-    if ((f.k0 & 7) || c.r[27] != WINDOW || c.r[28] != OPERAND || c.r[23] != OUTBUF)
+    if ((f.k0 & 7) || c.r[27] != L->window || c.r[28] != L->operand || c.r[23] != L->outbuf)
         return hle_decline(t, "unusual state at the command loop");
+    make_kinds(&f);
 
     for (;;) {
         uint32_t w0, w1;
@@ -652,45 +682,79 @@ static int f3dex_run(struct hle_task *t, const struct hle_ucode *u)
         if (f.trace) fprintf(stderr, "F3DEX cmd %u: %08x %08x\n", f.ncmds, w0, w1);
         if (op >= 0xc0) {                               /* the RDP commands: copied, the segment address of the image commands resolved */
             if (op >= 0xfd)
-                w1 = seg(t, w1);
+                w1 = seg(&f, w1);
             if (emit8(&f, w0, w1) != HLE_OK)
                 return HLE_DECLINE;
-        } else if (op >= 0x80) {
-            if (op == half1) {
-                hle_st32(t, 0x10c, w1);
-            } else if (op == half2) {
-                if (emit8(&f, hle_dm32(t, 0x10c), w1) != HLE_OK)
-                    return HLE_DECLINE;
-            } else switch (op) {
-            case 0xaf: if (!b->v095) return hle_decline(t, "G_LOAD_UCODE"); break;
-            case 0xb0: if (!b->v095) {                      /* G_BRANCH_Z */
-                    unsigned va = hle_dm16(t, 0x31e + (w0 & 0xfff));
-                    uint32_t vz = hle_dm32(t, va + 0x1c);
-                    if ((int32_t)(vz - w1) <= 0 && jump_to(&f, seg(t, hle_dm32(t, 0x10c))) != HLE_OK)
-                        return HLE_DECLINE;
-                }
+        } else if (op >= 0x40 && op < 0x80) {
+            /* class 1: a no-op without a DMA */
+        } else {
+            unsigned kd = f.kind[op];
+            if (op < 0x40) {                            /* class 0: a DMA into the operand buffer is started for every one of them; then the handler */
+                /* (the DMA is not issued in the lean mode, and the buffer and the output buffer after it are dead: a length that runs on into the live DMEM past the output buffer is not a game's) */
+                if (MUT(227, dma_bytes(w0) > (unsigned)(L->outbuf - L->operand), 0))
+                    return hle_decline(t, "class-0 operand longer than the operand buffer");
+            }
+            switch (kd) {
+            case K1_NOP0:
+                if (f.exact)
+                    hle_dma_read(t, L->operand, seg(&f, w1), w0 & 0x3ff);
                 break;
-            case 0xb1:
+            case K1_NOP:
+                break;
+            case K1_MTX: if (cmd_mtx(&f, w0, w1) != HLE_OK) return HLE_DECLINE; break;
+            case K1_MOVEMEM: if (cmd_movemem(&f, w0, w1) != HLE_OK) return HLE_DECLINE; break;
+            case K1_VTX: if (cmd_vtx(&f, w0, w1) != HLE_OK) return HLE_DECLINE; break;
+            case K1_DL: {
+                int d = (int8_t)hle_dm8(t, L->depth);
+                if (f.exact)
+                    hle_dma_read(t, L->operand, seg(&f, w1), w0 & 0x3ff);
+                if (((w0 >> 16) & 0xff) == 0) {          /* a call */
+                    if (d < 0)
+                        return hle_decline(t, "G_DL: negative stack depth");
+                    if (d - 68 > 0)
+                        break;                          /* the stack is full: the command is ignored */
+                    hle_st32(t, L->retstack + d, f.k0);
+                    hle_st8(t, L->depth, (uint8_t)(d + 4));
+                }
+                if (jump_to(&f, seg(&f, w1)) != HLE_OK)
+                    return HLE_DECLINE;
+                break;
+            }
+            case K1_HALF1:
+                hle_st32(t, L->half1, w1);
+                break;
+            case K1_HALF2:
+                if (emit8(&f, hle_dm32(t, L->half1), w1) != HLE_OK)
+                    return HLE_DECLINE;
+                break;
+            case K1_LOADUC:                                 /* (not followed: this front-end does not switch builds, so the probe is not told of the loaded text either) */
+                return hle_decline(t, "G_LOAD_UCODE");
+            case K1_BRANCHZ: {
+                unsigned va = hle_dm16(t, L->vtab + (w0 & 0xfff));
+                uint32_t vz = hle_dm32(t, va + 0x1c);
+                if ((int32_t)(vz - w1) <= 0 && jump_to(&f, seg(&f, hle_dm32(t, L->half1))) != HLE_OK)
+                    return HLE_DECLINE;
+                break;
+            }
+            case K1_TRI2:
                 if (cmd_tri2(&f, w0, w1) != HLE_OK)
                     return HLE_DECLINE;
                 break;
-            case 0xb2:                                      /* 1.2x: G_MODIFYVTX */
-                {
-                    unsigned va = hle_dm16(t, 0x31e + (w0 & 0xfff));
-                    st32u(t, ((w0 >> 16) & 0xff) + va, w1);
-                }
+            case K1_MODVTX: {
+                unsigned va = hle_dm16(t, L->vtab + (w0 & 0xfff));
+                st32u(t, ((w0 >> 16) & 0xff) + va, w1);
                 break;
-            case 0xb4:                                      /* 0.95: G_PERSPNORM */
-                if (!b->v095) return hle_decline(t, "unexpected opcode");
-                hle_st16(t, 0x112, (uint16_t)w1);
+            }
+            case K1_PERSP:
+                hle_st16(t, L->persp, (uint16_t)w1);
                 break;
-            case 0xb5:
-                if (b->v095 && cmd_quad(&f, w1) != HLE_OK)
+            case K1_QUAD:
+                if (cmd_quad(&f, w1) != HLE_OK)
                     return HLE_DECLINE;
                 break;
-            case 0xb6: hle_st32(t, 0x114, hle_dm32(t, 0x114) & ~w1); break;
-            case 0xb7: hle_st32(t, 0x114, hle_dm32(t, 0x114) | w1); break;
-            case 0xb8: {
+            case K1_CLRGEOM: hle_st32(t, L->geom, hle_dm32(t, L->geom) & ~w1); break;
+            case K1_SETGEOM: hle_st32(t, L->geom, hle_dm32(t, L->geom) | w1); break;
+            case K1_ENDDL: {
                 int e = enddl(&f);
                 if (e > 0)
                     goto end;
@@ -698,44 +762,44 @@ static int f3dex_run(struct hle_task *t, const struct hle_ucode *u)
                     return hle_decline(t, "display list address not 8-byte aligned");
                 break;
             }
-            case 0xb9: case 0xba: {
-                unsigned a = op == 0xb9 ? 0x11c : 0x118;
+            case K1_OML: case K1_OMH: {
+                unsigned a = kd == K1_OML ? L->oml : L->omh;
                 uint32_t m = (uint32_t)(((1u << (w0 & 31)) - 1) << ((w0 >> 8) & 31));
                 hle_st32(t, a, (hle_dm32(t, a) & ~m) | w1);
-                if (emit8(&f, hle_dm32(t, 0x118), hle_dm32(t, 0x11c)) != HLE_OK)
+                if (emit8(&f, hle_dm32(t, L->omh), hle_dm32(t, L->oml)) != HLE_OK)
                     return HLE_DECLINE;
                 break;
             }
-            case 0xbb:
-                hle_st32(t, 0x120, w0);
-                hle_st32(t, 0x124, w1);
-                hle_st32(t, 0x114, (hle_dm32(t, 0x114) & ~2u) | ((w0 & 1) << 1));
+            case K1_TEXTURE:
+                hle_st32(t, L->texture, w0);
+                hle_st32(t, L->texture + 4, w1);
+                hle_st32(t, L->geom, (hle_dm32(t, L->geom) & ~2u) | ((w0 & 1) << 1));
                 break;
-            case 0xbc: {
+            case K1_MOVEWORD: {
                 unsigned ii = w0 & 0xff;
                 unsigned off = (w0 >> 8) & 0xffff;
-                if ((ii & 1) || ii > (b->v095 ? 0x0c : 0x0e))
+                if ((ii & 1) || ii > (unsigned)(L->vtab - L->mw_tab - 2))      /* (the table of G_MOVEWORD ends where the vertex table begins: 8 entries, 7 in the 0.95 builds) */
                     return hle_decline(t, "G_MOVEWORD index outside the table");
                 if (MUT(238, (off & 3) || off > (ii == 10 ? 0x1fc : 0x3c), 0))     /* a game's offsets are words within the group (segments 0 .. 0x3c, clip ratios, the light colours up to the last light) */
                     return hle_decline(t, "G_MOVEWORD offset outside what a game writes");
-                st32u(t, (unsigned)(int16_t)hle_dm16(t, 0x30e + ii) + ((w0 >> 8) & 0xffff), w1);
+                st32u(t, (unsigned)(int16_t)hle_dm16(t, L->mw_tab + ii) + ((w0 >> 8) & 0xffff), w1);
                 break;
             }
-            case 0xbd: cmd_popmtx(&f); break;
-            case 0xbe: {                                    /* G_CULLDL: culled when some clip-flag bit is set in all the vertices of the range */
+            case K1_POPMTX: cmd_popmtx(&f); break;
+            case K1_CULLDL: {                               /* culled when some clip-flag bit is set in all the vertices of the range */
                 uint32_t acc = f.fx->reject_mask;
                 unsigned guard = 0;
-                if (b->v095) {
+                if (b->culldl_off) {                        /* byte offsets into the vertex buffer, the last vertex excluded */
                     unsigned p = w0 & 0x3ff;
                     if (w1 <= p || (w1 - p) % 40 || w1 > 40 * 32)
                         return hle_decline(t, "G_CULLDL range unusual");
-                    do { if (f.junk >> (p / 40) & 1) return hle_decline(t, "G_CULLDL over F3DLX vertices loaded with clipping off"); acc &= hle_dm16(t, 0x4c4 + p); p += 40; } while (p != w1 && ++guard < 64);
+                    do { if (f.junk >> (p / 40) & 1) return hle_decline(t, "G_CULLDL over F3DLX vertices loaded with clipping off"); acc &= hle_dm16(t, L->vbuf + 0x24 + p); p += 40; } while (p != w1 && ++guard < 64);
                 } else {
-                    unsigned pa = hle_dm16(t, 0x31e + (w0 & 0xfff)), pb = hle_dm16(t, 0x31e + (w1 & 0xfff)), p = pa;
-                    if (pb < pa || (pb - pa) % 40 || pb > F3DEX_VSLOT(31))
+                    unsigned pa = hle_dm16(t, L->vtab + (w0 & 0xfff)), pb = hle_dm16(t, L->vtab + (w1 & 0xfff)), p = pa;
+                    if (pb < pa || (pb - pa) % 40 || pb > L->vbuf + 0x28u * 31)
                         return hle_decline(t, "G_CULLDL range unusual");
                     for (;;) {
-                        if (f.junk >> ((p - 0x4a0) / 40) & 1)
+                        if (p >= L->vbuf && (f.junk >> ((p - L->vbuf) / 40) & 1))     /* (a record below the buffer is not a slot: its flags are what DMEM holds, for both) */
                             return hle_decline(t, "G_CULLDL over F3DLX vertices loaded with clipping off");
                         acc &= (uint32_t)(int32_t)(int16_t)hle_dm16(t, p + 0x24);
                         if (p == pb)
@@ -752,51 +816,19 @@ static int f3dex_run(struct hle_task *t, const struct hle_ucode *u)
                 }
                 break;
             }
-            case 0xbf:
+            case K1_TRI1:
                 if (cmd_tri1(&f, w1) != HLE_OK)
                     return HLE_DECLINE;
                 break;
             default:
-                return hle_decline(t, "unsupported class-2 opcode");
-            }
-        } else if (op < 0x40) {                         /* class 0: a DMA into the operand buffer is started for every one of them; then the handler */
-            /* (the DMA is not issued in the lean mode, and the buffer and the output buffer after it are dead: a length that runs on into the live DMEM past 0xce0 is not a game's) */
-            if (MUT(227, dma_bytes(w0) > OUTBUF - OPERAND, 0))
-                return hle_decline(t, "class-0 operand longer than the operand buffer");
-            switch (op) {
-            case 0x00: case 0x02: case 0x05: case 0x07: case 0x08: case 0x09:
-                if (f.exact)
-                    hle_dma_read(t, OPERAND, seg(t, w1), w0 & 0x3ff);
-                break;
-            case 0x01: if (cmd_mtx(&f, w0, w1) != HLE_OK) return HLE_DECLINE; break;
-            case 0x03: if (cmd_movemem(&f, w0, w1) != HLE_OK) return HLE_DECLINE; break;
-            case 0x04: if (cmd_vtx(&f, w0, w1) != HLE_OK) return HLE_DECLINE; break;
-            case 0x06: {
-                int d = (int8_t)hle_dm8(t, f.depth);
-                if (f.exact)
-                    hle_dma_read(t, OPERAND, seg(t, w1), w0 & 0x3ff);
-                if (((w0 >> 16) & 0xff) == 0) {          /* a call */
-                    if (d < 0)
-                        return hle_decline(t, "G_DL: negative stack depth");
-                    if (d - 68 > 0)
-                        break;                          /* the stack is full: the command is ignored */
-                    hle_st32(t, RETSTACK + d, f.k0);
-                    hle_st8(t, f.depth, (uint8_t)(d + 4));
-                }
-                if (jump_to(&f, seg(t, w1)) != HLE_OK)
-                    return HLE_DECLINE;
-                break;
-            }
-            default:
-                return hle_decline(t, "unsupported class-0 opcode");
+                return hle_decline(t, op < 0x40 ? "unsupported class-0 opcode" : "unsupported class-2 opcode");
             }
         }
-        /* class 1 (0x40 .. 0x7f): a no-op without a DMA */
         if (f.gp <= 0) {                                /* the window is used up (or a list change): the next 40 commands */
             if (f.k0 & 7)
                 return hle_decline(t, "display list address not 8-byte aligned");
             if (f.exact)
-                hle_dma_read(t, WINDOW, f.k0, 319);
+                hle_dma_read(t, L->window, f.k0, 319);
             f.gp = 320;
             if (MUT(243, ring_hit(&f, f.k0, 320), 0))
                 f.bad = "the display list is inside the RDP output ring";
@@ -809,21 +841,59 @@ end:
     /* the end of the task: the overlay 3 code is loaded and runs: SP_STATUS gets SIG2, BREAK */
     load_overlay(&f, 3);
     hle_mtc0(t, 4, 0x4000);
-    hle_break(t, (hle_dm16(t, 0x26) & 0xfff) + 0x1c);          /* DMEM 0x26: the IMEM address of overlay 3 = the window; its BREAK is at +0x18 */
+    hle_break(t, (hle_dm16(t, 0x26) & 0xfff) + 0x1c);          /* DMEM 0x26: the IMEM address of overlay 3 (the DMA table) = the window; its BREAK is at +0x18 */
     if (P.prof) { P.ns_task += now_ns() - tt0; P.tasks++; P.ncmds += f.ncmds; }
     prof_report();
     return HLE_OK;
 }
 
-static const struct hle_family l_fam = { .name = "f3dex", .run = f3dex_run };
+const struct hle_family f3dex1_fam = { .name = "f3dex", .run = f3dex_run };
 
 /* ---- the builds ---------------------------------------------------------------------------------------------------------------------------------------------------------------- */
-static const struct f3dex_bld l_dex = { &f3dex_build_dex, 0 };
-static const struct f3dex_bld l_non = { &f3dex_build_non, 0 };
-static const struct f3dex_bld l_dlx = { &f3dex_build_dlx, 0 };
-static const struct f3dex_bld l_dlxn = { &f3dex_build_dlx_non, 0 };
-static const struct f3dex_bld l_dex095 = { &f3dex_build_dex, 1 };
-static const struct f3dex_bld l_dlx095 = { &f3dex_build_dlx, 1 };
+/* Layouts other than f3dex_lay_std (f3dex_vtx_fx.c): Turok's F3DEX.NoN 1.00 has the class tables 4 bytes higher (the 0.95 places), the 0.95 builds also the vertex table 2 lower and the display-list
+ * stack depth byte at 0x110 (0x110 .. 0x113 is the perspective word in the 1.2x builds) */
+static const struct f3dex_layout l_lay_c4 = { .jt0 = 0xc4, .jt2 = 0x76, .half1 = 0x10c, .persp = 0x112, .geom = 0x114, .omh = 0x118, .oml = 0x11c, .texture = 0x120, .rdp_wp = 0x128, .lights = 0x12c,
+    .mtx_sp = 0x134, .mtx_lim = 0x15c, .depth = 0x148, .fifo = 0x150, .segs = 0x160, .light = 0x1a0, .mm_tab = 0x270, .mw_tab = 0x30e, .vtab = 0x31e, .viewport = 0x380, .fog = 0x390,
+    .retstack = 0x398, .mv = 0x3e0, .proj = 0x420, .mvp = 0x460, .vbuf = 0x4a0, .window = 0x9a0, .operand = 0xae0, .outbuf = 0xce0,
+    .lim = 0x28, .tgbias = 0x38, .vsign = 0x50, .clip_k = 0x76, .planes = 0x98, .tg = 0xa2, .plane_masks = 0xb2 };
+static const struct f3dex_layout l_lay_095 = { .jt0 = 0xc4, .jt2 = 0x76, .half1 = 0x10c, .persp = 0x112, .geom = 0x114, .omh = 0x118, .oml = 0x11c, .texture = 0x120, .rdp_wp = 0x128, .lights = 0x12c,
+    .mtx_sp = 0x134, .mtx_lim = 0x15c, .depth = 0x110, .fifo = 0x150, .segs = 0x160, .light = 0x1a0, .mm_tab = 0x270, .mw_tab = 0x30e, .vtab = 0x31c, .viewport = 0x380, .fog = 0x390,
+    .retstack = 0x398, .mv = 0x3e0, .proj = 0x420, .mvp = 0x460, .vbuf = 0x4a0, .window = 0x9a0, .operand = 0xae0, .outbuf = 0xce0,
+    .lim = 0x28, .tgbias = 0x38, .vsign = 0x50, .clip_k = 0x76, .planes = 0x98, .tg = 0xa2, .plane_masks = 0xb2 };
+
+/* .fx = { reject_mask, non, dlx, layout }; .pc in the order of F3DEX_PC_FIELDS:
+ *          head   nop    mtx    movemem vtx   dl     loaduc branchz tri2  modvtx half2  half1  persp  quad   clrgeom setgeom enddl oml    omh    texture moveword popmtx culldl tri1
+ * (read from each text's handler tables: docs/ucode-f3dex/dl.md section 3.6; load_key: the FNV-1a-64 of the text's first 0xf48 bytes, from the dumps) */
+static const struct f3dex1_build l_b_121 = { .fx = { 0x7070, 0, 0, &f3dex_lay_std },                 /* F3DEX 1.21 */
+    .pc = { 0x058, 0x09c, 0x554, 0x6d0, 0x3a8, 0x6e0, 0xf8c, 0x2f8, 0x1e4, 0x334, 0x350, 0x348, 0, 0, 0x320, 0x310, 0x2d8, 0x27c, 0x274, 0x250, 0x238, 0x204, 0x2b8, 0x1bc },
+    .culldl_off = 0, .load_key = 0xe00c958ba9b578c0ull };
+static const struct f3dex1_build l_b_non122 = { .fx = { 0x7030, 1, 0, &f3dex_lay_std },                 /* F3DEX.NoN 1.22 */
+    .pc = { 0x058, 0x09c, 0x574, 0x6f0, 0x3a8, 0x700, 0xf8c, 0x2f8, 0x1e4, 0x334, 0x350, 0x348, 0, 0, 0x320, 0x310, 0x2d8, 0x27c, 0x274, 0x250, 0x238, 0x204, 0x2b8, 0x1bc },
+    .culldl_off = 0, .load_key = 0x3e4037f1162004e8ull };
+static const struct f3dex1_build l_b_123 = { .fx = { 0x7070, 0, 0, &f3dex_lay_std },                 /* F3DEX 1.23 */
+    .pc = { 0x058, 0x09c, 0x54c, 0x6c8, 0x3a0, 0x6d8, 0xf8c, 0x2f0, 0x1dc, 0x32c, 0x348, 0x340, 0, 0, 0x318, 0x308, 0x2d0, 0x274, 0x26c, 0x248, 0x230, 0x1fc, 0x2b0, 0x1b4 },
+    .culldl_off = 0, .load_key = 0x5e166557ca542f4cull };
+static const struct f3dex1_build l_b_lx123 = { .fx = { 0x7070, 0, 1, &f3dex_lay_std },                 /* F3DLX 1.23 */
+    .pc = { 0x058, 0x09c, 0x578, 0x6f4, 0x3b0, 0x704, 0xf80, 0x2e8, 0x1d4, 0x324, 0x340, 0x338, 0, 0, 0x310, 0x300, 0x2c8, 0x26c, 0x264, 0x240, 0x228, 0x1f4, 0x2a8, 0x1ac },
+    .culldl_off = 0, .load_key = 0x6b7f51fed2105fb1ull };
+static const struct f3dex1_build l_b_095 = { .fx = { 0x7070, 0, 0, &l_lay_095 },                 /* F3DEX 0.95 */
+    .pc = { 0x058, 0x09c, 0x5dc, 0x758, 0x430, 0x768, 0, 0, 0x224, 0, 0x3d8, 0x3d0, 0x3c8, 0x244, 0x3b4, 0x3a4, 0x384, 0x32c, 0x324, 0x300, 0x2e8, 0x2b4, 0x368, 0x1fc },
+    .culldl_off = 1, .load_key = 0xbd2eddb3d4739b35ull };
+static const struct f3dex1_build l_b_lx095 = { .fx = { 0x7070, 0, 1, &l_lay_095 },                 /* F3DLX 0.95 (no dump: the pcs from dl.md section 3.6) */
+    .pc = { 0x058, 0x09c, 0x608, 0x784, 0x440, 0x794, 0, 0, 0x21c, 0, 0x3d0, 0x3c8, 0x3c0, 0x23c, 0x3ac, 0x39c, 0x37c, 0x324, 0x31c, 0x2f8, 0x2e0, 0x2ac, 0x360, 0x1f4 },
+    .culldl_off = 1, .load_key = 0 };
+static const struct f3dex1_build l_b_lx121 = { .fx = { 0x7070, 0, 1, &f3dex_lay_std },                 /* F3DLX 1.21 */
+    .pc = { 0x058, 0x09c, 0x580, 0x6fc, 0x3b8, 0x70c, 0xf80, 0x2f0, 0x1dc, 0x32c, 0x348, 0x340, 0, 0, 0x318, 0x308, 0x2d0, 0x274, 0x26c, 0x248, 0x230, 0x1fc, 0x2b0, 0x1b4 },
+    .culldl_off = 0, .load_key = 0x7fbe76cb59dbef39ull };
+static const struct f3dex1_build l_b_lxn121 = { .fx = { 0x7030, 1, 1, &f3dex_lay_std },                 /* F3DLX.NoN 1.21 */
+    .pc = { 0x058, 0x09c, 0x5a0, 0x71c, 0x3b8, 0x72c, 0xf80, 0x2f0, 0x1dc, 0x32c, 0x348, 0x340, 0, 0, 0x318, 0x308, 0x2d0, 0x274, 0x26c, 0x248, 0x230, 0x1fc, 0x2b0, 0x1b4 },
+    .culldl_off = 0, .load_key = 0x528d66df73e165c9ull };
+static const struct f3dex1_build l_b_lxn123 = { .fx = { 0x7030, 1, 1, &f3dex_lay_std },                 /* F3DLX.NoN 1.23 */
+    .pc = { 0x058, 0x09c, 0x598, 0x714, 0x3b0, 0x724, 0xf80, 0x2e8, 0x1d4, 0x324, 0x340, 0x338, 0, 0, 0x310, 0x300, 0x2c8, 0x26c, 0x264, 0x240, 0x228, 0x1f4, 0x2a8, 0x1ac },
+    .culldl_off = 0, .load_key = 0x16cc2c957cb30d31ull };
+static const struct f3dex1_build l_b_non100 = { .fx = { 0x7030, 1, 0, &l_lay_c4 },                 /* F3DEX.NoN 1.00 (Turok): 1.2x opcodes, no G_BRANCH_Z / G_LOAD_UCODE */
+    .pc = { 0x058, 0x09c, 0x5bc, 0x738, 0x3f0, 0x748, 0, 0, 0x224, 0x37c, 0x398, 0x390, 0, 0, 0x368, 0x358, 0x338, 0x2dc, 0x2d4, 0x2b0, 0x298, 0x264, 0x318, 0x1fc },
+    .culldl_off = 0, .load_key = 0x5db9ec31c25de879ull };
 
 /* DMEM dead at the end of a task: scratch and leftovers (docs/ucode-f3dex.md section 8). CANDIDATES until the poison probe has established them for this family (ARMLET_DMEM_POISON); each
  * entry says what writes it. The window / operand / output buffer are only dead because the native code does not issue the microcode's DMA reads (F3DEX_EXACT=1 does). */
@@ -876,16 +946,16 @@ static const struct hle_dead_range l_dead[] = {
     { 0x2e3, 0x2e4 }, { 0x2e7, 0x2e8 },
 };
 
-#define U(var, uid, nm, bld) HLE_UCODE(var) = { .id = (uid), .name = (nm), .fam = &l_fam, .fam_data = &(bld), .dead = l_dead, .n_dead = sizeof(l_dead) / sizeof(l_dead[0]), .ring_off = 0xfe8 }
-U(l_bk, 0x208a567e9aead5eaull, "F3DEX 1.21 (Banjo-Kazooie, Glover, Bomberman Hero, Quest 64)", l_dex);
-U(l_sf, 0xfd5a31ccf6d40b62ull, "F3DEX.NoN 1.22 (Star Fox 64, Quake, Wetrix)", l_non);
-U(l_ts_ex, 0x047252e810e35d56ull, "F3DEX 1.23 (Toy Story 2, Earthworm Jim 3D, Mystical Ninja, SpaceStation, Pokemon Puzzle League)", l_dex);
-U(l_ts_lx, 0x7502cfb7098eeffbull, "F3DLX 1.23 (Toy Story 2, A Bug's Life)", l_dlx);
-U(l_mk_ex, 0x34dad67335a54cdaull, "F3DEX 0.95 (Mario Kart 64)", l_dex095);
-U(l_mk_lx, 0x5f33f7c2be924de0ull, "F3DLX 0.95", l_dlx095);
-U(l_wo, 0x76c763bc18ad3ab3ull, "F3DLX 1.21 (Wipeout 64)", l_dlx);
-U(l_cf, 0x0a7cc6c93363c663ull, "F3DLX.NoN 1.21 (Clay Fighter SC)", l_dlxn);
-U(l_ig, 0xcc09096cb6a48e7bull, "F3DLX.NoN 1.23 (Iggy's Reckin' Balls, Penny Racers)", l_dlxn);
-U(l_tu, 0x5063f108118bf62aull, "F3DEX.NoN 1.00 (Turok)", l_non);
+#define U(var, uid, nm, bld) HLE_UCODE(var) = { .id = (uid), .name = (nm), .fam = &f3dex1_fam, .fam_data = &(bld), .dead = l_dead, .n_dead = sizeof(l_dead) / sizeof(l_dead[0]), .ring_off = 0xfe8 }
+U(l_bk, 0x208a567e9aead5eaull, "F3DEX 1.21 (Banjo-Kazooie, Glover, Bomberman Hero, Quest 64)", l_b_121);
+U(l_sf, 0xfd5a31ccf6d40b62ull, "F3DEX.NoN 1.22 (Star Fox 64, Quake, Wetrix)", l_b_non122);
+U(l_ts_ex, 0x047252e810e35d56ull, "F3DEX 1.23 (Toy Story 2, Earthworm Jim 3D, Mystical Ninja, SpaceStation, Pokemon Puzzle League)", l_b_123);
+U(l_ts_lx, 0x7502cfb7098eeffbull, "F3DLX 1.23 (Toy Story 2, A Bug's Life)", l_b_lx123);
+U(l_mk_ex, 0x34dad67335a54cdaull, "F3DEX 0.95 (Mario Kart 64)", l_b_095);
+U(l_mk_lx, 0x5f33f7c2be924de0ull, "F3DLX 0.95", l_b_lx095);
+U(l_wo, 0x76c763bc18ad3ab3ull, "F3DLX 1.21 (Wipeout 64)", l_b_lx121);
+U(l_cf, 0x0a7cc6c93363c663ull, "F3DLX.NoN 1.21 (Clay Fighter SC)", l_b_lxn121);
+U(l_ig, 0xcc09096cb6a48e7bull, "F3DLX.NoN 1.23 (Iggy's Reckin' Balls, Penny Racers)", l_b_lxn123);
+U(l_tu, 0x5063f108118bf62aull, "F3DEX.NoN 1.00 (Turok)", l_b_non100);
 
 #endif
