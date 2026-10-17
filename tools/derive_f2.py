@@ -661,6 +661,8 @@ def reach_sets(img, data, lay, tab, head):
 
 
 def derive(U, refs):
+    for R in refs:
+        R.img.active = None             # (set_active below leaves the primary reference restricted to its own overlays; one derivation must not depend on the ones before it)
     res = Result()
     prs = {R.name: Pairing(R, U) for R in refs}
     order = sorted(prs.values(), key=lambda P: (len(P.x_set()), len(P.xr), -len(P.pr)))
