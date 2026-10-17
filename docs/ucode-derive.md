@@ -381,3 +381,7 @@ the fix, ran natively and differed (207 of 209).
   native, 0 differences, 3389 declined (before: 209 native, 207 differences); hash, state, screenshots and audio identical to the reference; the mutant (mutation 316) shows the 7 differences again in 700 frames. Nothing else changed: the other 22 games of the regression set were identical before and after.
   The cost is that Gauntlet Legends stays on the JIT (its mean native share was 0 before, too).
 
+
+## With the native Rej builds (merge of ucode-probe and native-rej, 2026-10-17)
+
+`derive_refs.c` is generated from the hand-written tables that `tools/derive_lib.py` reads back (`hle_f3dex2.c`, `hle_f3dex2_dialects.c`, `hle_s2dex2.c`, `f3dex.c`, `f3d.c` and their headers). The F3DEX 2.03 build and the Rej builds (F3DLX.Rej, F3DFLX.Rej, F3DEX.Rej, the XBUS F3DLX.Rej) are registered in `hle_rej.c`, which the tool does not read, and they are different microcodes (20-byte vertex records, other triangle code; hot list rows 8, 17, 19, 21, 24): as references they would not align with an unknown text above the family threshold. They are therefore **not** in the references; the regenerated `derive_refs.c` after the merge is byte-identical (`--check` passes). The static ids of `hle_rej.c` and the dynamic registry cannot collide: a derived build is found after the registered ones and `armlet_hle_find` takes the first, so a registered text is never re-derived.

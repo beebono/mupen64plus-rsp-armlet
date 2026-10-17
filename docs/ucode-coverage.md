@@ -32,6 +32,8 @@ How much of the graphics RSP work does the task-level native path (`GfxMode = hl
 | mean share of graphics RSP time left on the JIT | **23.4 %** (test 27.6, unseen 21.1) | **19.2 %** |
 | games that run (almost) none native | 8 | 6: GoldenEye 007, Yoshi's Story, Chameleon Twist 2, Donald Duck, Star Wars Rogue Squadron, Mischief Makers (1 of 3200) |
 
+The run-time probe ([ucode-derive.md](ucode-derive.md), `GfxProbe`, off by default) is not in these numbers: it derives records for unregistered F3DEX2-family texts at run time and registers them dynamically; the figures above count registered builds only, so every game counted native here is native with the probe off.
+
 Excitebike 64, F-Zero X and Resident Evil 2 went from 0 / 0 / 68 % to 100 % native (the first task of each run is counted with the JIT: `tasks - 1`); the 4.2 points that left the JIT are theirs (F-Zero X 100 % of its RSP time, Excitebike 64 100 %, Resident Evil 2's quarter). What is left of the 19.2 points
 is S2DEX 1.0x, the F3D 2.0G / 2.0H re-layouts, the XBUS transport of two F3D-class texts, the status poll time-out of Gauntlet Legends, Star Wars Rogue Squadron's own microcode, and the line microcodes (L3DEX 1.21 in Wipeout 64, **L3DEX 2.08 in WinBack: 0.07 points**, rows 16 and 17 of the hot list).
 `G_LOAD_UCODE of another ucode` (1930 tasks in Excitebike 64 before) and `an earlier task with these pointers loaded another ucode` (63) are gone from the decline reasons.
