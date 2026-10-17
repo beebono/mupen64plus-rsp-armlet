@@ -33,13 +33,30 @@ struct rej_vtx {
     int16_t rwi;                                    /* 1/W integer part (+16) */
     uint16_t rwf;                                   /* fraction (+18) */
 };
-/* flags of the variants of the Rej texts (f2_layout.rej_flags). REJ_FLAT_A: a flat-shaded triangle takes the alpha of its first vertex too (the others take the alpha of each vertex) */
-enum { REJ_YQ = 1, REJ_FLAT_A = 2 };                                /* the screen y is rounded to whole pixels: the viewport's y translation + 2, the two low bits cleared; the mark of a rejected vertex is then 0x7ffc, else 0x7fff (F3DEX.Rej 2.06 does neither) */
+/* flags of the variants of the Rej texts (f2_layout.rej_flags). REJ_FLAT_A: a flat-shaded triangle takes the alpha of its first vertex too (the others take the alpha of each vertex). REJ_LIT_FLX: the lighting is F3DFLX.Rej's (rej_flx_lit); REJ_LIT_LX: F3DLX.Rej 2.03's (the F3DEX2 lighting loop with the unsigned multiply-accumulates: rej_lx_lit_vertex) */
+enum { REJ_YQ = 1, REJ_FLAT_A = 2, REJ_LIT_FLX = 4, REJ_LIT_LX = 8 };                                /* the screen y is rounded to whole pixels: the viewport's y translation + 2, the two low bits cleared; the mark of a rejected vertex is then 0x7ffc, else 0x7fff (F3DEX.Rej 2.06 does neither) */
 enum { REJ_VSTRIDE = 20, REJ_NSLOTS = 64, REJ_MARK_Y = 0x7ffc };                /* (64 vertex slots of 20 bytes: DMEM 0x410 .. 0x910) */
 
 /* n vertices (no pair partner is needed: the records carry no clip bits). out[i] is the record of in[i]. */
-void rej_vtx_xform_scalar(const struct fx2_vctx *c, unsigned flags, const struct fx2_vin *in, unsigned n, struct rej_vtx *out);
-void rej_vtx_xform(const struct fx2_vctx *c, unsigned flags, const struct fx2_vin *in, unsigned n, struct rej_vtx *out);
+/* F3DFLX.Rej's lighting (docs/ucode-rej.md, section 6.2): an ambient colour and ONE directional light, for the two lane groups of the vector unit (group 1 = the first, even vertex of a pair, group 0 = the odd one) */
+struct rej_flx_lit {
+    int16_t dir[2][3];                              /* the direction as the setup leaves it (s16 lanes) */
+    uint8_t amb[2][3], col[2][3];                   /* the ambient and the light colour */
+    int16_t k7;                                     /* v31[7]: the factor the ambient is multiplied by (0x7fff) */
+    int texgen;                                     /* geometry mode bit 18: the vertex's alpha is looked up in a table by the normal's dot product with `dir1` (F-Zero X's reflections) */
+    int16_t dir1[2][3];                             /* the setup's first direction (the one that is not the light) */
+    uint8_t tab[256];                               /* the 256 bytes at DMEM 0x8b0 (loaded by G_DMA_IO), by the signed byte as an unsigned number */
+};
+void rej_flx_lit_vertex(const struct rej_flx_lit *fl, unsigned g, const int8_t n[3], uint8_t out[4]);       /* out[3]: the table byte with texture generation, else untouched */
+/* the setup of one direction d (s16 lanes; the light's bytes << 8): through the upper 3x3 of the model-view matrix, normalised (the reciprocal square root of the sum of squares), scaled by `scale`, s16 lanes */
+void rej_light_dir(const struct fx2_mtx *mv, const int16_t d[3], int16_t scale, int16_t out[3]);
+
+/* The lit colour of one vertex of F3DLX.Rej 2.03 (fx2_lit_vertex_scalar with the unsigned multiplies VMULU / VMACU in the colour loop, the lambert terms unmasked); same arguments */
+void rej_lx_lit_vertex(const struct fx2_vctx *cx, unsigned g, const int8_t nb[3], uint8_t alpha, uint8_t out[4], int texgen, int16_t sgen[2]);
+
+/* fl: F3DFLX.Rej's lighting when the geometry mode lights (c->mode), else NULL (the F3DEX2 lighting of c->L) */
+void rej_vtx_xform_scalar(const struct fx2_vctx *c, unsigned flags, const struct rej_flx_lit *fl, const struct fx2_vin *in, unsigned n, struct rej_vtx *out);
+void rej_vtx_xform(const struct fx2_vctx *c, unsigned flags, const struct rej_flx_lit *fl, const struct fx2_vin *in, unsigned n, struct rej_vtx *out);
 
 /* ---- triangles ----------------------------------------------------------------------------------------------------------------------------------------------------------------- */
 struct rej_tri_in {

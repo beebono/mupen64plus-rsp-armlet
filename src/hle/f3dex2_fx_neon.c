@@ -516,7 +516,7 @@ void fx2_mtx_mul(const struct fx2_mtx *a, const struct fx2_mtx *b, struct fx2_mt
 /* ---- the Rej vertex pipeline (rej_fx.h) --------------------------------------------------------------------------------------------------------------------------------------------- */
 /* The stages of fx2_vtx_xform with the differences of rej_project (rej_fx.c): the clip bits only of x y z against the guard band (a vertex outside it is marked: 0x7fff * 0x7fff goes into the
  * viewport accumulator), no limit on the integer part of 1/w, the optional rounding of y (REJ_YQ), the record of 20 bytes without clip coordinates. The results are those of rej_vtx_xform_scalar. */
-void rej_vtx_xform(const struct fx2_vctx *c, unsigned flags, const struct fx2_vin *in, unsigned n, struct rej_vtx *out)
+void rej_vtx_xform(const struct fx2_vctx *c, unsigned flags, const struct rej_flx_lit *flx, const struct fx2_vin *in, unsigned n, struct rej_vtx *out)
 {
     unsigned i;
     int16x4_t Pi[REJ_NSLOTS];
@@ -527,7 +527,7 @@ void rej_vtx_xform(const struct fx2_vctx *c, unsigned flags, const struct fx2_vi
     unsigned marked[REJ_NSLOTS];
 
     if (use_scalar()) {
-        rej_vtx_xform_scalar(c, flags, in, n, out);
+        rej_vtx_xform_scalar(c, flags, flx, in, n, out);
         return;
     }
     for (i = 0; i < n; i++) {
@@ -545,7 +545,7 @@ void rej_vtx_xform(const struct fx2_vctx *c, unsigned flags, const struct fx2_vi
         prod = (hle_acc)P3f * c->ratio + (((hle_acc)P3i * c->ratio) << 16);
         W2 = (int32_t)((uint32_t)(uint16_t)hle_sclamp(prod) << 16 | (uint16_t)prod);
         X2 = vsetq_lane_s32((int32_t)((uint32_t)(uint16_t)P3i << 16 | P2f), pack32(Pi[i], Pf[i]), 3);
-        marked[i] = (clipbits4(X2, vdupq_n_s32(W2)) & 0x0707) != 0;
+        marked[i] = (clipbits4(X2, vdupq_n_s32(W2)) & NMUT(368, 0x0707, 0x0303)) != 0;
         {
             v64 Q = mulk4(Pi[i], Pf[i], c->pn);
             int64_t q3 = vgetq_lane_s64(Q.hi, 1);             /* lane 3 only */
@@ -579,11 +579,11 @@ void rej_vtx_xform(const struct fx2_vctx *c, unsigned flags, const struct fx2_vi
     }
     {
         int16_t sc[4] = { c->scale[0], c->scale[1], c->scale[2], c->scale[3] };
-        int32_t base32[4] = { c->trans[0], (flags & REJ_YQ) ? hle_clamp16((int32_t)c->trans[1] + 2) : c->trans[1], c->trans[2], c->trans[3] + (int32_t)c->c31_3 };
+        int32_t base32[4] = { c->trans[0], (flags & REJ_YQ) ? hle_clamp16((int32_t)c->trans[1] + NMUT(370, 2, 1)) : c->trans[1], c->trans[2], c->trans[3] + (int32_t)c->c31_3 };
         v64 b = v64_shl16_s32(vld1q_s32(base32)), bm = b;
         int16x4_t scale = vld1_s16(sc);
         {
-            int64_t K = ((int64_t)0x7fff * c->c31_7) << 16;       /* the marked vertices' term */
+            int64_t K = ((int64_t)NMUT(369, 0x7fff, 0x7ffe) * c->c31_7) << 16;       /* the marked vertices' term */
             bm.lo = vaddq_s64(b.lo, vdupq_n_s64(K));
             bm.hi = vaddq_s64(b.hi, vdupq_n_s64(K));
         }
@@ -596,7 +596,20 @@ void rej_vtx_xform(const struct fx2_vctx *c, unsigned flags, const struct fx2_vi
             int16x4_t ndci, nni, Si;
             uint16x4_t ndcf, nni_f, Sf;
             int32x4_t pf;
-            if ((c->mode & FX2_LIGHTING)) {
+            if ((flags & REJ_LIT_LX) && (c->mode & FX2_LIGHTING)) {
+                int8_t nb[3] = { (int8_t)vi->c[0], (int8_t)vi->c[1], (int8_t)vi->c[2] };
+                uint8_t lo[4];
+                int16_t sg[2] = { 0, 0 };
+                rej_lx_lit_vertex(c, (i & 1) ? 0 : 1, nb, vi->c[3], lo, (c->mode & FX2_TEXGEN) != 0, sg);
+                memcpy(col, lo, 4);
+                if (c->mode & FX2_TEXGEN) {
+                    s = sg[0];
+                    tt = sg[1];
+                }
+            } else if (flx && (c->mode & FX2_LIGHTING)) {
+                int8_t nb[3] = { (int8_t)vi->c[0], (int8_t)vi->c[1], (int8_t)vi->c[2] };
+                rej_flx_lit_vertex(flx, (i & 1) ? 0 : 1, nb, col);
+            } else if ((c->mode & FX2_LIGHTING)) {
                 int8_t nb[3] = { (int8_t)vi->c[0], (int8_t)vi->c[1], (int8_t)vi->c[2] };
                 uint8_t lo[4];
                 int16_t sg[2] = { 0, 0 };
@@ -623,7 +636,7 @@ void rej_vtx_xform(const struct fx2_vctx *c, unsigned flags, const struct fx2_vi
             Si = sclamp4(f1);
             Sf = uclamp4(t1);
             o->sx = vget_lane_s16(Si, 0);
-            o->sy = (flags & REJ_YQ) ? (int16_t)(vget_lane_s16(Si, 1) & ~3) : vget_lane_s16(Si, 1);
+            o->sy = (flags & REJ_YQ) ? (int16_t)(vget_lane_s16(Si, 1) & NMUT(371, ~3, ~1)) : vget_lane_s16(Si, 1);
             o->szi = vget_lane_s16(Si, 2);
             o->szf = vget_lane_u16(Sf, 2);
             o->rwi = R1i[i];

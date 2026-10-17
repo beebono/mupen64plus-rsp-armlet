@@ -146,6 +146,21 @@ static void vtx_state(uint32_t *dm, unsigned *lit_out)
         st16(dm, 0xe8 + 2 * k, (uint16_t)(mode == 0 ? r16() : k == 0 ? 640 : k == 1 ? 480 : k == 2 ? 0x1ff : 0));
     }
     st16(dm, 0x186, (uint16_t)(rnd() % 3 == 0 ? r16() : 1 + rnd() % 6));
+    if (rnd() % 6 == 0) {                            /* the extreme corner: a tiny w (the reciprocal is huge, the normalised coordinates saturate) and viewport scales at the ends of the 16-bit range, with the vertices inside or outside the guard band */
+        unsigned r, c;
+        static const int16_t sc_e[] = { 0x7fff, -0x8000, 0x7ffe, -0x7fff, 0x4000, -0x4000 };
+        for (r = 0; r < 4; r++)
+            for (c = 0; c < 4; c++) {
+                st16(dm, 0x80 + 2 * (4 * r + c), (uint16_t)(r == c && r < 3 ? 1 : 0));
+                st16(dm, 0xa0 + 2 * (4 * r + c), 0);
+            }
+        st16(dm, 0x80 + 2 * 15, 0);
+        st16(dm, 0xa0 + 2 * 15, (uint16_t)(rnd() % 3 == 0 ? 0 : rnd() % 4 == 0 ? 0x8000 : 1 + rnd() % 0x40));
+        st8(dm, 0x1d9, 1);
+        for (k = 0; k < 3; k++)
+            st16(dm, 0xe0 + 2 * k, (uint16_t)sc_e[rnd() % 6]);
+        st16(dm, 0xdc, (uint16_t)(rnd() % 2 ? 0xffff : r16()));
+    }
     st16(dm, 0x1e0, (uint16_t)r16());
     st16(dm, 0x1e2, (uint16_t)r16());
     st16(dm, 0x1e8, (uint16_t)(rnd() % 3 == 0 ? r16() : 0xffff - rnd() % 4));
@@ -155,7 +170,7 @@ static void vtx_state(uint32_t *dm, unsigned *lit_out)
             st16(dm, 0x1d0 + 2 * k, (uint16_t)r16());
     lit = f2L->no_lit ? 0 : rnd() % 2;
     nl = 1 + rnd() % 7;
-    st32(dm, 0x1ec, (rnd() % 2 ? 1u : 0) | (rnd() % 2 ? 4u : 0) | (rnd() % 2 ? 0x200000u : 0) | (rnd() % 2 ? 0x10000u : 0) | (lit ? 0x20000u : 0) | (rnd() % 2 ? 0x40000u : 0) | (rnd() % 2 ? 0x80000u : 0));
+    st32(dm, 0x1ec, (rnd() % 2 ? 1u : 0) | (rnd() % 2 ? 4u : 0) | (rnd() % 2 ? 0x200000u : 0) | (rnd() % 2 ? 0x10000u : 0) | (lit ? 0x20000u : 0) | (f2L->rej_flags & REJ_LIT_FLX ? (rnd() % 2 ? 0x40000u : 0) : (rnd() % 2 ? 0x40000u : 0) | (rnd() % 2 ? 0x80000u : 0)));
     st8(dm, 0x1dd, (uint8_t)(24 * nl));
     st8(dm, 0x1dc, (uint8_t)(rnd() % 2 ? rnd() | 1 : 0));
     for (k = 0; k < 24 * 9; k++) {
@@ -167,6 +182,9 @@ static void vtx_state(uint32_t *dm, unsigned *lit_out)
             st8(dm, 0x200 + 24 * m + 4 + k, ((const uint8_t *)dm)[(0x200 + 24 * m + k) ^ 3]);
     for (k = 0; k < 16; k++)                         /* segment table: mostly 0 */
         st32(dm, 0xf8 + 4 * k, rnd() % 4 ? 0 : (rnd() & 0xff000) );
+    if (f2L->rej_flags & REJ_LIT_FLX)
+        for (k = 0x8b0; k < 0x9b0; k++)
+            st8(dm, k, (uint8_t)rnd());
     *lit_out = lit;
 }
 
@@ -238,7 +256,12 @@ static int rj_dma(struct rctx *x, uint32_t *r) { (void)x; (void)r; return 0; }
 #endif
 
 /* the padding bytes of the light slots (docs/ucode-f3dex2.md section 6; the same lanes in the Rej builds) */
-static int dead(unsigned d) { return d >= 0x200 && d < 0x200 + 24 * 9 && ((d - 0x200) % 24 == 3 || (d - 0x200) % 24 == 7); }
+static int dead(unsigned d)
+{
+    if (f2L->rej_flags & REJ_LIT_FLX)           /* F3DFLX.Rej: the setup's stale slot, and the fourth lane of its directions (docs/ucode-rej.md, section 6.2) */
+        return (d >= 0x250 && d < 0x260) || (d >= 0x266 && d < 0x268) || (d >= 0x26e && d < 0x270) || (d >= 0x276 && d < 0x278) || (d >= 0x27e && d < 0x280);
+    return d >= 0x200 && d < 0x200 + 24 * 9 && ((d - 0x200) % 24 == 3 || (d - 0x200) % 24 == 7);
+}
 
 static unsigned vtx_cases(unsigned n, unsigned *fails_out)
 {
@@ -344,6 +367,8 @@ static void rand_rec(struct rej_vtx *r, int wild)
         r->sx = r16();
     if (rnd() % 20 == 0)
         r->sy = (int16_t)(r16() & ~3);
+    if (r->sy != REJ_MARK_Y && rnd() % 3 == 0)              /* records that G_VTX does not leave in the builds with the y rounding (stale slots of an earlier text; all of them in F3DEX.Rej 2.06) */
+        r->sy |= (int16_t)(rnd() & 3);
     r->szi = (int16_t)(rnd() % 8 == 0 ? r16() : (int)(rnd() % 0x400) - 0x40);
     r->szf = (uint16_t)rnd();
     r->rwi = (int16_t)(rnd() % 4 == 0 ? r16() : (int)(rnd() % 4));
@@ -370,6 +395,12 @@ static void tri_state(uint32_t *dm)
     st32(dm, 0x1ec, g);
     st8(dm, 0x1e6, (uint8_t)(rnd() % 64));
     st8(dm, 0x1e7, (uint8_t)(rnd() % 2 ? 2 : 0));
+    if (rnd() % 6 == 0)                              /* bits the build gives no meaning to, a texture on byte of 1 or 3, a tile byte over 6 bits: the closed forms decline them */
+        st32(dm, 0x1ec, hle_dm32(&(struct hle_task){ .dmem = dm }, 0x1ec) | (1u << (1 + rnd() % 15)) | (rnd() % 2 ? 0x40u : 0));
+    if (rnd() % 24 == 0)
+        st8(dm, 0x1e7, (uint8_t)(1 + rnd() % 3));
+    if (rnd() % 24 == 0)
+        st8(dm, 0x1e6, (uint8_t)(0x40 | rnd()));
 }
 
 #if REJ_FIFO
@@ -533,8 +564,8 @@ static unsigned form_cases(unsigned n, unsigned *fails_out)
             for (j = 0; j < 4; j++)
                 in[k].c[j] = (uint8_t)rnd();
         }
-        rej_vtx_xform(&c, flags, in, nv, o1);
-        rej_vtx_xform_scalar(&c, flags, in, nv, o2);
+        rej_vtx_xform(&c, flags, NULL, in, nv, o1);
+        rej_vtx_xform_scalar(&c, flags, NULL, in, nv, o2);
         if (memcmp(o1, o2, nv * sizeof o1[0]) && fails++ < 5)
             printf("form case %u: %u vertices differ between the forms\n", i, nv);
         {
