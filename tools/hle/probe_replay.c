@@ -243,7 +243,7 @@ int main(int argc, char **argv)
                 const struct hle_ucode *u;
                 struct derive_rec rr;
                 const char *first;
-                if (derive_recs[r].fam != DERIVE_F3DEX2)
+                if (derive_recs[r].fam != DERIVE_F3DEX2 && derive_recs[r].fam != DERIVE_F3DEX1)
                     continue;
                 u = dbuild_registered(derive_recs[r].load_key);
                 n++;
@@ -258,7 +258,7 @@ int main(int argc, char **argv)
                     bad++;
                 }
             }
-            printf("SYNC %u F3DEX2 references, %u out of step with the tables\n", n, bad);
+            printf("SYNC %u F3DEX2-family and F3DEX 1.x references, %u out of step with the tables\n", n, bad);
             nfail += bad != 0;
         } else if (!strcmp(argv[i], "--task") && i + 1 < argc) {
             if (!world) {
@@ -333,6 +333,12 @@ int main(int argc, char **argv)
                 }
                 put_be(DLA, (const uint8_t[]){ 0xdf, 0, 0, 0, 0, 0, 0, 0 }, 8);
                 W.sp_pc = 0x80;
+                {                                               /* $1 = the OSTask header, as the boot code leaves it (the F3DEX 1.x start-up code reads the task through it) */
+                    static PrspNativeSnap sn;
+                    prsp_native_save(&sn);
+                    sn.sr[1] = 0xfc0;
+                    prsp_native_load(&sn);
+                }
                 memset(&W.ctx.cfg, 0, sizeof(W.ctx.cfg));
                 W.ctx.cfg.gfx_mode = ARMLET_GFX_HLE;
                 W.ctx.cfg.probe = 1;

@@ -26,4 +26,12 @@ struct probe_case {
 /* case `kind` (PROBE_*) for `seed`, laid out at RDRAM address `base`; deterministic */
 void probe_case_make(struct probe_case *c, unsigned kind, unsigned seed, uint32_t base);
 
+/* The same cases for an F3DEX 1.x build (the GBI of F3DEX 1.x: G_VTX 0x04, G_TRI1 0xbf, G_TRI2 0xb1, ...). The commands whose opcode differs between the builds are given by the caller
+ * (probe.c: the opcode whose handler-table cell leads to the record's pc; 0: the build has no such command, the case leaves it out), and the form of G_CULLDL by the record. */
+struct probe_f1ops {
+    uint8_t half1, half2, branchz, modvtx, persp, quad;
+    uint8_t culldl_off;
+};
+void probe_case_make_f1(struct probe_case *c, unsigned kind, unsigned seed, uint32_t base, const struct probe_f1ops *ops);
+
 #endif

@@ -19,6 +19,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include "derive.h"
 #include "ucache.h"
 
 static int fails;
@@ -239,6 +240,27 @@ int main(void)
         ucache_from_rec(&x, &r);
         ucache_to_rec(&x, &back);
         CHECK(back.n_ext == 10 && back.ext[9].pc == 0x24 + 72 && back.ext[9].kind == 0x49 && back.pc[PC_LDTX_RECT] == 0xba0, "an S2DEX record round-trips through an entry");
+    }
+    {                                                   /* the record of an F3DEX 1.x build (handler pcs, layout, the three attributes) survives the entry, with its family */
+        struct derive_rec r, back;
+        struct ucache_entry x;
+        unsigned k;
+        memset(&r, 0, sizeof(r));
+        memset(&x, 0, sizeof(x));
+        r.fam = DERIVE_F3DEX1;
+        for (k = 0; k < DERIVE_NF1PC; k++)
+            r.f1pc[k] = (int32_t)(0x58 + 4 * k);
+        for (k = 0; k < DERIVE_NF1LAY; k++)
+            r.lay[k] = 0x100 + 2 * k;
+        r.non = 1;
+        r.dlx = 1;
+        r.culldl_off = 1;
+        r.reject_mask = 0x7030;
+        ucache_from_rec(&x, &r);
+        x.family = DERIVE_F3DEX1;
+        ucache_to_rec(&x, &back);
+        CHECK(back.fam == DERIVE_F3DEX1 && back.f1pc[23] == 0x58 + 92 && back.lay[35] == 0x100 + 70 && back.non == 1 && back.dlx == 1 && back.culldl_off == 1 && back.reject_mask == 0x7030,
+              "an F3DEX 1.x record round-trips through an entry");
     }
 
     snprintf(cmd, sizeof(cmd), "rm -rf '%s'", dir);

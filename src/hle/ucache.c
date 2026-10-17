@@ -244,13 +244,17 @@ void ucache_from_rec(struct ucache_entry *e, const struct derive_rec *r)
         e->ext[k][0] = (uint16_t)r->ext[k].pc;
         e->ext[k][1] = r->ext[k].kind;
     }
+    memcpy(e->f1pc, r->f1pc, sizeof(e->f1pc));
+    e->non = r->non;
+    e->dlx = r->dlx;
+    e->culldl_off = r->culldl_off;
 }
 
 void ucache_to_rec(const struct ucache_entry *e, struct derive_rec *r)
 {
     memset(r, 0, sizeof(*r));
     r->name = "(cached)";
-    r->fam = DERIVE_F3DEX2;
+    r->fam = e->family;
     memcpy(r->pc, e->pc, sizeof(r->pc));
     memcpy(r->f2pcs, e->f2pcs, sizeof(r->f2pcs));
     memcpy(r->lay, e->lay, sizeof(r->lay));
@@ -264,4 +268,8 @@ void ucache_to_rec(const struct ucache_entry *e, struct derive_rec *r)
         r->ext[k].pc = e->ext[k][0];
         r->ext[k].kind = (uint8_t)e->ext[k][1];
     }
+    memcpy(r->f1pc, e->f1pc, sizeof(r->f1pc));
+    r->non = e->non;
+    r->dlx = e->dlx;
+    r->culldl_off = e->culldl_off;
 }
