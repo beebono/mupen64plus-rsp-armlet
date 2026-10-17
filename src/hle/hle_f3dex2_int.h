@@ -77,6 +77,8 @@ struct f3 {
     struct fx2_clip_out co;
     struct fx2_tri_in tin;          /* the constants of the triangle setup */
     uint32_t clip_mask;
+    int rc;                         /* a result an ext command's helper left (hle_rej.c)  */
+    int ho_req;                     /* an ext command ended the outermost display list: the loop hands the task back (f3_enddl) */
     int lean;                       /* the external-effects mode: no DMA the effects do not need (the display list and the vertices are read from RDRAM, the overlays are loaded once at the end) */
     int ov0;                        /* the overlay IMEM held at the start */
     int trace, watch;
@@ -104,10 +106,13 @@ enum { F3DEX2_N_DEAD_OUT = 21 };
 #define F3DEX2_DEAD .ring_off = 0xfe8, .dead = f3dex2_dead_out, .n_dead = F3DEX2_N_DEAD_OUT
 
 int f3_flush(struct f3 *f);
+int f3_flush_xbus(struct f3 *f);                    /* hle_rej.c: the room check and DPC_END of the XBUS builds' flush routine (f2L->xbus) */
 void f3_dma_rd(struct f3 *f, unsigned mem, uint32_t dram, uint32_t len);
 int f3_store_unmodelled(const struct f3 *f, unsigned a, unsigned len);   /* a store of [a, a + len] the lean mode cannot model (display list buffer, jump table, overlay descriptors, FIFO pointer ..., or IMEM) */
 void f3_overlay_load(struct f3 *f, int which);
 void f3_do_dl(struct f3 *f, uint32_t w0, uint32_t w1);
+int f3_enddl(struct f3 *f);                         /* G_ENDDL's effect for a dialect's command (f->ho_req set when it was the outermost list's) */
+int f3_branch(struct f3 *f, uint32_t addr);         /* a branch to the segment address `addr`, no stack */
 
 /* after a command that wrote to the buffer (the build's flush entry: a "safe" build writes a pipe sync first) */
 static inline int after_emit(struct f3 *f)
@@ -116,6 +121,8 @@ static inline int after_emit(struct f3 *f)
         hle_st8(f->t, f->s7, MUT(300, 0xe7, 0xe6));
         f->s7 += MUT(301, 8, 0);
     }
+    if (f2L->xbus)
+        return f3_flush_xbus(f);
     if ((int32_t)(f->s7 - f->s6) > 0)
         return f3_flush(f);
     return HLE_OK;

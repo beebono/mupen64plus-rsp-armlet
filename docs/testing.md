@@ -530,6 +530,60 @@ is closed by 310: an undefined opcode 0x54 .. 0x7f has its jump table entry (0x3
 random `imageLoad` field makes the microcode write a LOAD_TILE whose id byte is arbitrary (0xcf, 0xe4); the RDP parses it as a triangle or a texture rectangle and swallows the syncs behind it, whose stale bytes the relaxed compare of a task that switched builds (`hash_r`) can then not zero. The generator keeps the field to the two values a game writes
 (`0xfff4`, `0x0033`). With the old generator, `load` seed 904 of Kirby 64 (devel a355089) ended the JIT after 1504 bytes while the front-end ran 10 773 commands: a `G_SELECT_DL` whose flags word lay over the jump table, now declined (mutation 315, section "G_SELECT_DL over the jump table" above).
 
+## Rej: F3DLX.Rej, F3DFLX.Rej, F3DEX.Rej and F3DEX 2.03 (docs/ucode-rej.md; 2026-10-17)
+
+Builds `8b0a` (F3DLX.Rej xbus 2.08, Excitebike 64) with the F3DEX.NoN xbus 2.08 text it loads (`f649`), `7de8` (F3DLX.Rej fifo 2.03), `c750` (F3DFLX.Rej fifo 2.03F), `33dc` (F3DEX fifo 2.03) of F-Zero X and `9512` (F3DEX.Rej fifo 2.06, Resident Evil 2).
+Desktop (x86_64) unless said, `GfxMode=hle`, against the reference pairing, 3700 frames (62 s) unless said. **The closed forms are checked against the microcode itself**: `tools/hle/gen_rej_oracles.sh` makes rsp2c translations of the G_VTX and G_TRI handlers
+of each text from its dump (the oracles are ROM-derived: git-ignored, in test-output/), `tools/hle/test_rej.c` (`tools/hle/build_test_rej.sh`) runs random DMEM images through the oracle and through the front-end's functions (`rej_vtx_xform`, `rej_tri_setup`,
+the lighting) and compares every DMEM byte, the RDP output and the state; the rsp2c translations are oracles only, never production code.
+
+| check | result |
+|---|---|
+| `test_rej` against the rsp2c oracles, x86 scalar, 3000 cases of each of the four Rej texts (G_VTX with 1 .. 64 vertices, odd counts, marked vertices, lit; G_TRI1 / G_TRI2 / G_QUAD with random records, wrapped rings, culling, flat and smooth) | 0 failures (xbus, fifo203, fifo206, flx) |
+| the same under qemu-aarch64: NEON forms, and with `SCALAR=1` the scalar forms (3000 cases of each text) | 0 failures |
+| NEON against scalar, 160 000 random vertex and triangle cases per text (`REJ_ONLY=form`, qemu) | identical (xbus, flx; 80 000 for the others) |
+| captured tasks (`ARMLET_HLE_CAPTURE`, 3700 f), `armlet-native-replay`: Excitebike 64 / F-Zero X / Resident Evil 2 | 173 / 320 / 500 snapshots: all equal, 0 declined |
+| synthetic tasks (`tools/hle/mksyn_rej.py`, `synth_rej.sh`; a captured task of the text supplies the microcode and the start state, `MKSYN_BASE=0x200000` for F-Zero X: the default base lies in its RDP ring; cases `vtx lit wild misc ring bad load`), 100 seeds each (44 for `bad`), x86 | 0 differ in all four Rej texts (the declines: `misc` 11 to 40 % by the `G_DMA_IO` to 0x8b0, which is over the vertex slots of every text but F3DFLX, `lit` of F3DFLX 56 % by its light descriptors, `bad` all but a few kinds) (`ring`: Excitebike's output ring wrapping; `load`: the G_LOAD_UCODE of the F3DEX.NoN text, 60 seeds equal; `bad`: commands no game writes, every seed declines by the guard it aims at) |
+| synthetic, 30 seeds each, qemu-aarch64 NEON and scalar | 0 differ |
+| perturbed copies of the captured tasks (`tools/rsp2c/fuzz_snaps.py` with `FUZZ_DONOR`, `--oracle`), x86 | 3 sets of 20 copies x 3 seeds of every 6th / 25th / 12th task of Excitebike 64 / Resident Evil 2 / F-Zero X: 813 equal, 0 mismatches after the fix of mutation 376 (before it: one mismatch in about 1500, see below), the rest declined (undefined opcodes, indices outside what a game writes, the poll limit), 0 hangs; qemu NEON and scalar, 90 files per game: 0 mismatches |
+| captured tasks under qemu-aarch64, every second snapshot, NEON and scalar | Excitebike 64 87, F-Zero X 160, Resident Evil 2 250: all equal, 0 declined (both) |
+| equivalence gates, `ref` against `armlet-hle`, `armlet` and `ARMLET_HLE_VERIFY=1`, 3700 f | Excitebike 64 (1663 of 1664 tasks native), Resident Evil 2 (8575 of 8576), F-Zero X (3391 of 3392): hash stream, state stream, 6 screenshots, audio identical; the verify runs 0 differences, 0 declined |
+| `ARMLET_HLE_VERIFY=1`, 12000 f | Excitebike 64 5823 tasks, Resident Evil 2 25 151, F-Zero X 11 455: 0 differences; equivalence PASS each |
+| `ARMLET_HLE_POISON=1` and `ARMLET_DMEM_POISON=mask`, 3700 f | the three games identical to `ref` (the dead ranges of `hle_rej.c` are dead) |
+| regression gates (`ref`, `armlet-hle`, `armlet`, verify), 3700 f | Donkey Kong 64, Ocarina of Time, Paper Mario, Banjo-Kazooie, Conker, Kirby 64, Worms, Banjo-Tooie, Resident Evil 2: identical |
+| x86 front-end time against the JIT (`armlet-native-replay --bench 60`, 3 runs) | Excitebike 64 13 us against 21 us (1.6 times); F-Zero X: F3DEX 2.03 3.1 to 3.2 times (241 us against 750), F3DLX.Rej 3.1 to 3.2, F3DFLX.Rej 2.8 to 3.0; Resident Evil 2 1.0 to 1.2 (tasks of 3 us: the fixed cost of the task dominates) |
+
+**Mutations 360 .. 376 and 377 .. 396** (`tools/hle/mutcheck_rej.sh`: closed forms and NEON forms against the oracles; the front-end against the captured and the synthetic tasks, a mismatch, a decline the unmutated build does not have or the other way round counts):
+
+| # | the deliberate error | caught by |
+|---|---|---|
+| 377 | the mark of a vertex from the x, y, z bits only (`& 0x0707`) widened / narrowed | oracle |
+| 378 | marked vertices do not saturate (the extreme corners of the viewport) | oracle (the "extreme corner" vertex mode) |
+| 379, 380 | y translation + 1 instead of + 2; the mask ~1 instead of ~3 | oracle |
+| 381 | fog byte limit 0x7e00 | oracle |
+| 382 | a negative guard-band ratio is not declined | oracle (ratio >= 0x8000) |
+| 383, 384 | `sy >= 0x7ffd`; the sort tie of F3DEX2 | oracle |
+| 388, 389, 390 | geometry bits, G_TEXTURE bytes and odd vertex numbers not declined in the triangle command | oracle (bad bits, bytes, numbers) |
+| 396, 360, 361 | F3DFLX's flat alpha; the cull bits swapped; the two triangles of a command in the other order | oracle |
+| 366, 367 | the ring wraps one command late / to the wrong address | oracle (ring) |
+| 368 .. 371 | the same errors in the NEON form (mark mask, mark term, y translation, y mask) | oracle under qemu |
+| 373, 374 | F3DLX.Rej 2.03's unsigned lighting: the lambert's multiplier, the mask of `cur` | oracle (fifo203) |
+| 376 | the y fraction of the top vertex corrected in the rounding builds | oracle (records with y low bits) |
+| 385, 386, 387, 375 | G_DMA_IO to RDRAM / into IMEM / over the microcode's own buffers / over the vertex slots not declined | synthetic `bad` (seeds 7, 18, 29, 40 of 11 kinds x 8 destinations), `misc` |
+| 392, 393, 394, 395 | G_VTX end index, G_MODIFYVTX offset, G_CULLDL and G_BRANCH_Z vertex numbers not declined | synthetic `bad` |
+| 362, 363, 364 | G_MODIFYVTX offset base 16 -> 0; G_BRANCH_Z reads the wrong record field; G_CULLDL compares 0x7ffc | synthetic `misc` |
+| 391 | the geometry-mode guard of G_VTX | **not caught: an equivalent mutant.** The command that sets the mode (`G_GEOMETRYMODE`, `hle_f3dex2.c`) declines undefined bits before any vertex is seen; the guard in `rej_vtx` would only matter for a start state that has them (a snapshot taken after a text that does not clear them), which no captured task has |
+
+**What the tests found** (all fixed before the commit):
+- the signed guard-band ratio: the microcode multiplies the ratio as a signed lane, so 0x8000 and up is declined (382);
+- the sort tie, the tile byte and the cull word differ from F3DEX2's (384, 360), and the second triangle of a command is not drawn first;
+- 64 vertex slots of 20 bytes: the arrays of the F3DEX2 front-end held 32;
+- F-Zero X's F3DFLX lighting setup normalises two vectors, stores the valid byte before testing it and the alpha is a table lookup for texture generation; F3DLX.Rej 2.03's `cur` is masked in the branch delay slot too (373, 374);
+- a fuzzed F-Zero X task started with vertex slots of the previous (F3DEX 2.03) text: records with y low bits set, which the YQ builds' triangle code does not correct for (the F3DEX2 setup does): 376, and `test_rej` now makes such records;
+- a synthetic `G_DMA_IO` over the vertex slots: the front-end took the junk records as its own (the slots are modelled in DMEM) and applied its own invariants: declined (375).
+
+**F3DEX 2.03.** Registered as the 2.04 build's pcs with `zex = 1`, `gen204 = 1`. Synthetic tasks (`mksyn_ex2.py`, a captured `33dc` task as base, 100 seeds): clip zneg tri mix misc mtx 0 differences, wild 96 of 96 equal; `lit` cannot be tested (the lighting overlay is not in the snapshots, the JIT does not finish).
+
 ## Regenerating the microcode oracles
 
 The closed forms of S2DEX 2.08 (`s2dex2_bg.c`, `s2dex2_rect.c`) and of F3DEXBG's lit vertices (`f3dexbg_fx.c`) were derived from the microcode and are checked against the microcode itself, besides the replays and verify runs above.
