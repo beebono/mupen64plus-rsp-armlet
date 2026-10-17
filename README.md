@@ -12,12 +12,16 @@ module, with a place to put native replacements for the slow parts of the graphi
 - **Native routines** ([design](docs/design.md#native-routines)): a PC-entry hook in the JIT (`GfxNative = on|verify`, off by default) hands a microcode routine, a vertex transform or a
   triangle setup, to C / NEON code that must leave the RSP exactly as the microcode would. In `verify` mode the JIT runs the same stretch from the same state and everything is compared;
   `armlet-native-replay` does the same offline from captured snapshots.
-- **A dispatch hook** in front of the JIT (`src/dispatch.c`, `src/gfx_ucode.c`) identifies the graphics ucode of every new task. This is where native
-  handlers for a ucode will be plugged in; with no handler registered, nothing differs from the JIT path.
+- **Native graphics** ([design](docs/design.md#task-level-native-path)): a graphics task whose ucode has a task-level front-end runs as C / NEON instead of on the JIT.
+  Data-driven front-ends cover F3D, F3DEX 1.x, F3DEX2 (with its dialects, incl. the Rej / LX2 builds) and S2DEX 2.x, plus hand-written ones for
+  Diddy Kong Racing / Jet Force Gemini and Indiana Jones. Anything a front-end cannot prove exact declines to the JIT, task by task.
+- **Probe and latch** ([design](docs/design.md#the-probe-and-the-ucode-cache)): a ucode with no table entry is derived from its own text, probed against the JIT
+  with canned display lists, then validated on real tasks by a background thread; it runs natively only once it has latched, and a mismatch takes it back to the JIT.
+  What it learned is kept in `armlet-ucode.cache` in the config directory.
 
-Today arMLEt's output is bit-identical to `mupen64plus-rsp-hle` with `RspFallback = parallel-rsp`
+The output is bit-identical to `mupen64plus-rsp-hle` with `RspFallback = parallel-rsp`
 (`DisplayListToGraphicsPlugin = False`, `AudioListToAudioPlugin = False`): the same RSP state after every task, the same frames, the same audio
-samples. What it adds is one module instead of two, one initialisation, a ucode id and family log, and the hook. Method and results:
+samples (the native paths are held to this by the equivalence gates). Coverage: [docs/ucode-coverage.md](docs/ucode-coverage.md). Method and results:
 [docs/testing.md](docs/testing.md). Design: [docs/design.md](docs/design.md). Options: [docs/options.md](docs/options.md).
 
 ## Using it
@@ -26,8 +30,9 @@ samples. What it adds is one module instead of two, one initialisation, a ucode 
 mupen64plus --gfx mupen64plus-rdp-foir.so --rsp mupen64plus-rsp-armlet.so --audio mupen64plus-audio-sdl.so game.z64
 ```
 
-No other setting is needed. The config section `Rsp-Armlet` has `GfxMode` (`lle`, the default, or `hle`) and `GfxHleUcodes`; with `hle` a ucode
-that has a native handler would run natively, and none has yet. `RdpCoalesce` (`auto`: on with foir) and `RdpCoalesceBytes` control the list coalescing ([docs/options.md](docs/options.md)).
+No other setting is needed. The config section `Rsp-Armlet` has `GfxMode` (`hle`, the default: native graphics where a front-end exists; `lle`:
+everything on the JIT), `GfxHleUcodes` (limit native graphics to some ucode ids) and `GfxProbe` (`on`, the default; `off` disables the probe and latch).
+Native graphics needs foir as the video plugin, behind the coalescing path. `RdpCoalesce` (`auto`: on with foir) and `RdpCoalesceBytes` control the list coalescing ([docs/options.md](docs/options.md)).
 
 ## Building
 

@@ -102,7 +102,7 @@ m64p_error armlet_config_startup(m64p_dynlib_handle core)
     }
 
     ConfigSetDefaultFloat(l_section, CFG_VERSION, CONFIG_PARAM_VERSION, "arMLEt config parameter version number");
-    ConfigSetDefaultString(l_section, CFG_GFX_MODE, "lle",
+    ConfigSetDefaultString(l_section, CFG_GFX_MODE, "hle",
         "Graphics microcode: lle = every graphics task runs on parallel-rsp's JIT; "
         "hle = tasks whose microcode has a native task-level handler (src/hle) run natively, the rest run as lle");
     ConfigSetDefaultString(l_section, CFG_GFX_UCODES, "",
@@ -116,7 +116,7 @@ m64p_error armlet_config_startup(m64p_dynlib_handle core)
         "Coalesce the video plugin's ProcessRdpList calls of graphics ucode (exact, see docs): auto = on when the video plugin is foir, on, off");
     ConfigSetDefaultInt(l_section, CFG_RDP_COALESCE_BYTES, ARMLET_COALESCE_BYTES_DEFAULT,
         "Bytes of pending RDP command list at which a coalesced list is handed to the video plugin");
-    ConfigSetDefaultString(l_section, CFG_GFX_PROBE, "off",
+    ConfigSetDefaultString(l_section, CFG_GFX_PROBE, "on",
         "GfxMode=hle only: derive the build record of a graphics ucode that has no table entry and probe it with canned display lists against the JIT: off, on (see docs/design.md, The probe)");
     ConfigSetDefaultString(l_section, CFG_GFX_PROBE_NEAR, "strict",
         "Probe of a NEAR derivation: strict (the canned tasks must come out identical) or tolerant (shade coefficients and vertex colours may differ by a couple of levels)");
@@ -169,11 +169,11 @@ const char *armlet_config_user_path(void)
 
 void armlet_config_load(struct armlet_config *cfg)
 {
-    const char *mode = l_section ? ConfigGetParamString(l_section, CFG_GFX_MODE) : "lle";
+    const char *mode = l_section ? ConfigGetParamString(l_section, CFG_GFX_MODE) : "hle";
     const char *ucodes = l_section ? ConfigGetParamString(l_section, CFG_GFX_UCODES) : "";
     const char *native = l_section ? ConfigGetParamString(l_section, CFG_GFX_NATIVE) : "off";
     const char *nroutines = l_section ? ConfigGetParamString(l_section, CFG_GFX_NATIVE_ROUTINES) : "";
-    const char *probe = l_section ? ConfigGetParamString(l_section, CFG_GFX_PROBE) : "off";
+    const char *probe = l_section ? ConfigGetParamString(l_section, CFG_GFX_PROBE) : "on";
     const char *pnear = l_section ? ConfigGetParamString(l_section, CFG_GFX_PROBE_NEAR) : "strict";
     const char *ucache = l_section ? ConfigGetParamString(l_section, CFG_UCODE_CACHE) : "";
     const char *lpol = l_section ? ConfigGetParamString(l_section, CFG_LATCH_POLICY) : "";
