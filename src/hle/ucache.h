@@ -19,7 +19,7 @@
 extern "C" {
 #endif
 
-#define UCACHE_FORMAT 3           /* 2: the continuation pcs of S2DEX (pc[]) and the dialect command table (ext); 3: F3DEX 1.x records (f1pc, non, dlx, culldl_off; the layout in lay[]) */
+#define UCACHE_FORMAT 4           /* 2: the continuation pcs of S2DEX (pc[]) and the dialect command table (ext); 3: F3DEX 1.x records (f1pc, non, dlx, culldl_off; the layout in lay[]); 4: F3D records (f3pc, the masks, f3[]) */
 #define UCACHE_MAX_ENTRIES 512          /* oldest-used entries go first when the cache is full */
 
 enum { UC_PROBE_NONE = 0, UC_PROBE_PASS = 1, UC_PROBE_FAIL = 2, UC_PROBE_PASS_TOL = 3, UC_PROBE_UNSUPPORTED = 4 };
@@ -43,6 +43,9 @@ struct ucache_entry {
     int32_t f1pc[DERIVE_NF1PC];         /* F3DEX 1.x */
     uint8_t non, dlx, culldl_off, pad5;
     uint32_t pad6;
+    int32_t f3pc[DERIVE_NF3PC];         /* F3D (the layout in lay[]) */
+    uint32_t clip_mask, culldl_mask;
+    uint8_t f3[F3F_N], pad7;
     uint32_t crc;
     uint32_t pad3;
 };

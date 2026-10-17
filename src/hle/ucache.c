@@ -248,6 +248,10 @@ void ucache_from_rec(struct ucache_entry *e, const struct derive_rec *r)
     e->non = r->non;
     e->dlx = r->dlx;
     e->culldl_off = r->culldl_off;
+    memcpy(e->f3pc, r->f3pc, sizeof(e->f3pc));
+    e->clip_mask = r->clip_mask;
+    e->culldl_mask = r->culldl_mask;
+    memcpy(e->f3, r->f3, sizeof(e->f3));
 }
 
 void ucache_to_rec(const struct ucache_entry *e, struct derive_rec *r)
@@ -272,4 +276,8 @@ void ucache_to_rec(const struct ucache_entry *e, struct derive_rec *r)
     r->non = e->non;
     r->dlx = e->dlx;
     r->culldl_off = e->culldl_off;
+    memcpy(r->f3pc, e->f3pc, sizeof(r->f3pc));
+    r->clip_mask = e->clip_mask;
+    r->culldl_mask = e->culldl_mask;
+    memcpy(r->f3, e->f3, sizeof(r->f3));
 }

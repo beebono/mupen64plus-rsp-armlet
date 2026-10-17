@@ -262,6 +262,28 @@ int main(void)
         CHECK(back.fam == DERIVE_F3DEX1 && back.f1pc[23] == 0x58 + 92 && back.lay[35] == 0x100 + 70 && back.non == 1 && back.dlx == 1 && back.culldl_off == 1 && back.reject_mask == 0x7030,
               "an F3DEX 1.x record round-trips through an entry");
     }
+    {                                                   /* the record of an F3D build (handler pcs, layout, masks, the attributes) survives the entry, with its family */
+        struct derive_rec r, back;
+        struct ucache_entry x;
+        unsigned k;
+        memset(&r, 0, sizeof(r));
+        memset(&x, 0, sizeof(x));
+        r.fam = DERIVE_F3D;
+        for (k = 0; k < DERIVE_NF3PC; k++)
+            r.f3pc[k] = (int32_t)(0x60 + 4 * k);
+        for (k = 0; k < DERIVE_NF3LAY; k++)
+            r.lay[k] = 0x200 + 2 * k;
+        for (k = 0; k < F3F_N; k++)
+            r.f3[k] = (uint8_t)(k + 1);
+        r.reject_mask = 0x7030;
+        r.clip_mask = 0x4343;
+        r.culldl_mask = 0xffff;
+        ucache_from_rec(&x, &r);
+        x.family = DERIVE_F3D;
+        ucache_to_rec(&x, &back);
+        CHECK(back.fam == DERIVE_F3D && back.f3pc[21] == 0x60 + 84 && back.lay[33] == 0x200 + 66 && back.f3[F3F_VPTR_MUL] == 7 && back.reject_mask == 0x7030 && back.clip_mask == 0x4343 &&
+              back.culldl_mask == 0xffff, "an F3D record round-trips through an entry");
+    }
 
     snprintf(cmd, sizeof(cmd), "rm -rf '%s'", dir);
     if (system(cmd))

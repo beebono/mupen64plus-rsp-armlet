@@ -1,7 +1,7 @@
 /*
  * arMLEt - tools/hle/probe_replay.c: the probe (src/hle/probe.c) on ucode dumps, without a game
  *
- *   armlet-probe-replay [--cache FILE] [--latch] [--force] [--tol] [--seeds N] [--none-x N] [--trace] [--rep N] TEXTFILE...
+ *   armlet-probe-replay [--cache FILE] [--latch] [--force] [--self] [--tol] [--seeds N] [--none-x N] [--trace] [--rep N] TEXTFILE...
  *
  * TEXTFILE is a <id>.<datahash>.text dump of tools/ucode_dump_shim.c (.data and .ext next to it). For each one a private RSP is set up as at the start of a graphics task of that
  * microcode (the text in RDRAM and in IMEM at 0x80, the data segment in DMEM, an OSTask, a 128 KiB RDP output ring), and armlet_probe_offer is called the way the dispatch does until
@@ -231,6 +231,10 @@ int main(int argc, char **argv)
     for (i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--force"))
             force = 1;
+        else if (!strcmp(argv[i], "--self")) {           /* with --force: derive a registered text with its own record among the references (ARMLET_PROBE_FORCE_SELF) */
+            force = 1;
+            setenv("ARMLET_PROBE_FORCE_SELF", "1", 1);
+        }
         else if (!strcmp(argv[i], "--latch"))
             latch = 1;
         else if (!strcmp(argv[i], "--tol"))
@@ -243,8 +247,6 @@ int main(int argc, char **argv)
                 const struct hle_ucode *u;
                 struct derive_rec rr;
                 const char *first;
-                if (derive_recs[r].fam != DERIVE_F3DEX2 && derive_recs[r].fam != DERIVE_F3DEX1)
-                    continue;
                 u = dbuild_registered(derive_recs[r].load_key);
                 n++;
                 if (!u) {
@@ -258,7 +260,7 @@ int main(int argc, char **argv)
                     bad++;
                 }
             }
-            printf("SYNC %u F3DEX2-family and F3DEX 1.x references, %u out of step with the tables\n", n, bad);
+            printf("SYNC %u references (F3DEX2 family, F3DEX 1.x, F3D), %u out of step with the tables\n", n, bad);
             nfail += bad != 0;
         } else if (!strcmp(argv[i], "--task") && i + 1 < argc) {
             if (!world) {
