@@ -16,7 +16,8 @@ const struct hle_ucode *dbuild_registered(uint64_t load_key)
 {
     const struct hle_ucode *u = NULL;
     while ((u = armlet_hle_next(u)) != NULL)
-        if (u->fam == &f3dex2_fam && u->fam_data && ((const struct f3dex2_build *)u->fam_data)->load_key == load_key)
+        if ((u->fam == &f3dex2_fam && u->fam_data && ((const struct f3dex2_build *)u->fam_data)->load_key == load_key) ||
+            (u->fam == &f3dex1_fam && u->fam_data && ((const struct f3dex1_build *)u->fam_data)->load_key == load_key && load_key))
             return u;
     return NULL;
 }
@@ -27,13 +28,32 @@ const struct hle_ucode *dbuild_registered(uint64_t load_key)
     X(mvp_valid) X(lights_valid) X(lights_size) X(light_raw) X(light_base) X(tg) X(light_scale) X(light_scale_zex) X(vtab) X(clipmask) X(culltab) X(in) X(in_end) X(jump_table) \
     X(movemem_tab) X(moveword_adj) X(desc_light) X(desc_clip) X(clip_planes) X(clip_masks) X(out_toggle) X(geom_def) X(mw_max) X(out_bytes) X(pipe_sync) X(no_lit)
 
+#define F1LAY_FIELDS F3DEX_LAY_FIELDS
+
 void dbuild_rec_of(const struct hle_ucode *u, struct derive_rec *r)
 {
     const struct f3dex2_build *b = (const struct f3dex2_build *)u->fam_data;
-    const struct f2_layout *l = b->lay ? b->lay : f3dex2_std_layout();
+    const struct f2_layout *l;
     unsigned k = 0;
     memset(r, 0, sizeof(*r));
     r->name = u->name;
+    if (u->fam == &f3dex1_fam) {
+        const struct f3dex1_build *b1 = (const struct f3dex1_build *)u->fam_data;
+        const struct f3dex_layout *l1 = f3dex_lay(&b1->fx);
+        r->fam = DERIVE_F3DEX1;
+#define X(f) r->lay[k++] = l1->f;
+        F1LAY_FIELDS(X)
+#undef X
+        for (k = 0; k < DERIVE_NF1PC; k++)
+            r->f1pc[k] = b1->pc[k];
+        r->reject_mask = b1->fx.reject_mask;
+        r->non = b1->fx.non;
+        r->dlx = b1->fx.dlx;
+        r->culldl_off = b1->culldl_off;
+        r->load_key = b1->load_key;
+        return;
+    }
+    l = b->lay ? b->lay : f3dex2_std_layout();
     r->fam = DERIVE_F3DEX2;
     r->pc[PC_HEAD] = b->head; r->pc[PC_COPY] = b->copy; r->pc[PC_SYNC] = b->sync; r->pc[PC_SEGCOPY] = b->segcopy; r->pc[PC_EF] = b->ef; r->pc[PC_ED] = b->ed;
     r->pc[PC_TRI1] = b->tri1; r->pc[PC_TRI2] = b->tri2; r->pc[PC_VTX] = b->vtx; r->pc[PC_MTX] = b->mtx; r->pc[PC_GEOM] = b->geom; r->pc[PC_ENDDL] = b->enddl;
@@ -74,6 +94,9 @@ int dbuild_rec_equal(const struct derive_rec *a, const struct derive_rec *b, con
         CMP(f2pcs[k], "f2pcs")
     for (k = 0; k < DERIVE_NLAY; k++)
         CMP(lay[k], "lay")
+    for (k = 0; k < DERIVE_NF1PC; k++)
+        CMP(f1pc[k], "f1pc")
+    CMP(fam, "fam") CMP(non, "non") CMP(dlx, "dlx") CMP(culldl_off, "culldl_off")
     CMP(gen204, "gen204") CMP(zex, "zex") CMP(bz_z, "bz_z") CMP(reject_mask, "reject_mask") CMP(load_key, "load_key") CMP(n_ext, "n_ext")
 #undef CMP
     for (k = 0; k < a->n_ext; k++) {
@@ -90,6 +113,76 @@ int dbuild_rec_equal(const struct derive_rec *a, const struct derive_rec *b, con
     return 1;
 }
 
+/* the F3DEX 1.x part of dbuild_make */
+static int make_f1(struct dbuild *d, uint64_t text_id, const struct derive_result *r, const char **why)
+{
+    const struct derive_rec *rec = &r->rec, *prec;
+    const struct derive_ref *pr;
+    const struct hle_ucode *pu;
+    unsigned k = 0;
+    if (r->primary < 0) {
+        *why = "no primary reference";
+        return 1;
+    }
+    pr = &derive_refs[r->primary];
+    prec = &derive_recs[pr->rec];
+    for (k = 0; k < DERIVE_NF1PC; k++) {
+        int v = rec->f1pc[k];
+        if (v == 0 && k > F1PC_nop)
+            continue;                                   /* (the derivation found no handler the text's tables lead to: the command declines) */
+        if (v <= 0 || v >= 0x1000 || (v & 3)) {
+            *why = "a handler pc of the record is missing or not an instruction address";
+            return 1;
+        }
+    }
+    for (k = 0; k < DERIVE_NF1LAY; k++)
+        if (rec->lay[k] >= 0x1000 || (k < DERIVE_NF1KNOB && rec->lay[k] == 0)) {
+            *why = "a DMEM address of the record is outside DMEM";
+            return 1;
+        }
+    if (!rec->reject_mask) {
+        *why = "no reject mask";
+        return 1;
+    }
+    pu = dbuild_registered(prec->load_key);
+    if (!pu || pu->fam != &f3dex1_fam) {
+        *why = "the primary reference is not a registered build";
+        return 1;
+    }
+    d->primary = r->primary;
+    d->verdict = r->verdict;
+    d->rec = *rec;
+    k = 0;
+#define X(f) d->lay1.f = (uint16_t)rec->lay[k++];
+    F1LAY_FIELDS(X)
+#undef X
+    for (k = 0; k < DERIVE_NF1PC; k++)
+        d->b1.pc[k] = (uint16_t)rec->f1pc[k];
+    d->b1.fx.reject_mask = (uint16_t)rec->reject_mask;
+    d->b1.fx.non = rec->non;
+    d->b1.fx.dlx = rec->dlx;
+    d->b1.fx.lay = &d->lay1;
+    d->b1.culldl_off = rec->culldl_off;
+    d->b1.load_key = rec->load_key;
+    snprintf(d->name, sizeof(d->name), "derived %s (%016" PRIx64 ", from %s)", derive_verdict_name(r->verdict), text_id, pr->name);
+    d->uc.id = text_id;
+    d->uc.name = d->name;
+    d->uc.fam = &f3dex1_fam;
+    d->uc.flags = pu->flags;
+    d->uc.fam_data = &d->b1;
+    d->uc.ring_off = pu->ring_off;
+    d->uc.rdp_cmd_size = pu->rdp_cmd_size;
+    d->uc.live_sregs = pu->live_sregs;
+    if (pu->n_dead > sizeof(d->dead) / sizeof(d->dead[0])) {
+        *why = "the primary reference has more dead ranges than a derived build can hold";
+        return 1;
+    }
+    memcpy(d->dead, pu->dead, pu->n_dead * sizeof(d->dead[0]));
+    d->uc.dead = d->dead;
+    d->uc.n_dead = pu->n_dead;
+    return 0;
+}
+
 int dbuild_make(struct dbuild *d, uint64_t text_id, const struct derive_result *r, const char **why)
 {
     const struct derive_rec *rec = &r->rec;
@@ -101,8 +194,10 @@ int dbuild_make(struct dbuild *d, uint64_t text_id, const struct derive_result *
     const struct derive_rec *prec;
 
     memset(d, 0, sizeof(*d));
+    if (r->family == DERIVE_F3DEX1)
+        return make_f1(d, text_id, r, why);
     if (r->family != DERIVE_F3DEX2) {
-        *why = "not of the F3DEX2 family";
+        *why = "not of the F3DEX2 family or F3DEX 1.x";
         return 1;
     }
     if (r->primary < 0) {

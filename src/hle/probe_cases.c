@@ -758,6 +758,516 @@ static void s2_case(struct probe_case *c, struct dl *d, struct rng *r, unsigned 
     cmd(d, 0xdf000000, 0);
 }
 
+/* ---- F3DEX 1.x (the same cases in the F3DEX 1.x GBI) ----------------------------------------------------------------------------------------------------------------------- */
+enum { G1_ZB = 0x1, G1_SHADE = 0x4, G1_SMOOTH = 0x200, G1_CFRONT = 0x1000, G1_CBACK = 0x2000, G1_FOG = 0x10000, G1_LIGHT = 0x20000, G1_TEXGEN = 0x40000, G1_TEXLIN = 0x80000, G1_CLIP = 0x800000 };
+
+static void f1_vtx(struct dl *d, unsigned n, unsigned v0, uint32_t a) { cmd(d, (0x04u << 24) | (v0 * 2 << 16) | (n << 10) | (16 * n - 1), a); }
+static void f1_tri1(struct dl *d, unsigned a, unsigned b, unsigned c) { cmd(d, 0xbf000000, (a * 2 << 16) | (b * 2 << 8) | c * 2); }
+static void f1_mtx(struct dl *d, unsigned fl, uint32_t a) { cmd(d, (0x01u << 24) | (fl << 16) | 64, a); }
+static void f1_mw(struct dl *d, unsigned idx, unsigned off, uint32_t v) { cmd(d, (0xbcu << 24) | (off << 8) | idx, v); }
+static void f1_enddl(struct dl *d) { cmd(d, 0xb8000000, 0); }
+
+static void f1_persp(struct dl *d, const struct probe_f1ops *o, uint32_t v)
+{
+    if (o->persp)
+        cmd(d, (uint32_t)o->persp << 24, v);
+    else
+        f1_mw(d, 0x0e, 0, v);
+}
+
+static void f1_common(struct probe_case *c, struct dl *d, struct rng *r, const struct probe_f1ops *o, uint32_t geom, int trans_z, int tex)
+{
+    static const uint32_t pn[4] = { 0xffff, 0x7fff, 0x0100, 0x4000 };
+    static const uint32_t tx[4] = { 0x80008000, 0xffffffff, 0x20004000, 0x00010001 };
+    uint8_t vp[16];
+    f1_mw(d, 6, 0, 0);                                  /* segment 0 = 0 */
+    f1_mw(d, 4, 0x04, 3);                               /* the clip ratio */
+    f1_mw(d, 4, 0x0c, 3);
+    f1_mw(d, 4, 0x14, (uint32_t)-3);
+    f1_mw(d, 4, 0x1c, (uint32_t)-3);
+    f1_persp(d, o, CHOICE(r, pn));
+    cmd(d, 0xb6000000, 0xffffffff);                     /* clear the geometry mode, then set it */
+    cmd(d, 0xb7000000, geom);
+    cmd(d, 0x03800010, c->base + 0x400);                /* the viewport */
+    be16(vp, 160 * 4); be16(vp + 2, 120 * 4); be16(vp + 4, 0x1ff); be16(vp + 6, 0);
+    be16(vp + 8, 160 * 4); be16(vp + 10, 120 * 4); be16(vp + 12, (unsigned)trans_z); be16(vp + 14, 0);
+    put(c, 0x400, vp, 16);
+    if (tex)
+        cmd(d, 0xbb000001 | (randrange(r, 8) << 8), CHOICE(r, tx));
+}
+
+static void f1_culldl(struct dl *d, const struct probe_f1ops *o, unsigned a, unsigned b)
+{
+    if (o->culldl_off)
+        cmd(d, (0xbeu << 24) | (a * 40), (b + 1) * 40);
+    else
+        cmd(d, (0xbeu << 24) | (a * 2), b * 2);
+}
+
+static void f1_geometry(struct probe_case *c, struct dl *d, struct rng *r, unsigned kind, const struct probe_f1ops *o)
+{
+    static const uint32_t shades[3] = { 0, G1_SHADE, G1_SHADE | G1_SMOOTH };
+    static const uint32_t culls[5] = { 0, 0, G1_CBACK, G1_CFRONT, G1_CFRONT | G1_CBACK };
+    static const double sc_clip[8] = { 1, 1, 0.5, 0.25, 1.0 / 16, 1.0 / 64, 1.0 / 256, 1.0 / 1024 };
+    static const double sc_zneg[2] = { 1, 0.25 };
+    static const double sc_wild[6] = { 1, 2, 4, 16, 64, 256 };
+    static const double sc_mix[3] = { 1, 0.5, 1.0 / 8 };
+    static const int tz[3] = { 0x1ff, 0, 0x100 };
+    static const double sp0[4] = { 4, 10, 30, 100 };
+    uint32_t geom = CHOICE(r, shades) | randrange(r, 2) * G1_ZB | CHOICE(r, culls) | G1_CLIP;
+    unsigned tex = randrange(r, 2), nbatch = kind == PROBE_MIX ? 4 : 3, b, vaddr = 0x600;
+    double mv[16], pj[16], scale, span0 = CHOICE(r, sp0);
+    uint8_t buf[64];
+    f1_common(c, d, r, o, geom, kind == PROBE_ZNEG ? 0 : CHOICE(r, tz), tex);
+    scale = kind == PROBE_CLIP ? CHOICE(r, sc_clip) : kind == PROBE_ZNEG ? CHOICE(r, sc_zneg) : kind == PROBE_WILD ? CHOICE(r, sc_wild) : CHOICE(r, sc_mix);
+    ident(mv);
+    if (kind == PROBE_ZNEG) {                           /* w = 1 + 0.5 z: vertices on both sides of the near plane */
+        memset(pj, 0, sizeof(pj));
+        pj[0] = pj[5] = pj[10] = scale;
+        pj[11] = 0.5 * scale;
+        pj[15] = scale;
+    } else {
+        rnd_matrix(r, scale, pj);
+        if (kind != PROBE_WILD) {
+            pj[15] = scale * span0 * uniform(r, 1.2, 3.0);
+            pj[12] = uniform(r, -0.5, 0.5) * scale * span0;
+            pj[13] = uniform(r, -0.5, 0.5) * scale * span0;
+            pj[14] = uniform(r, -0.5, 0.5) * scale * span0;
+        }
+    }
+    mtx(buf, mv);
+    put(c, 0x500, buf, 64);
+    mtx(buf, pj);
+    put(c, 0x540, buf, 64);
+    f1_mtx(d, 3, c->base + 0x540);                      /* projection, load */
+    f1_mtx(d, 2, c->base + 0x500);                      /* model-view, load */
+    for (b = 0; b < nbatch; b++) {
+        static const unsigned ns[8] = { 3, 3, 4, 5, 6, 9, 11, 16 };
+        static const double sp_z[2] = { 0.5, 1.0 };
+        static const double sp_w[3] = { 2000, 10000, 32767 };
+        static const int s2[3] = { 100, 2000, 32768 };
+        static const int ends[6] = { -32768, -32767, 32767, 0, 1, -1 };
+        static const int zz[4] = { -1, 0, 0, 1 };
+        unsigned n = kind == PROBE_MIX ? 1 + randrange(r, 11) : CHOICE(r, ns), v0 = randrange(r, 32 - n + 1), i, nt, q;
+        double span = kind == PROBE_ZNEG ? CHOICE(r, sp_z) : kind == PROBE_WILD ? CHOICE(r, sp_w) : span0 * uniform(r, 0.5, 1.0), ctr[3];
+        uint8_t vs[16 * 16];
+        for (i = 0; i < 3; i++)
+            ctr[i] = uniform(r, -span, span);
+        for (i = 0; i < n; i++) {
+            int x, y, z, k, cc[3];
+            uint8_t col[4];
+            if (kind == PROBE_ZNEG) {
+                x = (int)uniform(r, -8, 8);
+                y = (int)uniform(r, -8, 8);
+                z = CHOICE(r, zz) * (int)(1 + randrange(r, 3));
+            } else {
+                int sp = kind == PROBE_WILD ? CHOICE(r, s2) : (int)(span0 * 0.5) + (int)randrange(r, 3);
+                for (k = 0; k < 3; k++) {
+                    double v = ctr[k] + uniform(r, -sp, sp);
+                    int iv = (int)v;
+                    cc[k] = iv < -32768 ? -32768 : iv > 32767 ? 32767 : iv;
+                }
+                x = cc[0]; y = cc[1]; z = cc[2];
+                if (kind == PROBE_WILD) {
+                    if (frnd(r) < 0.25) x = CHOICE(r, ends);
+                    if (frnd(r) < 0.25) y = CHOICE(r, ends);
+                    if (frnd(r) < 0.25) z = CHOICE(r, ends);
+                }
+            }
+            rcol(r, col);
+            vtx(vs + 16 * i, x, y, z, randint(r, -1024, 1023), randint(r, -1024, 1023), col);
+        }
+        put(c, vaddr, vs, 16 * n);
+        f1_vtx(d, n, v0, c->base + vaddr);
+        vaddr += 0x100;
+        nt = kind == PROBE_CLIP ? 12 : 2 + randrange(r, 10);
+        for (q = 0; q < nt && n >= 3; q++) {
+            unsigned a, b2, cc;
+            double u = frnd(r);
+            sample3(r, v0, n, &a, &b2, &cc);
+            if (u < 0.3) {
+                unsigned a2, b3, c3;
+                sample3(r, v0, n, &a2, &b3, &c3);
+                cmd(d, (0xb1u << 24) | (a * 2 << 16) | (b2 * 2 << 8) | cc * 2, (a2 * 2 << 16) | (b3 * 2 << 8) | c3 * 2);
+            } else if (u < 0.45 && o->quad && n >= 4) {
+                unsigned v4 = v0 + randrange(r, n);
+                cmd(d, (uint32_t)o->quad << 24, (v4 * 2 << 24) | (a * 2 << 16) | (b2 * 2 << 8) | cc * 2);
+            } else
+                f1_tri1(d, a, b2, cc);
+        }
+    }
+    f1_enddl(d);
+}
+
+static void f1_sub(struct probe_case *c, unsigned off, const struct dl *s)
+{
+    uint8_t t[8 * 16];
+    unsigned k;
+    for (k = 0; k < s->n && k < 16; k++) {
+        t[8 * k] = (uint8_t)(s->w[k][0] >> 24); t[8 * k + 1] = (uint8_t)(s->w[k][0] >> 16); t[8 * k + 2] = (uint8_t)(s->w[k][0] >> 8); t[8 * k + 3] = (uint8_t)s->w[k][0];
+        t[8 * k + 4] = (uint8_t)(s->w[k][1] >> 24); t[8 * k + 5] = (uint8_t)(s->w[k][1] >> 16); t[8 * k + 6] = (uint8_t)(s->w[k][1] >> 8); t[8 * k + 7] = (uint8_t)s->w[k][1];
+    }
+    put(c, off, t, 8 * k);
+}
+
+static void f1_misc(struct probe_case *c, struct dl *d, struct rng *r, const struct probe_f1ops *o)
+{
+    static const double sc[3] = { 1, 0.5, 1.0 / 8 };
+    static const int tz[2] = { 0x1ff, 0 };
+    static const uint32_t thr[4] = { 0, 0x10000, 0x40000000, 0xffff0000 };
+    static const unsigned mv_off[4] = { 0x10, 0x14, 0x18, 0x1c };
+    static const uint32_t gm[6] = { 0, G1_SMOOTH, G1_CBACK, G1_CFRONT, G1_SHADE, G1_ZB };
+    uint32_t geom = G1_SHADE | G1_SMOOTH | G1_ZB | G1_CLIP;
+    double m[16];
+    uint8_t buf[512];
+    unsigned n = CHOICE(r, ((const unsigned[]){ 6, 9, 16 })), v0 = randrange(r, 32 - n + 1), i, nk;
+    struct dl sub, sub2;
+    f1_common(c, d, r, o, geom, CHOICE(r, tz), 1);
+    ident(m);
+    mtx(buf, m);
+    put(c, 0x500, buf, 64);
+    rnd_matrix(r, CHOICE(r, sc), m);
+    mtx(buf, m);
+    put(c, 0x540, buf, 64);
+    rnd_matrix(r, 0.25, m);
+    mtx(buf, m);
+    put(c, 0x580, buf, 64);
+    f1_mtx(d, 3, c->base + 0x540);
+    f1_mtx(d, 2, c->base + 0x500);
+    for (i = 0; i < n; i++) {
+        uint8_t col[4];
+        rcol(r, col);
+        vtx(buf + 16 * i, randint(r, -30, 30), randint(r, -30, 30), randint(r, -30, 30), randint(r, -512, 511), randint(r, -512, 511), col);
+    }
+    put(c, 0x600, buf, 16 * n);
+    f1_vtx(d, n, v0, c->base + 0x600);
+    memset(&sub, 0, sizeof(sub));
+    memset(&sub2, 0, sizeof(sub2));
+    cmd(&sub, 0xf7000000, 0x11111111);
+    f1_enddl(&sub);
+    cmd(&sub2, 0xf7000000, 0x22222222);
+    f1_tri1(&sub2, v0, v0 + 1, v0 + 2);
+    f1_enddl(&sub2);
+    f1_sub(c, 0x800, &sub);
+    f1_sub(c, 0x900, &sub2);
+    nk = 8 + randrange(r, 12);
+    for (i = 0; i < nk; i++) {
+        unsigned k = randrange(r, 14), va = v0 + randrange(r, n), vb = v0 + randrange(r, n);
+        switch (k) {
+        case 0: {                                       /* G_CULLDL in a list of its own (a cull ends that list, not this one), a triangle behind it */
+            unsigned a = va < vb ? va : vb, b = va < vb ? vb : va;
+            struct dl sub3;
+            memset(&sub3, 0, sizeof(sub3));
+            f1_culldl(&sub3, o, a, b);
+            f1_tri1(&sub3, a, b, v0 + randrange(r, n));
+            cmd(&sub3, 0xf7000000, 0xa5a50000 | i);
+            f1_enddl(&sub3);
+            f1_sub(c, 0xb00 + 0x20 * (i % 16), &sub3);
+            cmd(d, 0x06000000, c->base + 0xb00 + 0x20 * (i % 16));
+            break;
+        }
+        case 1:
+            if (o->branchz && o->half1) {
+                cmd(d, (uint32_t)o->half1 << 24, c->base + 0x900);
+                cmd(d, ((uint32_t)o->branchz << 24) | ((va * 5) << 12) | ((va * 2) & 0xfff), randrange(r, 5) < 4 ? CHOICE(r, thr) : rnd(r));
+            }
+            break;
+        case 2:
+            if (o->modvtx)
+                cmd(d, ((uint32_t)o->modvtx << 24) | (CHOICE(r, mv_off) << 16) | (va * 2), rnd(r));
+            break;
+        case 3:
+            if (o->half1 && o->half2) {
+                cmd(d, (uint32_t)o->half1 << 24, 0xe7000000);
+                cmd(d, (uint32_t)o->half2 << 24, rnd(r));
+            }
+            break;
+        case 4:
+            f1_mtx(d, 4, c->base + 0x580);              /* push, multiply */
+            cmd(d, 0xbd000000, 0);                      /* pop */
+            f1_mtx(d, 0, c->base + 0x580);              /* multiply */
+            break;
+        case 5:
+            cmd(d, 0x06000000, c->base + 0x800);        /* call */
+            break;
+        case 6:
+            cmd(d, 0x06000000, c->base + 0x900);        /* call a list with a triangle */
+            break;
+        case 7: {
+            static const uint32_t oh[2] = { 0, 0x00300000 };
+            cmd(d, 0xba001402, CHOICE(r, oh));          /* other mode H: the cycle type */
+            cmd(d, 0xb9000302, 0x00000000);             /* other mode L: the alpha compare */
+            break;
+        }
+        case 8: {
+            static const uint32_t tx[2] = { 0x80008000, 0x40004000 };
+            cmd(d, 0xbb000001 | (randrange(r, 8) << 8), CHOICE(r, tx));
+            break;
+        }
+        case 9:
+            cmd(d, 0xb6000000, CHOICE(r, gm));
+            cmd(d, 0xb7000000, CHOICE(r, gm));
+            break;
+        case 10:
+            f1_mw(d, 6, 4 * (1 + randrange(r, 15)), randrange(r, 0x100) * 0x100);      /* a segment other than 0 */
+            break;
+        case 11:
+            f1_mw(d, 8, 0, (uint32_t)(randint(r, 0x100, 0x7fff) << 16) | randrange(r, 0x10000));   /* fog */
+            break;
+        case 12:
+            f1_persp(d, o, randrange(r, 0x10000));
+            break;
+        default:
+            f1_tri1(d, va, vb, v0 + randrange(r, n));
+            break;
+        }
+    }
+    if (randrange(r, 2))
+        cmd(d, 0x06010000, c->base + 0x900);            /* a jump: the list ends in the other one */
+    else
+        f1_enddl(d);
+}
+
+static void f1_lit(struct probe_case *c, struct dl *d, struct rng *r, const struct probe_f1ops *o)
+{
+    static const uint32_t tg[3] = { 0, G1_TEXGEN, G1_TEXGEN | G1_TEXLIN };
+    static const uint32_t fg[2] = { 0, G1_FOG };
+    static const int tz[2] = { 0x1ff, 0 };
+    static const double sc[3] = { 1, 0.5, 1.0 / 8 };
+    static const unsigned ns[5] = { 3, 4, 5, 8, 11 };
+    uint32_t gm = G1_SHADE | G1_SMOOTH | G1_ZB | G1_LIGHT | CHOICE(r, tg) | CHOICE(r, fg) | G1_CLIP;
+    unsigned nl = 1 + randrange(r, 5), slot, b, vaddr = 0x600;
+    double m[16];
+    uint8_t buf[512];
+    f1_common(c, d, r, o, gm, CHOICE(r, tz), 1);
+    if (gm & G1_FOG)
+        f1_mw(d, 8, 0, (uint32_t)(randint(r, 0x100, 0x7fff) << 16) | randrange(r, 0x10000));
+    f1_mw(d, 2, 0, 0x80000000u + 32 * (nl + 1));        /* G_MW_NUMLIGHT */
+    for (slot = 0; slot < nl + 3; slot++) {             /* look-at Y, look-at X, the lights, the ambient light */
+        uint8_t blob[16];
+        unsigned idx = slot == 0 ? 0x82 : slot == 1 ? 0x84 : 0x86 + 2 * (slot - 2);
+        memset(blob, 0, sizeof(blob));
+        if (slot >= 2) {
+            uint8_t col[4] = { (uint8_t)randrange(r, 256), (uint8_t)randrange(r, 256), (uint8_t)randrange(r, 256), 0 };
+            uint8_t dir[4] = { (uint8_t)randrange(r, 256), (uint8_t)randrange(r, 256), (uint8_t)randrange(r, 256), 0 };
+            memcpy(blob, col, 4);
+            memcpy(blob + 4, col, 4);
+            memcpy(blob + 8, dir, 4);
+        } else
+            blob[8 + (slot == 0 ? 1 : 0)] = 0x7f;
+        put(c, 0x1000 + 0x20 * slot, blob, 16);
+        cmd(d, 0x03000010 | (idx << 16), c->base + 0x1000 + 0x20 * slot);
+    }
+    ident(m);
+    mtx(buf, m);
+    put(c, 0x500, buf, 64);
+    rnd_matrix(r, CHOICE(r, sc), m);
+    mtx(buf, m);
+    put(c, 0x540, buf, 64);
+    f1_mtx(d, 3, c->base + 0x540);
+    f1_mtx(d, 2, c->base + 0x500);
+    for (b = 0; b < 2; b++) {
+        unsigned n = CHOICE(r, ns), v0 = randrange(r, 32 - n + 1), i, q;
+        uint8_t vs[16 * 16];
+        for (i = 0; i < n; i++) {
+            uint8_t col[4];
+            col[0] = (uint8_t)randint(r, -127, 127); col[1] = (uint8_t)randint(r, -127, 127); col[2] = (uint8_t)randint(r, -127, 127); col[3] = (uint8_t)randrange(r, 256);
+            vtx(vs + 16 * i, randint(r, -200, 200), randint(r, -200, 200), randint(r, -200, 200), randint(r, -1024, 1023), randint(r, -1024, 1023), col);
+        }
+        put(c, vaddr, vs, 16 * n);
+        f1_vtx(d, n, v0, c->base + vaddr);
+        vaddr += 0x100;
+        for (q = 0; q < 4; q++) {
+            unsigned a, b2, cc;
+            sample3(r, v0, n, &a, &b2, &cc);
+            f1_tri1(d, a, b2, cc);
+        }
+        if (b == 0)
+            f1_mtx(d, 4, c->base + 0x540);              /* a pushed model-view: the light directions are transformed again */
+    }
+    f1_enddl(d);
+}
+
+static void f1_mtxcase(struct probe_case *c, struct dl *d, struct rng *r, const struct probe_f1ops *o)
+{
+    static const int tz[2] = { 0x1ff, 0 };
+    static const uint16_t sm[5] = { 0, 1, 0xffff, 0x8000, 0x7fff };
+    unsigned nm = 2 + randrange(r, 4), k, i;
+    uint32_t geom = randrange(r, 2) * G1_SHADE | randrange(r, 2) * G1_ZB | G1_CLIP;
+    uint8_t buf[64], vs[64];
+    f1_common(c, d, r, o, geom, CHOICE(r, tz), 0);
+    for (k = 0; k < nm; k++) {
+        for (i = 0; i < 64; i++)
+            buf[i] = (uint8_t)randrange(r, 256);
+        if (randrange(r, 2))
+            for (i = 0; i < 16; i++) {
+                unsigned q = randrange(r, 6);
+                be16(buf + 2 * i, q < 5 ? sm[q] : randrange(r, 1u << 16));
+            }
+        put(c, 0x500 + 0x40 * k, buf, 64);
+        f1_mtx(d, randrange(r, 8), c->base + 0x500 + 0x40 * k);
+        if (randrange(r, 4) == 0)
+            cmd(d, 0xbd000000, 0);
+    }
+    for (i = 0; i < 4; i++) {
+        const uint8_t col[4] = { 1, 2, 3, 4 };
+        vtx(vs + 16 * i, randint(r, -40, 40), randint(r, -40, 40), randint(r, -40, 40), randint(r, -512, 511), randint(r, -512, 511), col);
+    }
+    put(c, 0x600, vs, 64);
+    f1_vtx(d, 4, 0, c->base + 0x600);
+    f1_tri1(d, 0, 1, 2);
+    f1_enddl(d);
+}
+
+/* rej_case in the F3DEX 1.x GBI: groups of three vertices beyond each plane; the near-plane group is rejected by a mask with the near bits (0x7070) and clipped without them (NoN's 0x7030).
+ * Group 7 spreads x and y over both sides and puts z far in front (z < -|w|): with w < 0 (the second variant) a coordinate always sets one of its two compare bits, so no x or y bit and (z < w)
+ * no z-far bit is common to the three, and only bit 0x40 is: the NoN builds' sign of w (the EX builds': z <= -w), which G_CULLDL tests with the build's mask (0x7030 leaves it out). */
+static void f1_rej(struct probe_case *c, struct dl *d, struct rng *r, unsigned seed, const struct probe_f1ops *o)
+{
+    double m[16] = { 0.125, 0, 0, 0, 0, 0.125, 0, 0, 0, 0, 0.125, 0, 0, 0, 0, 1 }, mv[16];
+    uint8_t buf[64], vs[16 * 32];
+    unsigned g, i, nv = 0;
+    uint32_t geom = randrange(r, 2) * G1_SHADE | G1_CLIP;
+    f1_common(c, d, r, o, geom, 0x1ff, 0);
+    if (seed & 1)
+        m[15] = -1;
+    ident(mv);
+    mtx(buf, mv);
+    put(c, 0x500, buf, 64);
+    mtx(buf, m);
+    put(c, 0x540, buf, 64);
+    f1_mtx(d, 3, c->base + 0x540);
+    f1_mtx(d, 2, c->base + 0x500);
+    for (g = 0; g < 8; g++)
+        for (i = 0; i < 3; i++) {
+            static const int spread[3][3] = { { 100, -100, -100 }, { -100, 100, -100 }, { 100, 100, -100 } };
+            int x = randint(r, -3, 3), y = randint(r, -3, 3), z = randint(r, -3, 3);
+            uint8_t col[4];
+            switch (g) {
+            case 0: z = 100; break;
+            case 1: z = -100; break;
+            case 2: x = 100; break;
+            case 3: x = -100; break;
+            case 4: y = 100; break;
+            case 5: y = -100; break;
+            case 7: x = spread[i][0]; y = spread[i][1]; z = spread[i][2]; break;
+            default: break;
+            }
+            rcol(r, col);
+            vtx(vs + 16 * nv, x, y, z, 0, 0, col);
+            nv++;
+        }
+    put(c, 0x600, vs, 16 * nv);
+    f1_vtx(d, nv, 0, c->base + 0x600);
+    for (g = 0; g < 8; g++) {
+        f1_tri1(d, 3 * g, 3 * g + 1, 3 * g + 2);
+        f1_tri1(d, 3 * g + 2, 3 * g + 1, 3 * g);
+    }
+    for (g = 0; g < 8; g++) {
+        struct dl sub;
+        if (g == 6)
+            continue;
+        memset(&sub, 0, sizeof(sub));
+        f1_culldl(&sub, o, 3 * g, 3 * g + 2);
+        f1_tri1(&sub, 18, 19, 20);
+        cmd(&sub, 0xf7000000, 0x5a5a0000 | g);          /* (a witness in the RDP stream that the list went on: the triangle may be rejected too) */
+        f1_enddl(&sub);
+        f1_sub(c, 0xa00 + 0x20 * g, &sub);
+        cmd(d, 0x06000000, c->base + 0xa00 + 0x20 * g);
+    }
+    /* The NoN builds keep the sign of w in bit 0x40 of the second vertex of each pair only: the spread vertices again, in the second slots of three pairs, as one triangle. With w < 0 the near
+     * bit is the only common one: a mask with it rejects the triangle, NoN's mask gives it to the clipper, which has no near plane. */
+    {
+        static const int spread[3][3] = { { 100, -100, -100 }, { -100, 100, -100 }, { 100, 100, -100 } };
+        uint8_t col[4] = { 200, 100, 50, 255 };
+        for (i = 0; i < 6; i++)
+            vtx(vs + 16 * i, spread[i / 2][0], spread[i / 2][1], spread[i / 2][2], 0, 0, col);
+        put(c, 0x700, vs, 16 * 6);
+        f1_vtx(d, 6, 24, c->base + 0x700);
+        f1_tri1(d, 25, 27, 29);
+        f1_tri1(d, 29, 27, 25);
+    }
+    f1_enddl(d);
+}
+
+/* G_BRANCH_Z (when the build has it) against thresholds around the vertices' screen z */
+static void f1_bz(struct probe_case *c, struct dl *d, struct rng *r, unsigned seed, const struct probe_f1ops *o)
+{
+    static const uint32_t thr[10] = { 0, 1, 2, 5, 0x100, 0x10000, 0x20000, 0x1ff0000, 0x7fffffff, 0xffff0000 };
+    static const int tz[2] = { 0x1ff, 0x100 };
+    double mv[16], pj[16];
+    uint8_t buf[64], vs[16 * 8];
+    unsigned i, n = 6, v0 = seed & 1 ? 20 : 4, t;
+    struct dl sub;
+    f1_common(c, d, r, o, G1_SHADE | G1_SMOOTH | G1_ZB | G1_CLIP, CHOICE(r, tz), 1);
+    ident(mv);
+    mtx(buf, mv);
+    put(c, 0x500, buf, 64);
+    rnd_matrix(r, 0.5, pj);
+    pj[15] = 1 + uniform(r, 0, 3);
+    mtx(buf, pj);
+    put(c, 0x540, buf, 64);
+    f1_mtx(d, 3, c->base + 0x540);
+    f1_mtx(d, 2, c->base + 0x500);
+    for (i = 0; i < n; i++) {
+        uint8_t col[4];
+        rcol(r, col);
+        vtx(vs + 16 * i, randint(r, -6, 6), randint(r, -6, 6), randint(r, 0, 12), randint(r, -512, 511), randint(r, -512, 511), col);
+    }
+    put(c, 0x600, vs, 16 * n);
+    f1_vtx(d, n, v0, c->base + 0x600);
+    memset(&sub, 0, sizeof(sub));
+    cmd(&sub, 0xf7000000, 0x33333333);
+    f1_enddl(&sub);
+    f1_sub(c, 0x900, &sub);
+    for (t = 0; t < 10; t++) {
+        unsigned va = v0 + (t % n);
+        if (o->branchz && o->half1) {
+            cmd(d, (uint32_t)o->half1 << 24, c->base + 0x900);
+            cmd(d, ((uint32_t)o->branchz << 24) | ((va * 5) << 12) | ((va * 2) & 0xfff), thr[t]);
+        }
+        f1_tri1(d, v0, v0 + 1, v0 + 2);
+        cmd(d, 0xbb000001 | ((t & 7) << 8), 0x80008000);
+    }
+    f1_enddl(d);
+}
+
+void probe_case_make_f1(struct probe_case *c, unsigned kind, unsigned seed, uint32_t base, const struct probe_f1ops *ops)
+{
+    struct rng r;
+    struct dl d;
+    unsigned i;
+    uint8_t *p;
+    memset(c, 0, sizeof(*c));
+    memset(&d, 0, sizeof(d));
+    c->base = base;
+    r.s = ((uint64_t)seed * 0x9e3779b97f4a7c15ull) ^ ((uint64_t)(kind + 1) * 0xd1b54a32d192ed03ull) ^ 0x8765432112345678ull;
+    for (i = 0; i < 8; i++)
+        (void)rnd(&r);
+    switch (kind) {
+    case PROBE_CLIP: case PROBE_ZNEG: case PROBE_TRI: case PROBE_MIX: case PROBE_WILD:
+        f1_geometry(c, &d, &r, kind, ops);
+        break;
+    case PROBE_MISC: f1_misc(c, &d, &r, ops); break;
+    case PROBE_LIT: f1_lit(c, &d, &r, ops); break;
+    case PROBE_MTX: f1_mtxcase(c, &d, &r, ops); break;
+    case PROBE_REJ: f1_rej(c, &d, &r, seed, ops); break;
+    default: f1_bz(c, &d, &r, seed, ops); break;
+    }
+    if (d.n > 126) {
+        d.n = 126;
+        f1_enddl(&d);
+    }
+    p = c->mem;
+    for (i = 0; i < d.n; i++) {
+        p[8 * i] = (uint8_t)(d.w[i][0] >> 24); p[8 * i + 1] = (uint8_t)(d.w[i][0] >> 16); p[8 * i + 2] = (uint8_t)(d.w[i][0] >> 8); p[8 * i + 3] = (uint8_t)d.w[i][0];
+        p[8 * i + 4] = (uint8_t)(d.w[i][1] >> 24); p[8 * i + 5] = (uint8_t)(d.w[i][1] >> 16); p[8 * i + 6] = (uint8_t)(d.w[i][1] >> 8); p[8 * i + 7] = (uint8_t)d.w[i][1];
+    }
+    c->dl_bytes = d.n * 8;
+    if (c->dl_bytes > c->used)
+        c->used = c->dl_bytes;
+}
+
 const char *const probe_case_names[PROBE_NCASES] = { "clip", "zneg", "tri", "mix", "wild", "misc", "lit", "mtx", "rej", "bz", "s2rect", "s2ldtx", "s2bg", "s2copy", "s2misc" };
 
 void probe_case_make(struct probe_case *c, unsigned kind, unsigned seed, uint32_t base)

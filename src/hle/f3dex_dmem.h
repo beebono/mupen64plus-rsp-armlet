@@ -1,8 +1,8 @@
 /*
  * arMLEt - f3dex_dmem.h: filling the f3dex_fx.h structs from a DMEM (or RDRAM) image and writing results back
  *
- * Both images are arrays of 32-bit host words that hold the big-endian words (byte a is at ((uint8_t *)img)[a ^ 3]), the layout hle.h's accessors use. The offsets are those of the F3DEX 1.x / F3DLX
- * builds (docs/ucode-f3dex.md section 3); they are the same in all six builds (the vertex slot table is not used: slot k is at 0x4a0 + 0x28 k).
+ * Both images are arrays of 32-bit host words that hold the big-endian words (byte a is at ((uint8_t *)img)[a ^ 3]), the layout hle.h's accessors use. The DMEM addresses are a build's layout
+ * (struct f3dex_layout, the record's DMEM part: docs/ucode-f3dex.md section 3, docs/native-f3dex.md section 3); f3dex_lay_std is that of the 1.2x builds, b->lay == NULL means it (the tools).
  *
  * Copyright (C) 2026 arMLEt contributors
  * SPDX-License-Identifier: GPL-2.0-or-later
@@ -24,6 +24,25 @@ static inline void xs32(uint32_t *m, unsigned a, uint32_t v) { m[(a & 0xfff) >> 
 static inline uint8_t xr8(const uint32_t *m, unsigned a) { return ((const uint8_t *)m)[(a & 0x7fffff) ^ 3]; }
 static inline uint16_t xr16(const uint32_t *m, unsigned a) { return ((const uint16_t *)m)[((a & 0x7fffff) ^ 2) >> 1]; }
 
+/* The DMEM layout of a build. The first F3DEX_LAY_NKNOB fields are addresses the derivation reads from the code (tools/derive_f1d.py: operands, also relative to the base register $29 = 0x110);
+ * the rest are constants of the data segment's first 0xc0 bytes that it copies from the reference. Fixed structure of the family (not fields): light records of 32 bytes from `light` (the texgen
+ * weights at +0, colours +0x10, raw directions +0x18, model-space directions +0x20), G_TEXTURE's tile byte at texture + 2 and its scales at + 4, the FIFO end at fifo + 4, the vertex records of 0x28
+ * bytes from vbuf, the window of 320 bytes, the DMA table at 0 (overlay k at 8 + 8k), the OSTask header at 0xfc0. */
+#define F3DEX_LAY_FIELDS(X) \
+    X(jt0) X(jt2) X(half1) X(persp) X(geom) X(omh) X(oml) X(texture) X(rdp_wp) X(lights) X(mtx_sp) X(mtx_lim) X(depth) X(fifo) X(segs) X(light) X(mm_tab) X(mw_tab) X(vtab) \
+    X(viewport) X(fog) X(retstack) X(mv) X(proj) X(mvp) X(vbuf) X(window) X(operand) X(outbuf) \
+    X(lim) X(tgbias) X(vsign) X(clip_k) X(planes) X(tg) X(plane_masks)
+#define F3DEX_LAY_NKNOB 29
+#define F3DEX_LAY_N 36
+struct f3dex_layout {
+#define X(f) uint16_t f;
+    F3DEX_LAY_FIELDS(X)
+#undef X
+};
+extern const struct f3dex_layout f3dex_lay_std;
+static inline const struct f3dex_layout *f3dex_lay(const struct f3dex_build *b) { return b && b->lay ? b->lay : &f3dex_lay_std; }
+
+/* the standard layout's addresses (the tools) */
 #define F3DEX_DM_MV 0x3e0
 #define F3DEX_DM_PROJ 0x420
 #define F3DEX_DM_MVP 0x460
@@ -102,53 +121,53 @@ static inline void f3dex_store_vtx(const struct f3dex_vtx *v, uint32_t *dmem, un
 /* The G_VTX state from DMEM without the lights (what the clipper and the triangle code need). */
 static inline void f3dex_load_vctx_geom(struct f3dex_vctx *c, const uint32_t *dmem, const struct f3dex_build *b)
 {
+    const struct f3dex_layout *L = f3dex_lay(b);
     c->b = b;
-    f3dex_load_mtx(&c->mp, dmem, F3DEX_DM_MVP, 0);
+    f3dex_load_mtx(&c->mp, dmem, L->mvp, 0);
     for (int k = 0; k < 4; k++) {
-        c->vscale[k] = (int16_t)xd16(dmem, 0x380 + 2 * k);
-        c->vtrans[k] = (int16_t)xd16(dmem, 0x388 + 2 * k);
-        c->vsign[k] = (int16_t)xd16(dmem, 0x50 + 2 * k);
-        c->lim[k] = (int16_t)xd16(dmem, 0x28 + 2 * k);
+        c->vscale[k] = (int16_t)xd16(dmem, L->viewport + 2 * k);
+        c->vtrans[k] = (int16_t)xd16(dmem, L->viewport + 8 + 2 * k);
+        c->vsign[k] = (int16_t)xd16(dmem, L->vsign + 2 * k);
+        c->lim[k] = (int16_t)xd16(dmem, L->lim + 2 * k);
     }
-    c->persp = xd16(dmem, 0x112);
-    c->clip_k = (int16_t)xd16(dmem, 0x76);
-    c->tscale[0] = xd16(dmem, 0x124);
-    c->tscale[1] = xd16(dmem, 0x126);
-    c->geom = xd32(dmem, 0x114);
+    c->persp = xd16(dmem, L->persp);
+    c->clip_k = (int16_t)xd16(dmem, L->clip_k);
+    c->tscale[0] = xd16(dmem, L->texture + 4);
+    c->tscale[1] = xd16(dmem, L->texture + 6);
+    c->geom = xd32(dmem, L->geom);
     for (int k = 0; k < 3; k++)
-        c->fog[k] = (int16_t)xd16(dmem, 0x390 + 2 * k);
-    c->tgbias = (int16_t)xd16(dmem, 0x38);
+        c->fog[k] = (int16_t)xd16(dmem, L->fog + 2 * k);
+    c->tgbias = (int16_t)xd16(dmem, L->tgbias);
     c->vco_carry = 0;
     for (int p = 0; p < 6; p++) {
         for (int k = 0; k < 4; k++)
-            c->plane[p][k] = (int16_t)xd16(dmem, 0x98 - 8 * p + 2 * k);
-        c->plane_mask[p] = xd16(dmem, 0xb2 - 2 * p);
+            c->plane[p][k] = (int16_t)xd16(dmem, L->planes - 8 * p + 2 * k);
+        c->plane_mask[p] = xd16(dmem, L->plane_masks - 2 * p);
     }
     c->nrec = 0;
 }
-
-/* The G_VTX state from DMEM. Returns nonzero when lighting is on and the light words are in a state the functions do not model (a pending relight (word 0x12c negative), a count that is not a multiple of
+/* The G_VTX state from DMEM. Returns nonzero when lighting is on and the light words are in a state the functions do not model (a pending relight (word `lights` negative), a count that is not a multiple of
  * 32 or more than F3DEX_MAX_REC records); without lighting the light words are not read. */
 static inline int f3dex_load_vctx(struct f3dex_vctx *c, const uint32_t *dmem, const struct f3dex_build *b)
 {
+    const struct f3dex_layout *L = f3dex_lay(b);
     f3dex_load_vctx_geom(c, dmem, b);
     if (c->geom & F3DEX_G_LIGHTING) {
-        uint32_t l = xd32(dmem, 0x12c);
+        uint32_t l = xd32(dmem, L->lights);
         if ((int32_t)l < 0 || (l & 31) || (l >> 5) > F3DEX_MAX_REC)
             return 1;
         c->nrec = l >> 5;
         for (unsigned k = 0; k <= c->nrec + 1; k++)
             for (int i = 0; i < 8; i++)
-                c->lcol[k][i] = xd8(dmem, 0x1b0 + 32 * k + i);
+                c->lcol[k][i] = xd8(dmem, L->light + 0x10 + 32 * k + i);
         for (unsigned k = 0; k <= c->nrec; k++)
             for (int i = 0; i < 8; i++)
-                c->ldir[k][i] = (int8_t)xd8(dmem, 0x1c0 + 32 * k + i);
+                c->ldir[k][i] = (int8_t)xd8(dmem, L->light + 0x20 + 32 * k + i);
         for (int i = 0; i < 8; i++)
-            c->lk[i] = xd8(dmem, 0x1a0 + i);
+            c->lk[i] = xd8(dmem, L->light + i);
         for (int i = 0; i < 3; i++)
-            c->tg[i] = (int16_t)xd16(dmem, 0xa2 + 2 * i);
+            c->tg[i] = (int16_t)xd16(dmem, L->tg + 2 * i);
     }
     return 0;
 }
-
 #endif

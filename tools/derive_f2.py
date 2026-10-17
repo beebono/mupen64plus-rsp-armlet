@@ -302,12 +302,17 @@ class Pairing:
     def _collect(self):
         ir, iu = self.R.img, self.U.img
         self.same_ops = []          # (value, kind) of unchanged operands, for the confirmation of knobs
+        # F3DEX 1.x addresses its state words relative to $29 = 0x110 (derive_f1d.F1_BASE29): such an operand is the DMEM address base + offset
+        b29 = 0x110 if getattr(self.R.rec, "fam", None) == "f3dex1" else None
         for i, j in sorted(self.pr.items()):
             x, y = ir.w[i], iu.w[j]
             if x == y:
                 o = operand_vals(x)
                 if o:
-                    self.same_ops.append((o[1], o[0], i))
+                    v = o[1]
+                    if b29 is not None and o[0] == "mem" and isa.decode(x)["rs"] == 29:
+                        v = (v + b29) & 0xffff
+                    self.same_ops.append((v, o[0], i))
                 continue
             dx, dy = isa.decode(x), isa.decode(y)
             c = dx["cls"]
@@ -324,7 +329,8 @@ class Pairing:
                 else:
                     self.ev.append(dict(kind="imm", i=i, j=j, vr=vr, vu=vu, rs=dx["rs"], op=dx["name"]))
             elif c in (isa.C_MEM, isa.C_VMEM):
-                self.ev.append(dict(kind="mem", i=i, j=j, vr=dx["imm"] & 0xffff, vu=dy["imm"] & 0xffff, rs=dx["rs"], op=dx["name"]))
+                add = b29 if b29 is not None and dx["rs"] == 29 else 0
+                self.ev.append(dict(kind="mem", i=i, j=j, vr=(dx["imm"] + add) & 0xffff, vu=(dy["imm"] + add) & 0xffff, rs=dx["rs"], op=dx["name"]))
             else:
                 self.ev.append(dict(kind="other", i=i, j=j))
 

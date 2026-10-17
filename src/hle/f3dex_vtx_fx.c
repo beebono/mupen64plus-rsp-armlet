@@ -11,11 +11,18 @@
 #include <string.h>
 
 #include "f3dex_fx_int.h"
+#include "f3dex_dmem.h"
 
-const struct f3dex_build f3dex_build_dex = { 0x7070, 0, 0 };
-const struct f3dex_build f3dex_build_non = { 0x7030, 1, 0 };
-const struct f3dex_build f3dex_build_dlx = { 0x7070, 0, 1 };
-const struct f3dex_build f3dex_build_dlx_non = { 0x7030, 1, 1 };
+/* the DMEM layout of the F3DEX 1.2x builds (docs/ucode-f3dex.md section 3); the others are in f3dex.c */
+const struct f3dex_layout f3dex_lay_std = { .jt0 = 0xc0, .jt2 = 0x76, .half1 = 0x10c, .persp = 0x112, .geom = 0x114, .omh = 0x118, .oml = 0x11c, .texture = 0x120, .rdp_wp = 0x128, .lights = 0x12c,
+    .mtx_sp = 0x134, .mtx_lim = 0x15c, .depth = 0x148, .fifo = 0x150, .segs = 0x160, .light = 0x1a0, .mm_tab = 0x270, .mw_tab = 0x30e, .vtab = 0x31e, .viewport = 0x380, .fog = 0x390,
+    .retstack = 0x398, .mv = 0x3e0, .proj = 0x420, .mvp = 0x460, .vbuf = 0x4a0, .window = 0x9a0, .operand = 0xae0, .outbuf = 0xce0,
+    .lim = 0x28, .tgbias = 0x38, .vsign = 0x50, .clip_k = 0x76, .planes = 0x98, .tg = 0xa2, .plane_masks = 0xb2 };
+
+const struct f3dex_build f3dex_build_dex = { 0x7070, 0, 0, NULL };
+const struct f3dex_build f3dex_build_non = { 0x7030, 1, 0, NULL };
+const struct f3dex_build f3dex_build_dlx = { 0x7070, 0, 1, NULL };
+const struct f3dex_build f3dex_build_dlx_non = { 0x7030, 1, 1, NULL };
 
 const struct f3dex_build *f3dex_build_of_ucode(uint64_t id)
 {

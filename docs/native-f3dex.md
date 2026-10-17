@@ -38,7 +38,7 @@ subtracts and 32-bit subtracts with only the integer half saturating; 32-bit min
 ## 3. The front-end
 
 `f3dex_run` (`src/hle/f3dex.c`): declines a yielded task (OSTask flag bit 0) and a pending yield request, runs the boot code and the microcode's initialisation on the interpreter to the command loop head
-(pc 0x058; about 30 us per task on an A55), takes the display-list pointer from the interpreter's registers and then executes the commands itself:
+(the record's `head` pc, 0x058 in all ten builds; about 30 us per task on an A55), takes the display-list pointer from the interpreter's registers and then executes the commands itself:
 
 * class 0 (MTX, MOVEMEM, VTX, DL), class 2 (the RDPHALF pair, BRANCH_Z, TRI1 / TRI2, MODIFYVTX, geometry mode, SETOTHERMODE, TEXTURE, MOVEWORD, POPMTX, CULLDL, ENDDL; 0.95: PERSPNORM, G_QUAD) and the RDP
   pass-through, each as docs/ucode-f3dex/ describes it;
@@ -64,7 +64,24 @@ Builds (ids as gfx_ucode.c logs them) and the games they were run with:
 | F3DLX.NoN 1.21 `0a7cc6c93363c663`, 1.23 `cc09096cb6a48e7b` | Clay Fighter Sculptor's Cut; Iggy's Reckin' Balls, Penny Racers |
 | F3DEX.NoN 1.00 `5063f108118bf62a` | Turok |
 
-A build is `{fx build, v095}`; the overlay window comes from DMEM 0x26. G_QUAD (0.95) is two triangles split along the diagonal that is longer in y; the second is skipped when the first was face-culled (the
+**A build is data** (since 2026-10-17; `struct f3dex1_build`, `src/hle/f3dex_bld.h`), one record per registered text, and no code of the front-end tests which build it runs:
+
+| field | what | registered values |
+|---|---|---|
+| `fx.lay` (`struct f3dex_layout`, `f3dex_dmem.h`) | the DMEM layout: 29 addresses the code names (handler tables `jt0` / `jt2`, the state words, the tables of G_MOVEWORD / G_MOVEMEM / the vertex slots, the matrices, the vertex buffer, the window, operand and output buffers, ...) and 7 constants of the data segment's first 0xc0 bytes (screen clamps, texgen bias, sign vector, clip ratio, clip planes and their masks, texgen polynomial) | `f3dex_lay_std` (the 1.2x builds); Turok's F3DEX.NoN 1.00 has its handler tables 4 bytes higher (`jt0` 0xc4); the 0.95 builds also the vertex table at 0x31c and the display-list depth byte at 0x110 |
+| `fx.reject_mask`, `fx.non`, `fx.dlx` | the trivial-reject mask; the NoN clip flags; the F3DLX variant (clip flags optional, rounded screen y, its triangle code and DPC_END protocol) | 0x7070 / 0x7030 |
+| `pc[24]` | the start-up code's stop (`head`), the loop's return point that the no-op commands lead to (`nop`), and the handler of every command (0: the build has none) | read from each text's tables |
+| `culldl_off` | G_CULLDL takes byte offsets into the vertex buffer and leaves the last vertex out (0.95), not vertex numbers | 1 for the 0.95 builds |
+| `load_key` | the FNV-1a-64 of the text's first 0xf48 bytes: the record's key for the derivation and the probe | from the dumps (F3DLX 0.95: none) |
+
+The commands are dispatched through the build's own handler tables in DMEM (class 0: `jt0 + 2 op`, ops 0x00 .. 0x09; class 2: `jt2 + 2 (op & 0x7f)`, ops 0xaf .. 0xbf; the other cells of the overlapping tables
+are not handler pointers and decline), whose pcs are matched against the record once per task (`make_kinds`): the 0.95 numbering of RDPHALF / PERSPNORM / G_QUAD, Turok's missing G_BRANCH_Z and G_LOAD_UCODE
+(no-ops there, as its microcode does; the front-end used to run a G_BRANCH_Z) and a build's missing handlers come out of the data. G_MOVEWORD's table ends where the vertex table begins (8 entries, 7 in 0.95).
+Family constants that are not fields: the light records' structure (32 bytes from `light`), G_TEXTURE's tile byte and scales after `texture`, the 40-byte vertex records, the 320-byte window, the DMA table at
+DMEM 0 (overlay k at 8 + 8k, the end overlay's IMEM address at 0x26), the OSTask header at 0xfc0, `$29` = 0x110. The dead ranges (`l_dead`) are the family's and are copied, not derived, for a derived build.
+A derived record (`docs/ucode-derive.md`, "F3DEX 1.x records that run") becomes such a build in `dbuild.c`. G_LOAD_UCODE declines and is not followed (the front-end does not switch builds; the probe is not told of the loaded text).
+
+G_QUAD (0.95) is two triangles split along the diagonal that is longer in y; the second is skipped when the first was face-culled (the
 microcode's cull exit clears `$31`), which `F3DEX_TRI_CULL` against `F3DEX_TRI_DEGEN` encodes.
 
 ## 4. DMEM: what a later task reads, and the masks

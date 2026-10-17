@@ -21,6 +21,7 @@
 
 #ifdef ARMLET_NATIVE
 #include "dbuild.h"
+#include "f3dex_bld.h"
 #include "derive.h"
 #include "hle.h"
 #include "hle_f3dex2_int.h"
@@ -47,6 +48,8 @@ struct pair {
     unsigned n_equal, n_tol, n_declined, n_mismatch, n_inconclusive;
     unsigned done_kind[PROBE_NCASES], need_kind[PROBE_NCASES];
     double derive_ms, probe_ms;
+    int f1;                             /* an F3DEX 1.x build: its own encoding of the cases (probe_case_make_f1) with these opcodes */
+    struct probe_f1ops f1ops;
     int rec_equal;
     const char *first_diff, *incon_why;
     char note[200];
@@ -174,11 +177,38 @@ int armlet_probe_summary(uint64_t text_id, struct probe_summary *o)
 }
 
 /* ---- the schedule ------------------------------------------------------------------------------------------------------------------------------------------------------------ */
+/* An F3DEX 1.x build's opcodes of the commands whose numbers differ between the builds: the class-2 opcode (0xaf .. 0xbf) whose cell of the build's handler table (in its data image) leads to the
+ * record's pc; a record pc no opcode leads to leaves the command out of the cases (the front-end would decline it). The other commands have the GBI's numbers. */
+static void f1_ops(struct armlet_ctx *c, struct pair *p)
+{
+    const struct f3dex1_build *b = (const struct f3dex1_build *)p->b->uc.fam_data;
+    const struct f3dex_layout *L = f3dex_lay(&b->fx);
+    static uint8_t data[0x1000];
+    static const int which[6] = { F1PC_half1, F1PC_half2, F1PC_branchz, F1PC_modvtx, F1PC_persp, F1PC_quad };
+    uint8_t *dst[6];
+    unsigned k, op, n = p->ds < sizeof(data) ? p->ds : sizeof(data);
+    memset(&p->f1ops, 0, sizeof(p->f1ops));
+    dst[0] = &p->f1ops.half1; dst[1] = &p->f1ops.half2; dst[2] = &p->f1ops.branchz; dst[3] = &p->f1ops.modvtx; dst[4] = &p->f1ops.persp; dst[5] = &p->f1ops.quad;
+    rd_bytes(c, p->da, data, n);
+    for (k = 0; k < 6; k++) {
+        unsigned pc = b->pc[which[k]];
+        for (op = 0xaf; op <= 0xbf && pc; op++) {
+            unsigned a = L->jt2 + 2 * (op & 0x7f);
+            if (a + 2 <= n && ((data[a] << 8 | data[a + 1]) & 0xffc) == pc) {
+                *dst[k] = (uint8_t)op;
+                break;
+            }
+        }
+    }
+    p->f1ops.culldl_off = b->culldl_off;
+    p->f1 = 1;
+}
+
 static void schedule(struct pair *p, unsigned seeds)
 {
     static const unsigned random_kinds[] = { PROBE_CLIP, PROBE_ZNEG, PROBE_TRI, PROBE_MIX, PROBE_WILD, PROBE_MISC, PROBE_LIT, PROBE_MTX };
     static const unsigned s2_kinds[] = { PROBE_S2RECT, PROBE_S2LDTX, PROBE_S2BG, PROBE_S2COPY, PROBE_S2MISC };
-    const int s2 = p->b && p->b->uc.fam_data && ((const struct f3dex2_build *)p->b->uc.fam_data)->ext;               /* a build with dialect commands (S2DEX 2.x): its own cases; it has no vertex or triangle code */
+    const int s2 = p->b && p->b->uc.fam == &f3dex2_fam && p->b->uc.fam_data && ((const struct f3dex2_build *)p->b->uc.fam_data)->ext;    /* a build with dialect commands (S2DEX 2.x): its own cases; it has no vertex or triangle code */
     const unsigned *kinds = s2 ? s2_kinds : random_kinds, nk = s2 ? 5 : 8;
     unsigned k, s, n = 0;
     for (s = 0; s < (s2 ? 2 * seeds : seeds); s++)
@@ -187,9 +217,11 @@ static void schedule(struct pair *p, unsigned seeds)
                 p->kind[n] = (uint8_t)kinds[k];
                 p->seed[n++] = (uint8_t)s;
             }
-    for (s = 0; s < 2 && !s2; s++) {                           /* the targeted cases: the reject mask and G_BRANCH_Z, two variants each */
+    for (s = 0; s < 2 && !s2; s++) {                           /* the targeted cases: the reject mask and G_BRANCH_Z (F3DEX 1.x: when the build has it), two variants each */
         p->kind[n] = PROBE_REJ; p->seed[n++] = (uint8_t)s;
-        p->kind[n] = PROBE_BZ; p->seed[n++] = (uint8_t)s;
+        if (!p->f1 || p->f1ops.branchz) {
+            p->kind[n] = PROBE_BZ; p->seed[n++] = (uint8_t)s;
+        }
     }
     p->total = n;
     memset(p->need_kind, 0, sizeof(p->need_kind));
@@ -308,7 +340,10 @@ static int run_canned(struct armlet_ctx *c, struct pair *p, unsigned kind, unsig
     if (p->loaded)
         memset(buf, 0, 0x180);                          /* (DMEM below 0x180: zeros, as the derivation saw it) */
     priv_put(da, buf, ds);
-    probe_case_make(&cs, kind, seed, base);
+    if (p->f1)
+        probe_case_make_f1(&cs, kind, seed, base, &p->f1ops);
+    else
+        probe_case_make(&cs, kind, seed, base);
     priv_put(base, cs.mem, PROBE_MEM);
 
     memcpy(&g_pb, &g_real, sizeof(g_pb));
@@ -447,7 +482,7 @@ static void store_entry(struct pair *p, int probe_result)
     e.probe = (uint8_t)probe_result;
     e.primary = (uint16_t)p->dr.primary;
     e.n_equal = (uint16_t)p->n_equal; e.n_tol = (uint16_t)p->n_tol; e.n_declined = (uint16_t)p->n_declined; e.n_mismatch = (uint16_t)p->n_mismatch; e.n_inconclusive = (uint16_t)p->n_inconclusive;
-    if (p->dr.family == DERIVE_F3DEX2)
+    if (p->dr.family == DERIVE_F3DEX2 || p->dr.family == DERIVE_F3DEX1)
         ucache_from_rec(&e, &p->dr.rec);
     (void)ucache_store(&e);
 }
@@ -489,6 +524,8 @@ static void finish(struct armlet_ctx *c, struct pair *p)
 static void start_probe(struct armlet_ctx *c, struct pair *p, const char *src)
 {
     unsigned seeds = c->cfg.probe_seeds ? c->cfg.probe_seeds : 3;
+    if (p->b && p->b->uc.fam == &f3dex1_fam)
+        f1_ops(c, p);
     schedule(p, seeds);
     p->state = PS_PROBING;
     armlet_log(M64MSG_INFO, "probe: ucode %016" PRIx64 " data %016" PRIx64 ": derived %s (%s, primary %s, %.1f ms), probing with %u canned tasks, %u per graphics task", p->tid, p->did,
@@ -517,7 +554,7 @@ static void first_sight(struct armlet_ctx *c, struct pair *p, const struct armle
         ucache_to_rec(ce, &p->dr.rec);
         p->n_equal = ce->n_equal; p->n_tol = ce->n_tol; p->n_declined = ce->n_declined; p->n_mismatch = ce->n_mismatch; p->n_inconclusive = ce->n_inconclusive;
         p->total = (unsigned)(ce->n_equal + ce->n_tol + ce->n_declined + ce->n_mismatch + ce->n_inconclusive);
-        if (ce->verdict == DERIVE_NONE || ce->family != DERIVE_F3DEX2) {
+        if (ce->verdict == DERIVE_NONE || (ce->family != DERIVE_F3DEX2 && ce->family != DERIVE_F3DEX1)) {
             p->state = PS_DONE;
             p->outcome = PROBE_OUT_NO_CANDIDATE;
             snprintf(p->note, sizeof(p->note), "cached: the derivation says %s (%s)", derive_verdict_name(ce->verdict), derive_family_name(ce->family));
@@ -583,7 +620,7 @@ static void first_sight(struct armlet_ctx *c, struct pair *p, const struct armle
             uint64_t lk = derive_fnv_words(text, 0xf48 / 4);
             unsigned r;
             for (r = 0; r < derive_n_recs; r++)
-                if (derive_recs[r].fam == DERIVE_F3DEX2 && derive_recs[r].load_key == lk)
+                if ((derive_recs[r].fam == DERIVE_F3DEX2 || derive_recs[r].fam == DERIVE_F3DEX1) && derive_recs[r].load_key == lk)
                     in.exclude_recs |= 1ull << r;
         }
         t0 = now_ns();
@@ -595,10 +632,10 @@ static void first_sight(struct armlet_ctx *c, struct pair *p, const struct armle
         }
         p->derive_ms = (double)(now_ns() - t0) / 1e6;
     }
-    if (p->dr.family == DERIVE_F3DEX2 && p->dr.verdict == DERIVE_NONE && c->cfg.probe_none_x && p->dr.n_x + p->dr.n_xr[2] <= c->cfg.probe_none_x) {
+    if ((p->dr.family == DERIVE_F3DEX2 || p->dr.family == DERIVE_F3DEX1) && p->dr.verdict == DERIVE_NONE && c->cfg.probe_none_x && p->dr.n_x + p->dr.n_xr[2] <= c->cfg.probe_none_x) {
         p->experiment = 1;                              /* an experiment (ARMLET_PROBE_NONE_X): the record is as derived, the verdict stays NONE, nothing is cached */
         armlet_log(M64MSG_INFO, "probe: ucode %016" PRIx64 ": the derivation says NONE (%u unexplained, %u missing words); probing it anyway (ARMLET_PROBE_NONE_X)", p->tid, p->dr.n_x, p->dr.n_xr[2]);
-    } else if (p->dr.family != DERIVE_F3DEX2 || p->dr.verdict == DERIVE_NONE) {
+    } else if ((p->dr.family != DERIVE_F3DEX2 && p->dr.family != DERIVE_F3DEX1) || p->dr.verdict == DERIVE_NONE) {
         p->state = PS_DONE;
         p->outcome = PROBE_OUT_NO_CANDIDATE;
         snprintf(p->note, sizeof(p->note), "the derivation says %s (%s family, %u of %u words aligned)", derive_verdict_name(p->dr.verdict), derive_family_name(p->dr.family), p->dr.aligned_num, p->dr.aligned_den);
@@ -626,6 +663,14 @@ static void first_sight(struct armlet_ctx *c, struct pair *p, const struct armle
         for (i = 0; i < p->dr.rec.n_ext; i++)
             if (p->dr.rec.ext[i].pc >= 0x184)
                 p->dr.rec.ext[i].pc = PMUT(403, p->dr.rec.ext[i].pc, p->dr.rec.ext[i].pc - 8);
+        if (p->dr.family == DERIVE_F3DEX1) {          /* (F3DEX 1.x: the near-plane bits of the reject mask, the NoN and LX attributes, G_TRI1's pc + 8, the vertex table 2 lower (the 0.95 place), the G_CULLDL form) */
+            p->dr.rec.reject_mask = PMUT(404, p->dr.rec.reject_mask, p->dr.rec.reject_mask ^ 0x40);
+            p->dr.rec.non = (uint8_t)PMUT(405, p->dr.rec.non, !p->dr.rec.non);
+            p->dr.rec.f1pc[F1PC_tri1] = PMUT(406, p->dr.rec.f1pc[F1PC_tri1], p->dr.rec.f1pc[F1PC_tri1] + 8);
+            p->dr.rec.lay[18] = PMUT(407, p->dr.rec.lay[18], p->dr.rec.lay[18] - 2);
+            p->dr.rec.dlx = (uint8_t)PMUT(408, p->dr.rec.dlx, !p->dr.rec.dlx);
+            p->dr.rec.culldl_off = (uint8_t)PMUT(409, p->dr.rec.culldl_off, !p->dr.rec.culldl_off);
+        }
         if (p->force) {
             const struct hle_ucode *reg = dbuild_registered(p->dr.rec.load_key);
             if (reg) {
@@ -769,6 +814,8 @@ int armlet_probe_run_registered(struct armlet_ctx *c, const struct hle_ucode *u)
     p.ds = armlet_dmem32(c, ARMLET_TASK_UCODE_DATA_SIZE);
     if (!p.ds || p.ds > 0x1000)
         p.ds = p.ds ? 0x1000 : 0x800;
+    if (u->fam == &f3dex1_fam)
+        f1_ops(c, &p);
     schedule(&p, c->cfg.probe_seeds ? c->cfg.probe_seeds : 3);
     for (i = 0; i < p.total; i++) {
         struct hle_probe_out o;

@@ -345,6 +345,11 @@ written and read inside the same triangle. (To be established by probing before 
 
 All other handler code is identical instruction for instruction across the six builds (pcmap), only the pcs and a few DMEM constants differ; the per-area documents list the pcs.
 
+Four registered builds came after this table (F3DLX 1.21 `76c763bc`, F3DLX.NoN 1.21 `0a7cc6c9` and 1.23 `cc09096c`, F3DEX.NoN 1.00 `5063f108` of Turok, whose class tables lie at 0xbc / 0xc4 as in 0.95 but
+with the 1.2x opcodes and no G_BRANCH_Z / G_LOAD_UCODE), and the versions differ in a few words that do not change the semantics (1.21 / 1.22 return from the display-list window refill through a saved
+`ra`, 1.23 tail-jumps to the DMA routine). The front-end holds every difference above as data of the build's record ([native-f3dex.md](native-f3dex.md) section 3), and the derivation reads it from a
+text ([ucode-derive.md](ucode-derive.md), "F3DEX 1.x records that run").
+
 ## 7. Facts that matter to an HLE front-end
 
 * **State carried between commands in registers** (not in DMEM): `$23` (always 0xce0 at command boundaries), `$26/$27/$28` (DL window), `$29`; the vertex code depends on stale vector registers for `L == 0` texgen and for the second pair (light.md section 10); the clipper reads stale `$10/$20`

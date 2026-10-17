@@ -59,6 +59,12 @@ The task counts differ a little between the two recounts because the runs are ti
 Of the 23.4 points left on the JIT, **14.7 points belong to ucodes without a handler** (was 27.2) and **8.8 to ucodes with one that declines** (was 7.2: XBUS lists, `G_LOAD_UCODE` of unregistered texts, `G_MOVEWORD` offsets, a triangle form, and now Gauntlet Legends'
 1.6). Next candidates by the derive page: Chameleon Twist 2's F3DEX 2.05 `9798` and Donald Duck's F3DEX.NoN 1.23 `efe4` (NONE by the tool, 0 differences in its verify experiment), then the kernels (Rej / L3DEX / S2DEX 1.x / F3D 2.0G).
 
+**F3DEX 1.x records that run (2026-10-17, [ucode-derive.md](ucode-derive.md)).** With the F3DEX 1.x front-end data-driven and its records derived, Donald Duck's `efe4` derives **EXACT** and passes the probe;
+latched it ran 1727 of 1728 tasks natively in 3700 frames (4351 of 4352 in 9000) with 0 differences: its row above (1.56 %, 1536 tasks, "no handler") would move to native as soon as the latch policy admits a pass.
+Iggy's Reckin' Balls' F3DEX.NoN 1.22 `dff3` (0.24 %) derives NEAR and passes too, but adds nothing: every one of its tasks sets the geometry bit 0x4000 that its 14 extra words implement, which the front-end
+declines. Inside the 64-ROM set that is all the F3DEX 1.x derivation finds (the registered texts were native already); its value is the retail F3DEX 1.x texts outside the set: a build that differs from a
+registered one in relocated handlers, moved DMEM state, the version rewrite of 1.23 or guarded extra code now gets a record that runs.
+
 **The first recount (91d3e2e), as it was:**
 
 - 146 944 graphics tasks: **94 039 native (64.0 %)**, 8 951 declined by a handler that exists, 43 906 of a ucode without a handler.
