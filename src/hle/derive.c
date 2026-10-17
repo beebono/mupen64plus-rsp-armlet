@@ -2549,6 +2549,22 @@ static int f3_derive(const struct derive_in *in, struct dimg *U, const struct dc
             }
         if (brk < 0) undecided = 1; else rec->f3pc[2] = brk;
     }
+    {   /* G_TRI4's table: `lbu rX, TAB(rX)` among its first words */
+        int tpc = rec->f3pc[22];
+        if (tpc) {
+            int n = f3_text_at(U, (unsigned)tpc, 20, ov), k, tab = -1, nt = 0;
+            for (k = 0; k < n; k++)
+                if (w_op(ov[k]) == 0x24 && w_rs(ov[k]) == w_rt(ov[k]) && w_rs(ov[k]) != 0) {
+                    int v = (int)(ov[k] & 0xffff);
+                    if (!nt || v != tab) {
+                        tab = v;
+                        nt++;
+                    }
+                }
+            if (nt != 1) undecided = 1; else rec->lay[DERIVE_NF3KNOB + 2] = (uint32_t)tab;
+        } else
+            rec->lay[DERIVE_NF3KNOB + 2] = 0;
+    }
     {   /* G_CULLDL's mask */
         int cpc = rec->f3pc[21];
         if (cpc) {
@@ -2851,9 +2867,9 @@ static const char *const f1_pc_names[DERIVE_NF1PC] = { "head", "nop", "mtx", "mo
     "enddl", "oml", "omh", "texture", "moveword", "popmtx", "culldl", "tri1" };
 
 static const char *const f3_lay_names[DERIVE_NF3LAY] = { "half1", "persp", "geom", "omh", "oml", "texture", "rdp_wp", "lights", "mtx_sp", "mtx_lim", "depth", "fifo", "segs", "mm_tab",
-    "mw_tab", "retstack", "viewport", "fog", "mv", "mp", "vtx_base", "cmdbuf", "geombuf", "outbuf", "ring_end", "vret", "jt0", "jt2", "light", "lim", "vsign", "clip_k", "planes", "tg", "plane_masks" };
+    "mw_tab", "retstack", "viewport", "fog", "mv", "mp", "vtx_base", "cmdbuf", "geombuf", "outbuf", "ring_end", "vret", "jt0", "jt2", "tri4_tab", "light", "lim", "vsign", "clip_k", "planes", "tg", "plane_masks" };
 static const char *const f3_pc_names[DERIVE_NF3PC] = { "head", "nop", "brk", "mtx", "movemem", "vtx", "dl", "tri1", "quad", "halfc", "half2", "half1", "persp", "clrgeom", "setgeom", "enddl", "oml",
-    "omh", "texture", "moveword", "popmtx", "culldl" };
+    "omh", "texture", "moveword", "popmtx", "culldl", "tri4" };
 static const char *const f3_flag_names[F3F_N] = { "flag.flags_variant", "flag.vtx_wr", "flag.gp_end", "flag.tri_wr", "flag.popmtx_stale", "flag.xbus", "flag.vptr_mul" };
 
 void derive_rec_fields(const struct derive_rec *r, void (*f)(const char *name, unsigned long long v, void *arg), void *arg)

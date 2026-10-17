@@ -51,7 +51,7 @@ enum { OV_TEXT = 0, OV_CLIP = 1, OV_LIGHT = 2 };   /* what is in the overlay win
 
 /* the command kinds: what a handler pc of the build's tables is (classify) */
 enum { K3_BAD = 0, K3_NOP0, K3_NOP, K3_MTX, K3_MOVEMEM, K3_VTX, K3_DL, K3_TRI1, K3_QUAD, K3_HALF2, K3_HALF1, K3_PERSP, K3_CLRGEOM, K3_SETGEOM, K3_ENDDL, K3_OML, K3_OMH, K3_TEXTURE,
-       K3_MOVEWORD, K3_POPMTX, K3_CULLDL };
+       K3_MOVEWORD, K3_POPMTX, K3_CULLDL, K3_TRI4 };
 
 /* the per-task state */
 struct f3d_task {
@@ -455,6 +455,33 @@ static int cmd_tri(struct f3d_task *f, uint32_t w1)
     return cmd_tri3(f, idx, w1 >> 24);
 }
 
+/* GoldenEye's op 0xb1 (2.0G): up to four triangles, triangle k of vertex nibbles (w1 >> 8k) & 0xf, (w1 >> 8k + 4) & 0xf and (w0 >> 4k) & 0xf, each nibble through the byte table at lay.tri4_tab to
+ * G_TRI1's vertex byte, flat-shading vertex 0. The microcode draws one through G_TRI1's code, writes the command back into its buffer with w1 >> 8 and the low half of w0 >> 4 and runs it again,
+ * until w1 is 0 */
+static int cmd_tri4(struct f3d_task *f, uint32_t w0, uint32_t w1)
+{
+    struct hle_task *t = f->t;
+    const struct f3d_layout *lay = f->L;
+    if (!lay->tri4_tab || f->b->gp_end)
+        return hle_decline(t, "G_TRI4 without its table");
+    while (w1) {
+        unsigned idx[3] = { hle_dm8(t, lay->tri4_tab + (w1 & 0xf)), hle_dm8(t, lay->tri4_tab + ((w1 >> 4) & 0xf)), hle_dm8(t, lay->tri4_tab + (w0 & 0xf)) };
+        PR_BEGIN();
+        int r = cmd_tri3(f, idx, 0);
+        PR_END(PR_TRI);
+        if (r != HLE_OK)
+            return HLE_DECLINE;
+        w1 >>= 8;
+        w0 = (w0 & 0xffff0000u) | ((w0 >> 4) & 0xffff);
+        if (f->exact) {                                 /* (the command written back into the buffer, as the microcode leaves it) */
+            unsigned a = f->L->cmdbuf + 320 - (unsigned)f->gp - 8;
+            hle_st16(t, a + 2, (uint16_t)w0);
+            hle_st32(t, a + 4, w1);
+        }
+    }
+    return HLE_OK;
+}
+
 /* Wave Race's op 0xb5: the quad (D = w1 byte 3, then A, B, C in w1 bytes 2 .. 0 of the microcode's reading order): the diagonal is chosen by the screen y of the corners, then two triangles */
 static int cmd_quad(struct f3d_task *f, uint32_t w1)
 {
@@ -503,7 +530,7 @@ static int enddl(struct f3d_task *f)
 static unsigned classify(const struct f3d_build *b, int cls0, unsigned h)
 {
     static const uint8_t kind_of_pc[F3_NPC] = { K3_BAD, K3_NOP, K3_BAD, K3_MTX, K3_MOVEMEM, K3_VTX, K3_DL, K3_TRI1, K3_QUAD, K3_HALF2, K3_HALF2, K3_HALF1, K3_PERSP, K3_CLRGEOM, K3_SETGEOM,
-                                                 K3_ENDDL, K3_OML, K3_OMH, K3_TEXTURE, K3_MOVEWORD, K3_POPMTX, K3_CULLDL };
+                                                 K3_ENDDL, K3_OML, K3_OMH, K3_TEXTURE, K3_MOVEWORD, K3_POPMTX, K3_CULLDL, K3_TRI4 };
     unsigned k;
     if (h == b->pc[F3PC_nop])
         return cls0 ? K3_NOP0 : K3_NOP;
@@ -655,6 +682,10 @@ static int f3d_run(struct hle_task *t, const struct hle_ucode *u)
             if (cmd_quad(&f, w1) != HLE_OK)
                 return HLE_DECLINE;
             break;
+        case K3_TRI4:
+            if (cmd_tri4(&f, w0, w1) != HLE_OK)
+                return HLE_DECLINE;
+            break;
         case K3_HALF2:
             if (emit8(&f, hle_dm32(t, L->half1), w1) != HLE_OK)
                 return HLE_DECLINE;
@@ -766,29 +797,35 @@ unsigned f3d_wr_cmd_size(unsigned first_byte)
 
 /* ---- the registered builds ---------------------------------------------------------------------------------------------------------------------------------------------------- */
 /* .pc in the order of F3D_PC_FIELDS, read from each text's handler tables (docs/ucode-f3d.md 10.3.1; brk: the BREAK of overlay 3; load_key: the FNV-1a-64 of the text's first 0xf48 bytes):
- *          head   nop    brk    mtx    movemem vtx   dl     tri1   quad   halfc  half2  half1  persp  clrgeom setgeom enddl oml    omh    texture moveword popmtx culldl */
+ *          head   nop    brk    mtx    movemem vtx   dl     tri1   quad   halfc  half2  half1  persp  clrgeom setgeom enddl oml    omh    texture moveword popmtx culldl tri4 */
 /* SM64 */
 static const struct f3d_build l_sm64 = { .lay = &f3d_layout_a,
-    .pc = { 0x060, 0x0a8, 0x780, 0x3dc, 0x558, 0x568, 0x734, 0x20c, 0, 0x380, 0x384, 0x378, 0x370, 0x358, 0x348, 0x328, 0x2cc, 0x2c4, 0x2a0, 0x288, 0x250, 0x30c },
+    .pc = { 0x060, 0x0a8, 0x780, 0x3dc, 0x558, 0x568, 0x734, 0x20c, 0, 0x380, 0x384, 0x378, 0x370, 0x358, 0x348, 0x328, 0x2cc, 0x2c4, 0x2a0, 0x288, 0x250, 0x30c, 0 },
     .clip_mask = 0x4343, .reject_mask = 0x7070, .culldl_mask = 0xffff, .vptr_mul = 4, .load_key = 0x021a806f5839b9ddull };
 /* Pilotwings 64 (and Blast Corps' main text): the overlays at 0x788, G_TRI1 rejects with 0x7030 and G_CULLDL uses it too, its own clip flag word (10.5.1); the near-plane vector is DMEM data */
 static const struct f3d_build l_pw = { .lay = &f3d_layout_pw,
-    .pc = { 0x060, 0x0a8, 0x7a0, 0x3dc, 0x558, 0x568, 0x754, 0x20c, 0, 0x380, 0x384, 0x378, 0x370, 0x358, 0x348, 0x328, 0x2cc, 0x2c4, 0x2a0, 0x288, 0x250, 0x30c },
+    .pc = { 0x060, 0x0a8, 0x7a0, 0x3dc, 0x558, 0x568, 0x754, 0x20c, 0, 0x380, 0x384, 0x378, 0x370, 0x358, 0x348, 0x328, 0x2cc, 0x2c4, 0x2a0, 0x288, 0x250, 0x30c, 0 },
     .clip_mask = 0x4343, .reject_mask = 0x7030, .culldl_mask = 0x7030, .vptr_mul = 4, .load_key = 0x092eac93aa4c29c8ull };
 /* Wave Race 64: the buffers 0x280 further up, the loop's gp the end address of the buffer, its own vertex and triangle encodings (the index scaled by 5), no front-face culling and no flat
  * shading, the shade block when any of the three low geometry bits is set (10.5.2), G_POPMTX sets the stale flag, op 0xb5 the quad; the overlays at 0x7c8 */
 static const struct f3d_build l_wr = { .lay = &f3d_layout_wr,
-    .pc = { 0x064, 0x09c, 0x7e0, 0x43c, 0x5b8, 0x5c8, 0x788, 0x278, 0x1fc, 0x3e0, 0x3e4, 0x3d8, 0x3d0, 0x3b8, 0x3a8, 0x388, 0x32c, 0x324, 0x300, 0x2e8, 0x2b0, 0x36c },
+    .pc = { 0x064, 0x09c, 0x7e0, 0x43c, 0x5b8, 0x5c8, 0x788, 0x278, 0x1fc, 0x3e0, 0x3e4, 0x3d8, 0x3d0, 0x3b8, 0x3a8, 0x388, 0x32c, 0x324, 0x300, 0x2e8, 0x2b0, 0x36c, 0 },
     .clip_mask = 0x4343, .reject_mask = 0x7070, .culldl_mask = 0x7070, .vptr_mul = 8, .vtx_wr = 1, .gp_end = 1, .tri_wr = 1, .popmtx_stale = 1, .load_key = 0x923f0d2666ac9355ull };
 /* Mischief Makers (2.0H): Tetrisphere's code with the XBUS transport (the RDP reads the ring in DMEM; docs/ucode-f3d.md 10.6 4.4); the RDPHALF ops are one opcode higher (0xb2 .. 0xb4, 0xb1 is a no-op)
  * and there is no G_PERSPNORMALIZE (the perspective norm is G_MOVEWORD index 0x0e) */
 static const struct f3d_build l_mm = { .lay = &f3d_layout_h,
-    .pc = { 0x060, 0x0a8, 0x780, 0x3dc, 0x558, 0x568, 0x734, 0x208, 0, 0x378, 0x37c, 0x370, 0, 0x358, 0x348, 0x328, 0x2cc, 0x2c4, 0x2a0, 0x288, 0x24c, 0x30c },
+    .pc = { 0x060, 0x0a8, 0x780, 0x3dc, 0x558, 0x568, 0x734, 0x208, 0, 0x378, 0x37c, 0x370, 0, 0x358, 0x348, 0x328, 0x2cc, 0x2c4, 0x2a0, 0x288, 0x24c, 0x30c, 0 },
     .clip_mask = 0x4343, .reject_mask = 0x7070, .culldl_mask = 0x7070, .vptr_mul = 4, .popmtx_stale = 1, .xbus = 1, .load_key = 0x5740f13da0cf9c89ull };
 /* Tetrisphere (2.0H 02-12-97): the SM64 code with the G_DL depth at 0x15a, G_POPMTX setting the stale flag, the 2.0H RDPHALF ops, G_CULLDL mask 0x7070 (10.1, 10.3) */
 static const struct f3d_build l_tt = { .lay = &f3d_layout_h,
-    .pc = { 0x060, 0x0a8, 0x780, 0x3d8, 0x554, 0x564, 0x730, 0x20c, 0, 0x37c, 0x380, 0x374, 0, 0x35c, 0x34c, 0x32c, 0x2d0, 0x2c8, 0x2a4, 0x28c, 0x250, 0x310 },
+    .pc = { 0x060, 0x0a8, 0x780, 0x3d8, 0x554, 0x564, 0x730, 0x20c, 0, 0x37c, 0x380, 0x374, 0, 0x35c, 0x34c, 0x32c, 0x2d0, 0x2c8, 0x2a4, 0x28c, 0x250, 0x310, 0 },
     .clip_mask = 0x4343, .reject_mask = 0x7070, .culldl_mask = 0x7070, .vptr_mul = 4, .popmtx_stale = 1, .load_key = 0x0edc2cbf3ad81e8bull };
+
+/* GoldenEye 007 (2.0G 09-30-96): Pilotwings' clip flag word and masks, the overlays at 0x790, the 2.0H RDPHALF numbering and G_DL depth byte, no G_PERSPNORMALIZE (G_MOVEWORD 0x0e) and no G_POPMTX
+ * (its cell leads to G_MOVEWORD's handler), G_TRI4 at 0xb1 (docs/ucode-f3d.md 15) */
+static const struct f3d_build l_ge = { .lay = &f3d_layout_ge,
+    .pc = { 0x060, 0x0a8, 0x7a8, 0x3e0, 0x55c, 0x56c, 0x758, 0x250, 0, 0x384, 0x388, 0x37c, 0, 0x364, 0x354, 0x334, 0x2d8, 0x2d0, 0x2ac, 0x294, 0, 0x318, 0x20c },
+    .clip_mask = 0x4343, .reject_mask = 0x7030, .culldl_mask = 0x7030, .vptr_mul = 4, .load_key = 0x1e3311bf53a4ae12ull };
 
 /* DMEM dead at the end of a task: scratch and leftovers (docs/ucode-f3d.md 11); the justification of each range is the poison proof (ARMLET_DMEM_POISON, docs/testing.md), the
  * references are to docs/ucode-f3d.md. The fourth byte of each transformed light direction (and of its copy) is a leftover of the vector registers the relight reads (7.2), never read:
@@ -832,5 +869,6 @@ F3D_UCODE_R(l_f3d_wr, 0xfb483893c5b0ad3dull, "Fast3D 2.0D (Wave Race 64)", l_wr,
 /* the lists go through a ring in DMEM (no ring in RDRAM) */
 F3D_UCODE_R(l_f3d_mm, 0x4212d63f6e483348ull, "Fast3D 2.0H (Mischief Makers, XBUS)", l_mm, l_dead_tt, 0);
 F3D_UCODE(l_f3d_tt, 0x0b574ecb06d75978ull, "Fast3D 2.0H (Tetrisphere)", l_tt, l_dead_tt);
+F3D_UCODE(l_f3d_ge, 0x538f79d8ff151c3eull, "Fast3D 2.0G (GoldenEye 007)", l_ge, l_dead_sm64);
 
 #endif

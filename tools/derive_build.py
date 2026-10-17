@@ -275,6 +275,8 @@ EXPECTED = {
     ("l_b_095", "flag.culldl_off"): "follows from the handler: without a G_CULLDL pc the attribute is the primary reference's (and the command declines)",
     ("l_wr", "pc.tri1"): "Wave Race's G_TRI1 entry is a call into a routine it shares with its quad command (`jal 0x288`): no other reference's handler maps onto it; the derived build declines G_TRI1. Verdict NONE (80 unexplained words)",
     ("l_wr", "pc.quad"): "Wave Race's quad command is in no other reference: no handler to map it from (the derived build declines the command)",
+    ("l_ge", "pc.tri4"): "GoldenEye's G_TRI4 (2.0G) is in no other reference: no handler to map it from (the derived build declines the command). Verdict NONE (its 17 words unexplained)",
+    ("l_ge", "lay.tri4_tab"): "follows from the handler: without a G_TRI4 pc there is no table to read",
 }
 
 

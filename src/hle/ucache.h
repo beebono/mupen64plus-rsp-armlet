@@ -44,6 +44,7 @@ struct ucache_entry {
     uint8_t non, dlx, culldl_off, pad5;
     uint32_t pad6;
     int32_t f3pc[DERIVE_NF3PC];         /* F3D (the layout in lay[]) */
+    uint32_t pad8;
     uint32_t clip_mask, culldl_mask;
     uint8_t f3[F3F_N], pad7;
     uint32_t crc;

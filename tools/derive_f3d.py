@@ -12,12 +12,12 @@ import rsp_isa as isa
 # the layout (F3D_LAY_FIELDS of f3d_dmem.h): F3_LAY_NKNOB addresses the code names (knobs), then the two table bases (read from the dispatchers), then constants of the data segment (copied)
 F3_LAY_FIELDS = ["half1", "persp", "geom", "omh", "oml", "texture", "rdp_wp", "lights", "mtx_sp", "mtx_lim", "depth", "fifo", "segs", "mm_tab", "mw_tab", "retstack",
                  "viewport", "fog", "mv", "mp", "vtx_base", "cmdbuf", "geombuf", "outbuf", "ring_end", "vret",
-                 "jt0", "jt2",
+                 "jt0", "jt2", "tri4_tab",
                  "light", "lim", "vsign", "clip_k", "planes", "tg", "plane_masks"]
 F3_LAY_NKNOB = 26
-F3_LAY_NSIG = 28
+F3_LAY_NSIG = 29
 F3_PC_FIELDS = ["head", "nop", "brk", "mtx", "movemem", "vtx", "dl", "tri1", "quad", "halfc", "half2", "half1", "persp", "clrgeom", "setgeom", "enddl", "oml", "omh", "texture", "moveword",
-                "popmtx", "culldl"]
+                "popmtx", "culldl", "tri4"]
 F3_PC_SIG = ("head", "brk")             # read from the text, not mapped
 F3_FLAGS = ["flags_variant", "vtx_wr", "gp_end", "tri_wr", "popmtx_stale", "xbus", "vptr_mul"]
 F3_BASE29 = 0x110
@@ -144,6 +144,14 @@ def sig_geombuf(U):
     """the geometry DMA buffer: the loop head code (overlay 0) sets `addi s6, zero, geombuf` for the class-0 DMA"""
     _, ov0 = overlay(U, 0)
     hits = {dec(w)["imm"] for w in ov0 if dec(w).get("name") == "addi" and dec(w)["rs"] == 0 and dec(w)["rt"] == 22}
+    return hits.pop() if len(hits) == 1 else None
+
+
+def sig_tri4_tab(U, tpc):
+    """GoldenEye's G_TRI4 looks the vertex nibbles up in a byte table: `lbu rX, TAB(rX)` among its first words (0: no such command)"""
+    if not tpc:
+        return 0
+    hits = {dec(w)["imm"] & 0xffff for w in text_words_at(U, tpc, 20) if dec(w).get("name") == "lbu" and dec(w)["rs"] == dec(w)["rt"] and dec(w)["rs"] != 0}
     return hits.pop() if len(hits) == 1 else None
 
 
@@ -340,6 +348,9 @@ def derive_f3d(U, refs):
     brk = sig_brk(U)
     if decide("pc.brk", brk):
         rec.num["pc.brk"] = (brk, "pc")
+    t4 = sig_tri4_tab(U, pc["tri4"])
+    if decide("lay.tri4_tab", t4):
+        rec.num["lay.tri4_tab"] = (t4, "sig")
     cm = sig_culldl_mask(U, pc["culldl"])
     if pc["culldl"] and decide("culldl_mask", cm):
         rec.num["culldl_mask"] = (cm, "sig")

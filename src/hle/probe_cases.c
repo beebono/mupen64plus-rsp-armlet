@@ -1408,6 +1408,19 @@ static void f3_geometry(struct probe_case *c, struct dl *d, struct rng *r, unsig
             if (u < 0.3 && o->quad && n >= 4) {
                 unsigned v4 = v0 + randrange(r, n);
                 cmd(d, (uint32_t)o->quad << 24, (f3_ix(o, v4) << 24) | (f3_ix(o, a) << 16) | (f3_ix(o, b2) << 8) | f3_ix(o, cc));
+            } else if (u < 0.3 && o->tri4 && v0 + n <= 16) {  /* 1 .. 4 triangles: triangle k's vertices are w1's nibbles 2k, 2k + 1 and w0's nibble k */
+                unsigned m = 1 + randrange(r, 4), k, a2, b3, c3;
+                uint32_t x0 = (uint32_t)o->tri4 << 24, x1 = 0;
+                for (k = 0; k < m; k++) {
+                    if (k)
+                        sample3(r, v0, n, &a2, &b3, &c3);
+                    else {
+                        a2 = a; b3 = b2; c3 = cc;
+                    }
+                    x1 |= ((b3 << 4) | a2) << (8 * k);
+                    x0 |= c3 << (4 * k);
+                }
+                cmd(d, x0, x1);
             } else
                 f3_tri1f(d, o, a, b2, cc, o->flat ? randrange(r, 3) : 0);
         }

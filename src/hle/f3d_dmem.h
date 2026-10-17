@@ -15,18 +15,19 @@
 #include "f3d_fx.h"
 
 /* The DMEM layout of a build (the record's DMEM part: docs/ucode-f3d.md 5 and 10.3, docs/ucode-derive.md "F3D records that run"). The first F3D_LAY_NKNOB fields are addresses the derivation
- * reads from the code (tools/derive_f3d.py: operands, also relative to the base register $29 = 0x110), jt0 / jt2 are read from the two dispatchers, the rest are constants of the data segment's first
+ * reads from the code (tools/derive_f3d.py: operands, also relative to the base register $29 = 0x110), jt0 / jt2 are read from the two dispatchers, tri4_tab (GoldenEye's nibble-to-vertex-byte
+ * table of G_TRI4; 0: none) from that handler, the rest are constants of the data segment's first
  * 0xc0 bytes that it copies from the reference. vret is the halfword where G_VTX and the clipper keep their return address (scratch: a dead range of the build). Fixed structure of the family (not fields): light records of 32 bytes from `light` (the texgen weights at +0, colours +0x10, raw directions +0x18,
  * model-space directions +0x20; the clamp of the relight at light + 0x68), G_TEXTURE's level byte at texture + 1, its tile byte at + 2 and its scales at + 4, the FIFO end at fifo + 4, the projection
  * at mv + 0x40, vertex records of 40 bytes from vtx_base up to the command buffer, the command buffer of 320 bytes, the DMA table at 0 (overlay k at 8 + 8k), the OSTask header at 0xfc0. */
 #define F3D_LAY_FIELDS(X) \
     X(half1) X(persp) X(geom) X(omh) X(oml) X(texture) X(rdp_wp) X(lights) X(mtx_sp) X(mtx_lim) X(depth) X(fifo) X(segs) X(mm_tab) X(mw_tab) X(retstack) \
     X(viewport) X(fog) X(mv) X(mp) X(vtx_base) X(cmdbuf) X(geombuf) X(outbuf) X(ring_end) X(vret) \
-    X(jt0) X(jt2) \
+    X(jt0) X(jt2) X(tri4_tab) \
     X(light) X(lim) X(vsign) X(clip_k) X(planes) X(tg) X(plane_masks)
 #define F3D_LAY_NKNOB 26
-#define F3D_LAY_NSIG 28
-#define F3D_LAY_N 35
+#define F3D_LAY_NSIG 29
+#define F3D_LAY_N 36
 #define F3D_VSTRIDE 40
 struct f3d_layout {
 #define X(f) uint16_t f;
@@ -38,19 +39,23 @@ static inline unsigned f3d_nslots(const struct f3d_layout *l) { return (unsigned
 
 /* SM64 and the 2.0D builds of family A (docs/ucode-f3d.md 10.3.2) */
 static const struct f3d_layout f3d_layout_a = {
-    .half1 = 0x10c, .persp = 0x112, .geom = 0x114, .omh = 0x118, .oml = 0x11c, .texture = 0x120, .rdp_wp = 0x128, .lights = 0x12c, .mtx_sp = 0x134, .mtx_lim = 0x15c, .depth = 0x110, .fifo = 0x150, .segs = 0x160, .mm_tab = 0x2f0, .mw_tab = 0x30e, .retstack = 0x336, .viewport = 0x320, .fog = 0x330, .mv = 0x360, .mp = 0x3e0, .vtx_base = 0x420, .cmdbuf = 0x6a0, .geombuf = 0x7e0, .outbuf = 0x9e0, .ring_end = 0xde0, .vret = 0x106, .jt0 = 0x0c4, .jt2 = 0x076, .light = 0x1a0, .lim = 0x028, .vsign = 0x050, .clip_k = 0x076, .planes = 0x098, .tg = 0x0a2, .plane_masks = 0x0b2,
+    .half1 = 0x10c, .persp = 0x112, .geom = 0x114, .omh = 0x118, .oml = 0x11c, .texture = 0x120, .rdp_wp = 0x128, .lights = 0x12c, .mtx_sp = 0x134, .mtx_lim = 0x15c, .depth = 0x110, .fifo = 0x150, .segs = 0x160, .mm_tab = 0x2f0, .mw_tab = 0x30e, .retstack = 0x336, .viewport = 0x320, .fog = 0x330, .mv = 0x360, .mp = 0x3e0, .vtx_base = 0x420, .cmdbuf = 0x6a0, .geombuf = 0x7e0, .outbuf = 0x9e0, .ring_end = 0xde0, .vret = 0x106, .jt0 = 0x0c4, .jt2 = 0x076, .tri4_tab = 0x000, .light = 0x1a0, .lim = 0x028, .vsign = 0x050, .clip_k = 0x076, .planes = 0x098, .tg = 0x0a2, .plane_masks = 0x0b2,
     .flags_variant = F3D_FLAGS_SM64 };
 /* Pilotwings: family A with its own clip flag word */
 static const struct f3d_layout f3d_layout_pw = {
-    .half1 = 0x10c, .persp = 0x112, .geom = 0x114, .omh = 0x118, .oml = 0x11c, .texture = 0x120, .rdp_wp = 0x128, .lights = 0x12c, .mtx_sp = 0x134, .mtx_lim = 0x15c, .depth = 0x110, .fifo = 0x150, .segs = 0x160, .mm_tab = 0x2f0, .mw_tab = 0x30e, .retstack = 0x336, .viewport = 0x320, .fog = 0x330, .mv = 0x360, .mp = 0x3e0, .vtx_base = 0x420, .cmdbuf = 0x6a0, .geombuf = 0x7e0, .outbuf = 0x9e0, .ring_end = 0xde0, .vret = 0x106, .jt0 = 0x0c4, .jt2 = 0x076, .light = 0x1a0, .lim = 0x028, .vsign = 0x050, .clip_k = 0x076, .planes = 0x098, .tg = 0x0a2, .plane_masks = 0x0b2,
+    .half1 = 0x10c, .persp = 0x112, .geom = 0x114, .omh = 0x118, .oml = 0x11c, .texture = 0x120, .rdp_wp = 0x128, .lights = 0x12c, .mtx_sp = 0x134, .mtx_lim = 0x15c, .depth = 0x110, .fifo = 0x150, .segs = 0x160, .mm_tab = 0x2f0, .mw_tab = 0x30e, .retstack = 0x336, .viewport = 0x320, .fog = 0x330, .mv = 0x360, .mp = 0x3e0, .vtx_base = 0x420, .cmdbuf = 0x6a0, .geombuf = 0x7e0, .outbuf = 0x9e0, .ring_end = 0xde0, .vret = 0x106, .jt0 = 0x0c4, .jt2 = 0x076, .tri4_tab = 0x000, .light = 0x1a0, .lim = 0x028, .vsign = 0x050, .clip_k = 0x076, .planes = 0x098, .tg = 0x0a2, .plane_masks = 0x0b2,
     .flags_variant = F3D_FLAGS_PW };
 /* the 2.0H builds of family A (Mischief Makers, Tetrisphere): the G_DL depth at 0x15a, the class-2 table 2 lower */
 static const struct f3d_layout f3d_layout_h = {
-    .half1 = 0x10c, .persp = 0x112, .geom = 0x114, .omh = 0x118, .oml = 0x11c, .texture = 0x120, .rdp_wp = 0x128, .lights = 0x12c, .mtx_sp = 0x134, .mtx_lim = 0x15c, .depth = 0x15a, .fifo = 0x150, .segs = 0x160, .mm_tab = 0x2f0, .mw_tab = 0x30e, .retstack = 0x336, .viewport = 0x320, .fog = 0x330, .mv = 0x360, .mp = 0x3e0, .vtx_base = 0x420, .cmdbuf = 0x6a0, .geombuf = 0x7e0, .outbuf = 0x9e0, .ring_end = 0xde0, .vret = 0x104, .jt0 = 0x0c4, .jt2 = 0x074, .light = 0x1a0, .lim = 0x028, .vsign = 0x050, .clip_k = 0x076, .planes = 0x098, .tg = 0x0a2, .plane_masks = 0x0b2,
+    .half1 = 0x10c, .persp = 0x112, .geom = 0x114, .omh = 0x118, .oml = 0x11c, .texture = 0x120, .rdp_wp = 0x128, .lights = 0x12c, .mtx_sp = 0x134, .mtx_lim = 0x15c, .depth = 0x15a, .fifo = 0x150, .segs = 0x160, .mm_tab = 0x2f0, .mw_tab = 0x30e, .retstack = 0x336, .viewport = 0x320, .fog = 0x330, .mv = 0x360, .mp = 0x3e0, .vtx_base = 0x420, .cmdbuf = 0x6a0, .geombuf = 0x7e0, .outbuf = 0x9e0, .ring_end = 0xde0, .vret = 0x104, .jt0 = 0x0c4, .jt2 = 0x074, .tri4_tab = 0x000, .light = 0x1a0, .lim = 0x028, .vsign = 0x050, .clip_k = 0x076, .planes = 0x098, .tg = 0x0a2, .plane_masks = 0x0b2,
     .flags_variant = F3D_FLAGS_SM64 };
+/* GoldenEye (2.0G): Pilotwings' clip flag word, the G_DL depth byte of the 2.0H builds, G_TRI4's nibble table */
+static const struct f3d_layout f3d_layout_ge = {
+    .half1 = 0x10c, .persp = 0x112, .geom = 0x114, .omh = 0x118, .oml = 0x11c, .texture = 0x120, .rdp_wp = 0x128, .lights = 0x12c, .mtx_sp = 0x134, .mtx_lim = 0x15c, .depth = 0x15a, .fifo = 0x150, .segs = 0x160, .mm_tab = 0x2f0, .mw_tab = 0x30e, .retstack = 0x336, .viewport = 0x320, .fog = 0x330, .mv = 0x360, .mp = 0x3e0, .vtx_base = 0x420, .cmdbuf = 0x6a0, .geombuf = 0x7e0, .outbuf = 0x9e0, .ring_end = 0xde0, .vret = 0x106, .jt0 = 0x0c4, .jt2 = 0x076, .tri4_tab = 0x2d0, .light = 0x1a0, .lim = 0x028, .vsign = 0x050, .clip_k = 0x076, .planes = 0x098, .tg = 0x0a2, .plane_masks = 0x0b2,
+    .flags_variant = F3D_FLAGS_PW };
 /* Wave Race: the buffers 0x280 higher, so 32 vertex slots */
 static const struct f3d_layout f3d_layout_wr = {
-    .half1 = 0x10c, .persp = 0x112, .geom = 0x114, .omh = 0x118, .oml = 0x11c, .texture = 0x120, .rdp_wp = 0x128, .lights = 0x12c, .mtx_sp = 0x134, .mtx_lim = 0x15c, .depth = 0x110, .fifo = 0x150, .segs = 0x160, .mm_tab = 0x2f0, .mw_tab = 0x30e, .retstack = 0x336, .viewport = 0x320, .fog = 0x330, .mv = 0x360, .mp = 0x3e0, .vtx_base = 0x420, .cmdbuf = 0x920, .geombuf = 0xa60, .outbuf = 0xc60, .ring_end = 0xde0, .vret = 0x106, .jt0 = 0x0c4, .jt2 = 0x076, .light = 0x1a0, .lim = 0x028, .vsign = 0x050, .clip_k = 0x076, .planes = 0x098, .tg = 0x0a2, .plane_masks = 0x0b2,
+    .half1 = 0x10c, .persp = 0x112, .geom = 0x114, .omh = 0x118, .oml = 0x11c, .texture = 0x120, .rdp_wp = 0x128, .lights = 0x12c, .mtx_sp = 0x134, .mtx_lim = 0x15c, .depth = 0x110, .fifo = 0x150, .segs = 0x160, .mm_tab = 0x2f0, .mw_tab = 0x30e, .retstack = 0x336, .viewport = 0x320, .fog = 0x330, .mv = 0x360, .mp = 0x3e0, .vtx_base = 0x420, .cmdbuf = 0x920, .geombuf = 0xa60, .outbuf = 0xc60, .ring_end = 0xde0, .vret = 0x106, .jt0 = 0x0c4, .jt2 = 0x076, .tri4_tab = 0x000, .light = 0x1a0, .lim = 0x028, .vsign = 0x050, .clip_k = 0x076, .planes = 0x098, .tg = 0x0a2, .plane_masks = 0x0b2,
     .flags_variant = F3D_FLAGS_SM64 };
 
 static inline uint8_t fd8(const uint32_t *m, unsigned a) { return ((const uint8_t *)m)[(a & 0xfff) ^ 3]; }

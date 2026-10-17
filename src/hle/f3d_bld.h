@@ -15,9 +15,11 @@
 
 /* the handler pcs of a build, in the order of f3d_build.pc[] (and of tools/derive_f3d.py's F3_PC_FIELDS). head: where the start-up code reaches the command loop (the interpreter stops there);
  * nop: the loop's return point, which the no-op commands lead to (a class-0 one after its operand DMA); brk: the BREAK of the exit code (overlay 3) that ends a task; halfc / half2: the two
- * commands that send the RDPHALF word with w1 (G_RDPHALF_CONT and G_RDPHALF_2); half1: the one that stores it */
+ * commands that send the RDPHALF word with w1 (G_RDPHALF_CONT and G_RDPHALF_2); half1: the one that stores it; tri4: GoldenEye's (2.0G) four triangles from nibbles (op 0xb1; the vertex
+ * bytes through the table at lay.tri4_tab) */
 #define F3D_PC_FIELDS(X) \
-    X(head) X(nop) X(brk) X(mtx) X(movemem) X(vtx) X(dl) X(tri1) X(quad) X(halfc) X(half2) X(half1) X(persp) X(clrgeom) X(setgeom) X(enddl) X(oml) X(omh) X(texture) X(moveword) X(popmtx) X(culldl)
+    X(head) X(nop) X(brk) X(mtx) X(movemem) X(vtx) X(dl) X(tri1) X(quad) X(halfc) X(half2) X(half1) X(persp) X(clrgeom) X(setgeom) X(enddl) X(oml) X(omh) X(texture) X(moveword) X(popmtx) X(culldl) \
+    X(tri4)
 enum {
 #define X(f) F3PC_##f,
     F3D_PC_FIELDS(X)

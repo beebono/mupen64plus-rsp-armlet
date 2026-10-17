@@ -209,18 +209,18 @@ static void f1_ops(struct armlet_ctx *c, struct pair *p)
 }
 
 /* An F3D build's encodings: the class-2 opcodes (0xb0 .. 0xbf) whose cells of the build's table (in its data image) lead to the record's pcs of the commands whose numbers differ between the builds
- * (the RDPHALF commands, G_PERSPNORMALIZE, Wave Race's quad), and from the record the G_VTX encoding, the triangle index scale and the vertex slots */
+ * (the RDPHALF commands, G_PERSPNORMALIZE, Wave Race's quad, GoldenEye's G_TRI4), and from the record the G_VTX encoding, the triangle index scale and the vertex slots */
 static void f3_ops(struct armlet_ctx *c, struct pair *p)
 {
     const struct f3d_build *b = (const struct f3d_build *)p->b->uc.fam_data;
     static uint8_t data[0x1000];
-    static const int which[4] = { F3PC_half1, F3PC_half2, F3PC_persp, F3PC_quad };
-    uint8_t *dst[4];
+    static const int which[5] = { F3PC_half1, F3PC_half2, F3PC_persp, F3PC_quad, F3PC_tri4 };
+    uint8_t *dst[5];
     unsigned k, op, n = p->ds < sizeof(data) ? p->ds : sizeof(data);
     memset(&p->f3ops, 0, sizeof(p->f3ops));
-    dst[0] = &p->f3ops.half1; dst[1] = &p->f3ops.half2; dst[2] = &p->f3ops.persp; dst[3] = &p->f3ops.quad;
+    dst[0] = &p->f3ops.half1; dst[1] = &p->f3ops.half2; dst[2] = &p->f3ops.persp; dst[3] = &p->f3ops.quad; dst[4] = &p->f3ops.tri4;
     rd_bytes(c, p->da, data, n);
-    for (k = 0; k < 4; k++) {
+    for (k = 0; k < 5; k++) {
         unsigned pc = b->pc[which[k]];
         for (op = 0xb0; op <= 0xbf && pc; op++) {
             unsigned a = b->lay->jt2 + 2 * (op - 0x80);
@@ -719,6 +719,8 @@ static void first_sight(struct armlet_ctx *c, struct pair *p, const struct armle
             p->dr.rec.lay[14] = PMUT(417, p->dr.rec.lay[14], p->dr.rec.lay[14] - 2);
             p->dr.rec.f3[F3F_TRI_WR] = (uint8_t)PMUT(418, p->dr.rec.f3[F3F_TRI_WR], !p->dr.rec.f3[F3F_TRI_WR]);
             p->dr.rec.f3[F3F_GP_END] = (uint8_t)PMUT(419, p->dr.rec.f3[F3F_GP_END], !p->dr.rec.f3[F3F_GP_END]);
+            if (p->dr.rec.lay[DERIVE_NF3KNOB + 2])      /* (G_TRI4's table one byte off: GoldenEye) */
+                p->dr.rec.lay[DERIVE_NF3KNOB + 2] = PMUT(420, p->dr.rec.lay[DERIVE_NF3KNOB + 2], p->dr.rec.lay[DERIVE_NF3KNOB + 2] + 1);
         }
         if (p->force) {
             const struct hle_ucode *reg = dbuild_registered(p->dr.rec.load_key);

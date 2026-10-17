@@ -19,9 +19,9 @@
 #define DERIVE_NF1PC 24         /* F1_PC_FIELDS of tools/derive_f1d.py (F3DEX_PC_FIELDS of f3dex_bld.h) */
 #define DERIVE_NF1LAY 36        /* F1_LAY_FIELDS (F3DEX_LAY_FIELDS of f3dex_dmem.h), in lay[] of an F3DEX 1.x record */
 #define DERIVE_NF1KNOB 29       /* the first of them that are addresses the code names (F1_LAY_NKNOB) */
-#define DERIVE_NF3PC 22         /* F3_PC_FIELDS of tools/derive_f3d.py (F3D_PC_FIELDS of f3d_bld.h) */
-#define DERIVE_NF3LAY 35        /* F3_LAY_FIELDS (F3D_LAY_FIELDS of f3d_dmem.h), in lay[] of an F3D record */
-#define DERIVE_NF3KNOB 26       /* the first of them that are addresses the code names (F3_LAY_NKNOB); then jt0, jt2 (read from the dispatchers), then constants */
+#define DERIVE_NF3PC 23         /* F3_PC_FIELDS of tools/derive_f3d.py (F3D_PC_FIELDS of f3d_bld.h) */
+#define DERIVE_NF3LAY 36        /* F3_LAY_FIELDS (F3D_LAY_FIELDS of f3d_dmem.h), in lay[] of an F3D record */
+#define DERIVE_NF3KNOB 26       /* the first of them that are addresses the code names (F3_LAY_NKNOB); then jt0, jt2 (read from the dispatchers), tri4_tab (from G_TRI4's handler), then constants */
 
 /* indices into pc[] and f2pcs[] and lay[] (the order of the Python tool's lists) */
 enum { PC_HEAD, PC_COPY, PC_SYNC, PC_SEGCOPY, PC_EF, PC_ED, PC_TRI1, PC_TRI2, PC_VTX, PC_MTX, PC_GEOM, PC_ENDDL, PC_HALF2, PC_MODVTX, PC_CULLDL, PC_BRANCHZ, PC_MVP, PC_TRI4, PC_LDTX_SPR, PC_LDTX_RECT };

@@ -39,6 +39,7 @@ void probe_case_make_f1(struct probe_case *c, unsigned kind, unsigned seed, uint
  * the record's pc; 0: none), Wave Race's G_VTX encoding, the triangle index scale, the vertex slots. */
 struct probe_f3ops {
     uint8_t half1, half2, persp, quad;
+    uint8_t tri4;                       /* GoldenEye's four triangles from nibbles (0: none) */
     uint8_t vtx_wr;                     /* G_VTX: 04 | 5 v0 | n << 9 | 16 n - 1 */
     uint8_t vptr_mul;                   /* G_TRI1's index byte is 40 i / vptr_mul */
     uint8_t nslots;                     /* the vertex slots (16 or 32) */
