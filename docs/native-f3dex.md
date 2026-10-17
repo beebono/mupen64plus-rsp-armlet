@@ -47,7 +47,8 @@ subtracts and 32-bit subtracts with only the integer half saturating; 32-bit min
   and sent with one DMA and one DPC_END write at the next sync (a FIFO wrap, a full stage, the end of the task, and after a texture rectangle's first half: the stream the verify compares is normalised list by list,
   until A parses across lists). The wrap decision is made per chunk exactly as the microcode does. F3DLX's lagging DPC_END (publishes before and after commands, once per triangle) is reproduced as the value the
   microcode would have written last;
-* declines (the JIT then runs the whole task): G_LOAD_UCODE (SpaceStation Silicon Valley: about half of its tasks), undefined opcodes, light state outside what the functions model, F3DLX with `G_CLIPPING` off and
+* G_LOAD_UCODE: a re-initialisation, or the text of another F3DEX 1.x build, is followed (section 3, "G_LOAD_UCODE");
+* declines (the JIT then runs the whole task): G_LOAD_UCODE of a text that is no F3DEX 1.x build (SpaceStation Silicon Valley and Pokemon Puzzle League load S2DEX 1.x), undefined opcodes, light state outside what the functions model, F3DLX with `G_CLIPPING` off and
   G_CULLDL (the flags are junk there), a vertex or display-list address outside the supported range, more than 30000 commands.
 
 Builds (ids as gfx_ucode.c logs them) and the games they were run with:
@@ -79,10 +80,55 @@ are not handler pointers and decline), whose pcs are matched against the record 
 (no-ops there, as its microcode does; the front-end used to run a G_BRANCH_Z) and a build's missing handlers come out of the data. G_MOVEWORD's table ends where the vertex table begins (8 entries, 7 in 0.95).
 Family constants that are not fields: the light records' structure (32 bytes from `light`), G_TEXTURE's tile byte and scales after `texture`, the 40-byte vertex records, the 320-byte window, the DMA table at
 DMEM 0 (overlay k at 8 + 8k, the end overlay's IMEM address at 0x26), the OSTask header at 0xfc0, `$29` = 0x110. The dead ranges (`l_dead`) are the family's and are copied, not derived, for a derived build.
-A derived record (`docs/ucode-derive.md`, "F3DEX 1.x records that run") becomes such a build in `dbuild.c`. G_LOAD_UCODE declines and is not followed (the front-end does not switch builds; the probe is not told of the loaded text).
+A derived record (`docs/ucode-derive.md`, "F3DEX 1.x records that run") becomes such a build in `dbuild.c`. G_LOAD_UCODE is followed to another build of this front-end (below); a latched derived build is found by its load key.
 
 G_QUAD (0.95) is two triangles split along the diagonal that is longer in y; the second is skipped when the first was face-culled (the
 microcode's cull exit clears `$31`), which `F3DEX_TRI_CULL` against `F3DEX_TRI_DEGEN` encodes.
+
+### G_LOAD_UCODE (2026-10-17, branch `f3dex1-load`; the model is the F3DEX2 front-end's, design.md "Build switching")
+
+**Operands** (read from the handler, `pc[loaduc]`, 0xf8c in the F3DEX 1.2x builds, 0xf80 in F3DLX; the handler lives in the part of the text that stays in IMEM; checked against SpaceStation Silicon Valley's
+`af0007ff 8014e320` after `b4000000 8015c770`): `w1` is the text's RDRAM address (the games pass a KSEG0 address: the DMA drops the top bits), `G_RDPHALF_1`'s word (DMEM `half1`, 0x10c) is the data's, `w0 & 0xffff` the
+DMA length register of the data (0x7ff: the whole 2048-byte data segment). The handler stores the text address in OSTask.ucode (0xfd0) and the display list position `k0 + k1 - gp` (the next command) in OSTask.data_ptr (0xff0),
+copies **0xf18 bytes of text to IMEM 0x80** (the text's first 0xf18 bytes; F3DEX2 copies 0xf48) and the data to **DMEM 0** (F3DEX2: 0x180), waits for the DMA and jumps to IMEM 0x80. The text is 4096 bytes and the boot code puts it
+at IMEM 0x80 with the DMA wrapping, so text bytes 0xf80 .. 0xfff lie at IMEM 0 .. 0x7f (the loop head 0x058 is there) and text 0xf18 .. 0xf7f at IMEM 0xf98 .. 0xfff (the DMA routines): the load does not replace them.
+
+**What the front-end does** (`load_ucode` in `f3dex.c`): the arguments are noted for the probe first (`armlet_probe_note_load(text, data, size)`: `size` = `(w0 & 0xfff) + 1` bytes, the image of DMEM 0 here), then
+* the same text (4096 bytes equal, at any address): a re-initialisation;
+* another text: `loaded_build` looks its load key (FNV of the first 0xf48 bytes) up among the builds the probe latched and the registered ones of this front-end (`f3dex1_fam`); none: decline (`load_note`, below);
+* the part of the text that stays in IMEM must be the current one's (text bytes 0xf18 .. 0xfff equal: they are in the 1.2x builds, not in the 0.95 builds or Turok's 1.00, which have no G_LOAD_UCODE anyway); else decline;
+* a switch needs the whole data segment (`w0 & 0xfff` = 0x7ff): the builds' data differ in a few constants (the end of the overlay window at 0x396, the text tag at 0x2c8 ..) which the other build's code reads; a shorter image
+  (a state no game produces) declines. A re-initialisation takes any length;
+* F3DLX vertices loaded with `G_CLIPPING` off (the `junk` bits) and a data image that reaches the vertex buffer: decline;
+* then the staged output goes out (`sync_out`: RDRAM, the FIFO write pointer, DPC_END), the registers of the loop head are set as the handler expects them (`t9 = w0`, `t8 = w1`, `k0` = the address after the window, `k1` = the window end
+  minus the bytes left in it, `gp` = the window end), and the **interpreter runs the handler and the loaded microcode's initialisation up to its first command fetch** (the new build's `head`). That start-up is what a fresh task start does
+  (the flags word of OSTask is clear): it patches the DMA table with the text address, sets the FIFO bounds and the RDP write pointer from OSTask, fetches the first window from data_ptr and enters the loop;
+* **the loop's state is made anew from the interpreter's registers and DMEM**, as at the start of a task (`enter`): the display list pointer, the window, `wp` / `fstart` / `fend` from DMEM, the overlay window holds the text
+  (`OV_TEXT`), the command kinds from the new build's handler tables (`make_kinds`), the record (`f->b`, `f->L`, `f->fx`) is the new build's. What is carried across is whatever the code does not write: DMEM above the data it
+  loaded (OSTask, the matrices and the vertex buffer of a short image, the segment table ..), IMEM outside the text copied, the SP / DPC registers, RDRAM, and in the front-end the count of commands (the poll limit) and the
+  `junk` bits. At most 64 loads in a task.
+
+**Tasks that decline at a load** (S2DEX 1.x, an unregistered text, a tail that differs) are remembered as in the F3DEX2 front-end (`load_known` / `load_note`: text and data pointers of the task, tasks run / tasks that declined,
+more than half: the next ones decline at the start, every 64th runs; mutation 466). Without the rule a task that declines at its load has done its native work for nothing; with it the non-loading tasks of a mostly loading pair are skipped as well (SpaceStation: 1093 instead of 1384 native tasks). The total RSP time with and without the rule was measured on the desktop and the rg35xxsp and is equal within the noise (docs/testing.md, "F3DEX 1.x G_LOAD_UCODE"), so the rule stays; `F3DEX_NO_LOADMEM=1` switches it off (a measurement aid).
+
+**Next step, F3DEX 1.x -> S2DEX 1.x (not implemented).** SpaceStation Silicon Valley (57 of 60 captured tasks) and Pokemon Puzzle League load the S2DEX 1.x text (`af0007ff`, 4096 bytes, key 5c420d85..., data 2048 bytes) in the
+middle of a task and go on in it; they decline at the load (what follows the load in the list was not examined here). What it would need:
+1. **A model of S2DEX 1.x**, which is not in this tree (the S2DEX work is 2.x: `ucode-s2dex2.md`). The data image the games load has the same skeleton as the F3DEX 1.x data (class table at 0xb8, handler table at 0xc0, state
+   words at 0x10c ..), so the loop, the window refill, the DMA of class-0 operands and the end of the task may be shared, but the handlers (object rectangles, backgrounds, the object matrix and texture loads, `G_RDPHALF`
+   forms, its own `G_MOVEWORD` / `G_MOVEMEM` tables) are new: a spec (`docs/ucode-s2dex1.md`: disassemble the dumped texts `L...` of `tools/ucode_dump_run.sh`), closed forms with an oracle (the S2DEX 2.x ones are the pattern,
+   `tools/hle/test_s2dex2.c`), a build record.
+2. **A front-end that holds two kinds of record in one loop**, or a hand-over between the two front-ends: the F3DEX2 front-end does it by `f3_bind` over one `struct f3` (S2DEX 2.x is a record of the same family); here the
+   second kind is another family (`f3dex1_fam` has `struct f3dex1_build`, no extension hook like `ext_cmd`). Simplest: S2DEX 1.x as `f3dex1_build` plus an `ext` command hook (kinds beyond the F3DEX set, run on the shared
+   `struct f3dex_task`), the way the F3DEX2 front-end hosts S2DEX 2.x; `classify` would take `K1_EXT` kinds, and `load_ucode` would already do the switch: the text is looked up by load key, the interpreter runs the loaded text's
+   initialisation to its `head`, `enter` rebuilds the state. Nothing in the switch itself is F3DEX-specific except the tail guard and the `size == 0x800` rule, whose reasons (shared IMEM tail, constants of the data) have to be
+   re-established for S2DEX 1.x (its data differs from F3DEX 1.x's everywhere).
+3. **The state S2DEX 1.x shares with F3DEX 1.x across the load**: what the data image does not overwrite. SSV loads a 0x800-byte image, so DMEM 0 .. 0x7ff is the S2DEX data and only 0x800 .. 0xfbf and OSTask are carried;
+   the matrices and vertices of the F3DEX task are gone (a game that goes back to F3DEX in the same task loads it again with `G_RDPHALF_1` + `G_LOAD_UCODE`; that load, S2DEX 1.x -> F3DEX 1.x, is the same code with the other build current).
+   The verify compare has to be told that the task switched (`hle_task.switched`: the output buffers of the two microcodes overlay each other and the scratch behind one-byte commands differs, as for S2DEX 2.x).
+4. **The probe**: the loaded text is noted already (this branch); deriving an S2DEX 1.x record needs the derivation to know the family (`derive_f1d.py` / `derive.c` handle F3DEX 1.x, F3D, F3DEX2 and S2DEX 2.x).
+5. **Tests**: a `load` synthetic case for the pair (the generator `tools/hle/mksyn_ex1.py` already loads a text from files: `MKSYN1_X_TEXT` / `MKSYN1_X_DATA` is the S2DEX 1.x image), perturbed copies of the SSV / PPL captures with
+   `FUZZ_DONOR`, the 3700-frame gates on SSV and PPL, mutation checks as in `tools/hle/mutcheck_f1load.sh`.
+
 
 ## 4. DMEM: what a later task reads, and the masks
 
