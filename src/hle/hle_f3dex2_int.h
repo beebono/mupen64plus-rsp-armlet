@@ -92,6 +92,7 @@ struct f3 {
 
 /* ---- shared with the dialects ------------------------------------------------------------------------------------------------------------------------------------------------ */
 extern const struct hle_family f3dex2_fam;
+const struct f2_layout *f3dex2_std_layout(void);
 
 /* the dead ranges of the standard builds (the dialects that keep the standard buffers use them too) */
 #define F3DEX2_DEAD_RANGES { 0x3ca, 0x408 }, { 0x920, 0xfb8 }, { 0xfc8, 0xfcc }, \

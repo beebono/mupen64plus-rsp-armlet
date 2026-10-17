@@ -8,6 +8,7 @@
 
 #include "dispatch.h"
 #include "gfx_ucode.h"
+#include "hle/probe.h"
 #include "ustats.h"
 
 static const char *const l_family[] = { "other", "F3D", "F3DEX", "F3DEX2" };
@@ -28,6 +29,14 @@ bool armlet_gfx_try_native(struct armlet_ctx *c)
 
     u = armlet_gfx_identify(c, &is_new);
     n = armlet_gfx_native_find(u->id);
+    if (c->cfg.probe) {
+        /* GfxProbe: a ucode that has no handler is derived and probed (src/hle/probe.c); one that a probe latched runs only for the data image it was probed with */
+        armlet_probe_offer(c, u);
+        if (!n)
+            n = armlet_gfx_native_find(u->id);
+        else if (!armlet_probe_gate(c, u))
+            n = NULL;
+    }
     if (is_new)
         armlet_log(M64MSG_INFO, "gfx ucode %016" PRIx64 " %s: %s [%s]", u->id, l_family[u->family], u->name[0] ? u->name : "(no banner)",
                    !n ? "no native handler, LLE" : armlet_gfx_allowed(&c->cfg, u->id) ? "native" : "not in GfxHleUcodes, LLE");

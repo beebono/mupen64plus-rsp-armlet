@@ -54,7 +54,7 @@ if [ $ref = 0 ]; then
     cmake -S "$W/src" -B "$W/build" -G Ninja -DCMAKE_BUILD_TYPE=Release "${TC[@]}" -DM64P_API_INCLUDE_DIR="$API" "${flags[@]}" >/dev/null
     cmake --build "$W/build"
     cp "$W/build/mupen64plus-rsp-armlet.so" "$OUT/"
-    [ $tools = 1 ] && cp "$W/build/armlet-native-replay" "$W/build/armlet-native-trace" "$OUT/"
+    [ $tools = 1 ] && cp "$W/build/armlet-native-replay" "$W/build/armlet-native-trace" "$W/build/armlet-probe-replay" "$OUT/"
     libs=(mupen64plus-rsp-armlet.so)
 else
     cmake -S "$W/src/ext/parallel-rsp" -B "$W/prsp" -G Ninja -DCMAKE_BUILD_TYPE=Release "${TC[@]}" \

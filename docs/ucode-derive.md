@@ -324,6 +324,22 @@ python3 -I tools/derive_build.py hot DUMPS STATS                        # STATS:
 python3 -I tools/derive_build.py emit DUMPS cand.c KEY...               # the C of the records, for a scratch build
 ```
 
+## The C port (2026-10-17)
+
+`src/hle/derive.c` is `derive_f2.py` / `derive_f1d.py` / `derive_lib.py` / `rsp_isa.py` in C, decision for decision (including the first-maximum and insertion-order choices of the Python dicts; one difference of the Python tool was removed: `derive_f2.derive` left the primary reference restricted to its own overlays (`set_active`), so a derivation depended on the ones before it; it resets them now). The F3DEX2 family and S2DEX 2.x give records and verdicts; F3DEX 1.x and F3D are *classified* (family, aligned fraction, verdict from `derive_variant`'s residual), no record. The runtime needs the references without the microcode texts: `derive_refs.c`, written by `tools/derive_refs_gen.py`. **What is embedded:** per instruction word of each reference image (text + overlay segments) a 16-bit index into a table of one-way 64-bit hashes of the word's *shape* (the word with its immediate, branch offset or load/store offset masked, hashed; the whole word hashed for instructions without such a field) and the 16-bit immediate (a jump keeps its 26-bit target field); the build records (pcs, layout, flags, reject mask, extension table, load key; the knob list for the F3DEX 1.x / F3D references); each reference's jump table (256 handler pcs); the word indices of the reference-only handlers (`G_SPECIAL_1`, `G_TRI4`) and the segment geometry. Shape equality was checked equal to the Python tool's `wkey` equality over every word of every reference at generation time. `tools/derive_refs_gen.py DUMPS src/hle/derive_refs.c --check` fails when a registered build changed and the file is stale (the cache's tool version contains a checksum of the data, so a stale file also retires old cache entries).
+
+Equivalence (`tools/derive_c_check.sh DUMPS`; `derive_c_check.py` runs both tools and diffs, field by field: family, verdict, aligned and residual counts, primary reference, composite, near and reference-only categories, knob trouble, every field of the record, the extension table):
+
+| check | result |
+|---|---|
+| every distinct text of the 64-game dumps (54 non-loaded texts), all references, family auto | 0 differences |
+| every (text, data) pair of the dumps (786) with the production shortcut (the other families are skipped when F3DEX2 explains >= 60 % of the words with a verdict other than NONE) against all families | 0 differences |
+| leave-one-out of every registered build (28: F3DEX2 14, F3DEX 1.x 9, F3D 5) | 0 differences |
+| the mutation check of `derive_build.py mutate` (6 edits of Donkey Kong 64's text and jump table), both implementations | equal, each changes the result |
+| ASan + UBSan + leak check over the 54 texts | clean |
+
+Cost (`derive_c_check --time`, x86_64 desktop, `-O2`): F3DEX2 family only 1.2 to 1.6 ms, all three families 4 to 5 ms per text (the first pass of every alignment shares one position table of the unknown, and the longest-match search starts at the first position inside the range).
+
 ## Registered (2026-10-16)
 
 The four candidates are in `src/hle/hle_f3dex2_dialects.c` (the records were taken from the tool's output; the jump tables of the five dumps and the three `load_key` values were re-read from the dumps by a second script, which agree field for field), after the ucode id

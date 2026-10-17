@@ -30,6 +30,9 @@
 #define CFG_GFX_NATIVE_ROUTINES "GfxNativeRoutines"
 #define CFG_RDP_COALESCE "RdpCoalesce"
 #define CFG_RDP_COALESCE_BYTES "RdpCoalesceBytes"
+#define CFG_GFX_PROBE "GfxProbe"
+#define CFG_GFX_PROBE_NEAR "GfxProbeNear"
+#define CFG_UCODE_CACHE "GfxUcodeCache"
 
 #define SPLIT(x) (((x) >> 16) & 0xffff), (((x) >> 8) & 0xff), ((x) & 0xff)
 
@@ -42,6 +45,7 @@ static ptr_ConfigSetDefaultString ConfigSetDefaultString;
 static ptr_ConfigSetDefaultInt ConfigSetDefaultInt;
 static ptr_ConfigGetParamString ConfigGetParamString;
 static ptr_ConfigGetParamInt ConfigGetParamInt;
+static ptr_ConfigGetUserConfigPath ConfigGetUserConfigPath;
 
 static m64p_handle l_section;
 
@@ -72,6 +76,7 @@ m64p_error armlet_config_startup(m64p_dynlib_handle core)
     ConfigGetParamString = (ptr_ConfigGetParamString)dlsym(core, "ConfigGetParamString");
     ConfigSetDefaultInt = (ptr_ConfigSetDefaultInt)dlsym(core, "ConfigSetDefaultInt");
     ConfigGetParamInt = (ptr_ConfigGetParamInt)dlsym(core, "ConfigGetParamInt");
+    ConfigGetUserConfigPath = (ptr_ConfigGetUserConfigPath)dlsym(core, "ConfigGetUserConfigPath");     /* (optional: the cache path falls back to $XDG_CONFIG_HOME/mupen64plus) */
     if (!ConfigOpenSection || !ConfigDeleteSection || !ConfigSetParameter || !ConfigGetParameter ||
         !ConfigSetDefaultFloat || !ConfigSetDefaultString || !ConfigGetParamString || !ConfigSetDefaultInt || !ConfigGetParamInt)
         return M64ERR_INCOMPATIBLE;
@@ -110,6 +115,12 @@ m64p_error armlet_config_startup(m64p_dynlib_handle core)
         "Coalesce the video plugin's ProcessRdpList calls of graphics ucode (exact, see docs): auto = on when the video plugin is foir, on, off");
     ConfigSetDefaultInt(l_section, CFG_RDP_COALESCE_BYTES, ARMLET_COALESCE_BYTES_DEFAULT,
         "Bytes of pending RDP command list at which a coalesced list is handed to the video plugin");
+    ConfigSetDefaultString(l_section, CFG_GFX_PROBE, "off",
+        "GfxMode=hle only: derive the build record of a graphics ucode that has no table entry and probe it with canned display lists against the JIT: off, on (see docs/design.md, The probe)");
+    ConfigSetDefaultString(l_section, CFG_GFX_PROBE_NEAR, "strict",
+        "Probe of a NEAR derivation: strict (the canned tasks must come out identical) or tolerant (shade coefficients and vertex colours may differ by a couple of levels)");
+    ConfigSetDefaultString(l_section, CFG_UCODE_CACHE, "",
+        "File of what the probe learned (armlet-ucode.cache in the core's config directory when empty; off = none)");
     return M64ERR_SUCCESS;
 }
 
@@ -137,12 +148,31 @@ static void parse_ucodes(struct armlet_config *cfg, const char *s)
     }
 }
 
+/* the core's user config directory (--configdir), or $XDG_CONFIG_HOME/mupen64plus, or $HOME/.config/mupen64plus; "" when none of them is known */
+const char *armlet_config_user_path(void)
+{
+    static char path[512];
+    const char *p = ConfigGetUserConfigPath ? ConfigGetUserConfigPath() : NULL, *x, *h;
+    if (p && *p) {
+        snprintf(path, sizeof(path), "%s", p);
+    } else if ((x = getenv("XDG_CONFIG_HOME")) && *x) {
+        snprintf(path, sizeof(path), "%s/mupen64plus/", x);
+    } else if ((h = getenv("HOME")) && *h) {
+        snprintf(path, sizeof(path), "%s/.config/mupen64plus/", h);
+    } else
+        path[0] = 0;
+    return path;
+}
+
 void armlet_config_load(struct armlet_config *cfg)
 {
     const char *mode = l_section ? ConfigGetParamString(l_section, CFG_GFX_MODE) : "lle";
     const char *ucodes = l_section ? ConfigGetParamString(l_section, CFG_GFX_UCODES) : "";
     const char *native = l_section ? ConfigGetParamString(l_section, CFG_GFX_NATIVE) : "off";
     const char *nroutines = l_section ? ConfigGetParamString(l_section, CFG_GFX_NATIVE_ROUTINES) : "";
+    const char *probe = l_section ? ConfigGetParamString(l_section, CFG_GFX_PROBE) : "off";
+    const char *pnear = l_section ? ConfigGetParamString(l_section, CFG_GFX_PROBE_NEAR) : "strict";
+    const char *ucache = l_section ? ConfigGetParamString(l_section, CFG_UCODE_CACHE) : "";
     const char *coalesce = l_section ? ConfigGetParamString(l_section, CFG_RDP_COALESCE) : "auto";
     int bytes = l_section ? ConfigGetParamInt(l_section, CFG_RDP_COALESCE_BYTES) : ARMLET_COALESCE_BYTES_DEFAULT;
     const char *env;
@@ -159,6 +189,12 @@ void armlet_config_load(struct armlet_config *cfg)
         native = env;
     if ((env = getenv("ARMLET_NATIVE_ROUTINES")))
         nroutines = env;
+    if ((env = getenv("ARMLET_PROBE")) && *env)
+        probe = env;
+    if ((env = getenv("ARMLET_PROBE_NEAR")) && *env)
+        pnear = env;
+    if ((env = getenv("ARMLET_UCODE_CACHE")))
+        ucache = env;
 
     memset(cfg, 0, sizeof(*cfg));
     if (mode && !strcasecmp(mode, "hle"))
@@ -176,6 +212,27 @@ void armlet_config_load(struct armlet_config *cfg)
         armlet_log(M64MSG_WARNING, "unknown GfxNative '%s' (off, on or verify); using off", native);
     if (nroutines)
         snprintf(cfg->native_routines, sizeof(cfg->native_routines), "%s", nroutines);
+
+    if (probe && (!strcasecmp(probe, "on") || !strcmp(probe, "1") || !strcasecmp(probe, "true")))
+        cfg->probe = 1;
+    else if (probe && strcasecmp(probe, "off") && strcmp(probe, "0") && strcasecmp(probe, "false") && *probe)
+        armlet_log(M64MSG_WARNING, "unknown GfxProbe '%s' (off or on); using off", probe);
+    cfg->probe_tol = pnear && !strcasecmp(pnear, "tolerant");
+    if (pnear && strcasecmp(pnear, "strict") && strcasecmp(pnear, "tolerant") && *pnear)
+        armlet_log(M64MSG_WARNING, "unknown GfxProbeNear '%s' (strict or tolerant); using strict", pnear);
+    cfg->probe_latch = (env = getenv("ARMLET_PROBE_LATCH")) && *env && *env != '0';
+    cfg->probe_force = (env = getenv("ARMLET_PROBE_FORCE")) && *env && *env != '0';
+    cfg->probe_none_x = (env = getenv("ARMLET_PROBE_NONE_X")) && *env ? (unsigned)atoi(env) : 0;
+    cfg->probe_seeds = (env = getenv("ARMLET_PROBE_SEEDS")) && *env ? (unsigned)atoi(env) : 0;
+    if (cfg->probe_seeds > 40)
+        cfg->probe_seeds = 40;
+    if (ucache && *ucache)
+        snprintf(cfg->ucode_cache, sizeof(cfg->ucode_cache), "%s", ucache);
+    else if (cfg->probe) {
+        const char *d = armlet_config_user_path();
+        if (*d)
+            snprintf(cfg->ucode_cache, sizeof(cfg->ucode_cache), "%s%sarmlet-ucode.cache", d, d[strlen(d) - 1] == '/' ? "" : "/");
+    }
 
     cfg->rdp_coalesce_mode = ARMLET_COALESCE_AUTO;
     if (coalesce && (!strcasecmp(coalesce, "off") || !strcmp(coalesce, "0") || !strcasecmp(coalesce, "false")))

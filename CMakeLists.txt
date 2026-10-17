@@ -166,6 +166,27 @@ if(ARMLET_NATIVE_TOOLS AND ARMLET_NATIVE)
         "$<$<COMPILE_LANGUAGE:CXX>:-Wall;-Wno-missing-field-initializers;-Wno-empty-body;-ffast-math;-Wno-unused-parameter;-Wno-parentheses>" "$<$<COMPILE_LANGUAGE:C>:-Wall>")
     target_link_libraries(armlet-native-replay PRIVATE lightning-m64p dl m)
 
+    # the probe on dumps of ucode texts, without a game (tools/hle/probe_replay.c): derivation, canned tasks, JIT and front-end in a private world
+    add_executable(armlet-probe-replay tools/hle/probe_replay.c src/ustats.c src/gfx_ucode.c src/log.c src/rdp_defer.c ${armlet_hle_src} ${armlet_hle_cpp} ${armlet_native_c} ${armlet_native_cpp} ${prsp_cpp} ${prsp_extra_cpp})
+    set_target_properties(armlet-probe-replay PROPERTIES LINKER_LANGUAGE CXX)
+    target_include_directories(armlet-probe-replay PRIVATE
+        "${M64P_API_INCLUDE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/src"
+        "$<$<COMPILE_LANGUAGE:C>:${ARMLET_HLE_DIR}/src>" "$<$<COMPILE_LANGUAGE:C>:${ARMLET_PRSP_DIR}>"
+        "$<$<COMPILE_LANGUAGE:CXX>:${ARMLET_PRSP_DIR}>" "$<$<COMPILE_LANGUAGE:CXX>:${ARMLET_PRSP_DIR}/arch/simd/rsp>")
+    target_compile_definitions(armlet-probe-replay PRIVATE ARMLET_NATIVE "$<$<COMPILE_LANGUAGE:CXX>:PRSP_NATIVE;PARALLEL_INTEGRATION;M64P_PLUGIN_API;PARALLEL_RSP_LIGHTNING>")
+    if(ARMLET_HLE_MUTATE)
+        target_compile_definitions(armlet-probe-replay PRIVATE ARMLET_HLE_MUTATE=${ARMLET_HLE_MUTATE})
+    endif()
+    if(ARMLET_HLE_FX_MUTATE)
+        target_compile_definitions(armlet-probe-replay PRIVATE HLE_FX_MUTATE=${ARMLET_HLE_FX_MUTATE})
+    endif()
+    if(ARMLET_F3D_MUTATE)
+        target_compile_definitions(armlet-probe-replay PRIVATE F3D_FX_MUTATE=${ARMLET_F3D_MUTATE})
+    endif()
+    target_compile_options(armlet-probe-replay PRIVATE
+        "$<$<COMPILE_LANGUAGE:CXX>:-Wall;-Wno-missing-field-initializers;-Wno-empty-body;-ffast-math;-Wno-unused-parameter;-Wno-parentheses>" "$<$<COMPILE_LANGUAGE:C>:-Wall>")
+    target_link_libraries(armlet-probe-replay PRIVATE lightning-m64p dl m)
+
     # instruction-level tracer of a snapshot (tools/native/trace.cpp), C++ only
     add_executable(armlet-native-trace tools/native/trace.cpp ${prsp_cpp} ${prsp_extra_cpp})
     set_target_properties(armlet-native-trace PROPERTIES LINKER_LANGUAGE CXX)
