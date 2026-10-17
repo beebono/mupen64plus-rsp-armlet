@@ -339,6 +339,23 @@ static int do_enddl(struct f3 *f, int *handover)
     return HLE_OK;
 }
 
+/* for the commands of the dialects (hle_rej.c): the end of the display list (the outermost one asks the loop to hand the task back, f->ho_req), and a branch (no stack) to the address a command computed */
+int f3_enddl(struct f3 *f)
+{
+    int h = 0, rc = do_enddl(f, &h);
+    f->ho_req = h;
+    return rc;
+}
+
+int f3_branch(struct f3 *f, uint32_t addr)
+{
+    f->k0 = seg_addr(f->t, addr);
+    if (MUT(240, f->k0 & 7, 0))
+        f->bad = "unaligned display list address";
+    refill(f);
+    return HLE_OK;
+}
+
 /* the constants of the triangle setup that the microcode reads from DMEM: once per triangle command. The culling table is indexed by bits 8 .. 15 of the geometry mode (cull front 0x200, cull back 0x400:
  * 0, 2, 4, 6); any other bit set indexes past the 10 bytes of the table, into the clipper's scratch, whose contents the front-end does not keep (a mode no game sets). */
 static int tri_consts(struct f3 *f)
@@ -777,6 +794,11 @@ static int run_loop(struct f3 *f, int *handover)
         default: {
             if (kd >= K_EXT && b->ext_cmd) {
                 rc = b->ext_cmd(f, kd);
+                if (f->ho_req) {                        /* the command ended the outermost display list */
+                    f->ho_req = 0;
+                    *handover = 1;
+                    return rc;
+                }
                 break;
             }
             static char why[8][48];

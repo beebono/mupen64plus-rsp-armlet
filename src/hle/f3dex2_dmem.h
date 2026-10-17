@@ -41,6 +41,8 @@ struct f2_layout {
     uint16_t clip_planes, clip_masks;
     uint16_t out_bytes, out_toggle;
     uint8_t pipe_sync;              /* every flush check of the build is preceded by a G_RDPPIPESYNC written at the output pointer (S2DEX 2.05 [Safe]: the entry 0x640 / 0x644 of its flush routine): 8 bytes, one of them written */
+    uint16_t ring_start;            /* with xbus: where the ring begins (0x9f8 in the Rej texts, 0xba8 in the F3DEX2.NoN xbus text Excitebike 64 loads); it ends at 0xf10, the commands may run over by 0xb0 */
+    uint8_t xbus;                   /* the RDP list goes through a ring in DMEM that the RDP reads (DPC_STATUS.XBUS; the Rej builds' `xbus` texts): no output buffers, every command that writes sets DPC_END (hle_rej.c) */
     uint8_t no_lit;                 /* the build's lighting code is another (F3DEXBG's 48-byte light slots): lit vertex commands do not use the standard lighting */
     int (*lit_vtx)(struct f3 *f);   /* ... they are run by this instead (the whole G_VTX), or decline when NULL */
 };
