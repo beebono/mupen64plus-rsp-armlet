@@ -306,7 +306,7 @@ static const uint16_t l_ext_s2k[][2] = {
 static const struct f3dex2_build l_b_s2_kirby = {
     .head = 0x1a4, .copy = 0x140, .sync = 0x144, .segcopy = 0x150, .ef = 0x170, .ed = MUT(248, 0xffff, 0xfff), .tri1 = 0, .tri2 = 0, .vtx = 0,
     .mtx = 0, .geom = 0, .enddl = 0x07c, .half2 = MUT(248, 0xffff, 0xfff), .modvtx = 0, .culldl = 0, .branchz = 0, .reject_mask = 0, .tri4 = 0, .lay = &l_lay_s2, .pcs = &l_pcs_s2, .ext = l_ext_s2k, .ext_cmd = s2_ext_cmd, .load_key = 0x9748556461d85ab3ull };
-HLE_UCODE(l_s2_kirby) = { .id = 0x569252e49c5c6d3bull, .name = "S2DEX fifo 2.06 (Kirby 64, loaded by G_LOAD_UCODE)", .fam = &f3dex2_fam, .fam_data = &l_b_s2_kirby, S2DEAD };
+HLE_UCODE(l_s2_kirby) = { .id = 0xc9655420d2f5f8cfull, .name = "S2DEX fifo 2.06 (Kirby 64, loaded by G_LOAD_UCODE)", .fam = &f3dex2_fam, .fam_data = &l_b_s2_kirby, S2DEAD };
 
 /* Resident Evil 2's S2DEX (fifo 2.06 in its banner; 75 % of its graphics tasks start with it) is the same text as Kirby 64's, the first 0xf48 bytes word for word (the key is the same), and runs as a task of its own: the same build. */
 HLE_UCODE(l_s2_re2) = { .id = 0x5f33af89e713878bull, .name = "S2DEX fifo 2.06 (Resident Evil 2)", .fam = &f3dex2_fam, .fam_data = &l_b_s2_kirby, S2DEAD };
@@ -327,6 +327,6 @@ static const struct f3dex2_build l_b_s2_oot = {
 /* (never a task's own microcode: the id is the key of the loaded text) */
 HLE_UCODE(l_s2_oot) = { .id = 0xaf535d1683a57fcbull, .name = "S2DEX fifo 2.05 [Safe] (Ocarina of Time, loaded by G_LOAD_UCODE)", .fam = &f3dex2_fam, .fam_data = &l_b_s2_oot, S2DEAD };
 
-HLE_UCODE(l_s2_208) = { .id = 0xb228360be43c0447ull, .name = "S2DEX fifo 2.08 (Worms Armageddon)", .fam = &f3dex2_fam, .fam_data = &l_b_s2_208, S2DEAD };
+HLE_UCODE(l_s2_208) = { .id = 0xfa171b4489d45ef2ull, .name = "S2DEX fifo 2.08 (Worms Armageddon)", .fam = &f3dex2_fam, .fam_data = &l_b_s2_208, S2DEAD };
 
 #endif

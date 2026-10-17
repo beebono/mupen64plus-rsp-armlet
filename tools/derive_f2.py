@@ -36,6 +36,7 @@ class Rec:
         self.lay = {}       # LAY_FIELDS
         self.gen204 = 0
         self.zex = 0
+        self.bz_z = 0       # zex build whose G_BRANCH_Z still reads the screen z (lw 28), not the clip w (lh 6)
         self.reject_mask = 0
         self.load_key = None
         self.ext = []       # [(pc, kind)]
@@ -53,6 +54,7 @@ class Rec:
             out["lay." + k] = self.lay.get(k, 0)
         out["gen204"] = self.gen204
         out["zex"] = self.zex
+        out["bz_z"] = self.bz_z
         out["reject_mask"] = self.reject_mask
         out["load_key"] = self.load_key
         out["ext"] = tuple(sorted(self.ext))
@@ -97,6 +99,7 @@ def load_f2_records(T, C):
                 r.f2pcs[k] = v
             r.gen204 = int(b.get("gen204", 0))
             r.zex = int(b.get("zex", 0))
+            r.bz_z = int(b.get("bz_z", 0))
             r.reject_mask = int(b.get("reject_mask", 0))
             r.load_key = b.get("load_key")
             ext = b.get("ext")
@@ -772,15 +775,22 @@ def derive(U, refs):
 
 
 def apply_rules(res, U, prim):
-    """words that a rule of the tool explains: the branchz source (clip w for F3DZEX without gen204, else the screen z)"""
+    """words that a rule of the tool explains: the branchz source (clip w, `lh 6`, for F3DZEX without gen204, else the screen z, `lw 28`). The source is read from the text itself: a build with the
+    F3DZEX triangle code but the F3DEX branch (F3DEX 2.06: Blues Brothers 2000) gets bz_z = 1 (the flags alone would have said clip w)"""
     rec = res.rec
     bz = res.sets.get("branchz", set())
-    want = ("lh", 6) if rec.zex and not rec.gen204 else ("lw", 28)
+    src = None
+    for j in sorted(bz):
+        d = isa.decode(U.img.w[j])
+        if d["cls"] == isa.C_MEM and (d["name"], d["imm"]) in (("lh", 6), ("lw", 28)):
+            src = (d["name"], d["imm"])
+    rec.bz_z = 1 if rec.zex and not rec.gen204 and src == ("lw", 28) else 0
+    want = ("lh", 6) if rec.zex and not rec.gen204 and not rec.bz_z else ("lw", 28)
     for j in sorted(res.x):
         if j in bz:
             d = isa.decode(U.img.w[j])
             if d["cls"] == isa.C_MEM and (d["name"], d["imm"]) == want:
-                res.waived[j] = "branchz source %s %d (zex=%d gen204=%d)" % (want[0], want[1], rec.zex, rec.gen204)
+                res.waived[j] = "branchz source %s %d (zex=%d gen204=%d bz_z=%d)" % (want[0], want[1], rec.zex, rec.gen204, rec.bz_z)
     for j in res.waived:
         res.x.pop(j, None)
 

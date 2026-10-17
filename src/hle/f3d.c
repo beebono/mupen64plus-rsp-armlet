@@ -778,6 +778,6 @@ static const struct f3d_build l_mm = { .lay = &f3d_layout_a, .cmdbuf = 0x6a0, .g
 
 /* the lists go through a ring in DMEM (no ring in RDRAM) */
 F3D_UCODE_R(l_f3d_mm, 0x4212d63f6e483348ull, "Fast3D 2.0H (Mischief Makers, XBUS)", l_mm, l_dead_tt, 0);
-F3D_UCODE(l_f3d_tt, 0x88fa3c0aa5315997ull, "Fast3D 2.0H (Tetrisphere)", l_tt, l_dead_tt);
+F3D_UCODE(l_f3d_tt, 0x0b574ecb06d75978ull, "Fast3D 2.0H (Tetrisphere)", l_tt, l_dead_tt);
 
 #endif

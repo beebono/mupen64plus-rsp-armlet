@@ -15,7 +15,7 @@ scope() { systemd-run --user --scope -q -p MemoryMax=2G -p MemorySwapMax=0 timeo
 
 sets() {    # prints "name mode file" lines
     local n=${N:-300} i
-    for f in "$CAP"/*72a1416f*.snap "$CAP"/*410cfbcf*.snap; do [ -f "$f" ] && echo "rare-cap rec $f"; done
+    for f in "$CAP"/*909f82e8*.snap "$CAP"/*c2aca403*.snap; do [ -f "$f" ] && echo "rare-cap rec $f"; done
     for f in "$CAPI"/*.snap; do [ -f "$f" ] && echo "indy-cap rec $f"; done
     for i in $(seq 0 $((n - 1))); do
         [ -f "$SD/syn.dkr.$i.snap" ] && echo "syn-dkr ora $SD/syn.dkr.$i.snap"

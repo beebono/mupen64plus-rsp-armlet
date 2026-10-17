@@ -964,7 +964,7 @@ static const struct hle_family l_fam = { .name = "rare", .run = rare_run };
 static const struct hle_dead_range l_dead_dkr[] = { { 0x0b4, 0x0b6 }, { 0x106, 0x108 }, { 0x158, 0x15a }, { 0x6d0, 0xe10 } };
 static const struct hle_dead_range l_dead_jfg[] = { { 0x0b4, 0x0b6 }, { 0x106, 0x108 }, { 0x158, 0x15a }, { 0x730, 0xe70 } };
 
-HLE_UCODE(l_rare_dkr) = { .id = 0x72a1416f6d8445c3ull, .name = "Diddy Kong Racing (Rare)", .fam = &l_fam, .flags = HLE_F_XBUS_OK, .fam_data = &l_dkr, .dead = l_dead_dkr, .n_dead = 4 };
-HLE_UCODE(l_rare_jfg) = { .id = 0x410cfbcf87378a9cull, .name = "Jet Force Gemini (Rare)", .fam = &l_fam, .flags = HLE_F_XBUS_OK | HLE_F_REGS_LIVE, .live_sregs = 1u << 4, .fam_data = &l_jfg, .dead = l_dead_jfg, .n_dead = 4 };
+HLE_UCODE(l_rare_dkr) = { .id = 0x909f82e8f8da6456ull, .name = "Diddy Kong Racing (Rare)", .fam = &l_fam, .flags = HLE_F_XBUS_OK, .fam_data = &l_dkr, .dead = l_dead_dkr, .n_dead = 4 };
+HLE_UCODE(l_rare_jfg) = { .id = 0xc2aca403f282af1bull, .name = "Jet Force Gemini (Rare)", .fam = &l_fam, .flags = HLE_F_XBUS_OK | HLE_F_REGS_LIVE, .live_sregs = 1u << 4, .fam_data = &l_jfg, .dead = l_dead_jfg, .n_dead = 4 };
 
 #endif

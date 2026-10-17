@@ -53,7 +53,7 @@ def load(root):
 
 
 def merge_by_text(us):
-    """ids that differ only by ucode_size (same 4 KiB text) are one ucode"""
+    """ids that differ only by ucode_size (same 4 KiB text) are one ucode (counters of before 2026-10-16; the id is the 4 KiB hash now)"""
     m = collections.OrderedDict()
     for u in us.values():
         k = u["text"]

@@ -21,21 +21,18 @@ const struct f3dex_build *f3dex_build_of_ucode(uint64_t id)
 {
     switch (id) {
     case 0x208a567e9aead5eaull:     /* F3DEX 1.21 */
-    case 0x047252e810e35d56ull:     /* F3DEX 1.23 */
+    case 0x047252e810e35d56ull:     /* F3DEX 1.23 (and Pokemon Puzzle League's binary) */
     case 0x34dad67335a54cdaull:     /* F3DEX 0.95 */
         return &f3dex_build_dex;
     case 0xfd5a31ccf6d40b62ull:     /* F3DEX.NoN 1.22 */
         return &f3dex_build_non;
     case 0x7502cfb7098eeffbull:     /* F3DLX 1.23 */
     case 0x5f33f7c2be924de0ull:     /* F3DLX 0.95 */
-    case 0x19bd8c825b9b3f72ull:     /* F3DLX 1.21 */
+    case 0x76c763bc18ad3ab3ull:     /* F3DLX 1.21 */
         return &f3dex_build_dlx;
     case 0x0a7cc6c93363c663ull:     /* F3DLX.NoN 1.21 */
     case 0xcc09096cb6a48e7bull:     /* F3DLX.NoN 1.23 */
         return &f3dex_build_dlx_non;
-    case 0x1de5ed1ca5f278abull:     /* F3DEX 1.23 (other binaries) */
-    case 0x9ac3b68bf66e164full:
-        return &f3dex_build_dex;
     case 0x5063f108118bf62aull:     /* F3DEX.NoN 1.00 */
         return &f3dex_build_non;
     }
