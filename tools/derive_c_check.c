@@ -114,8 +114,8 @@ int main(int argc, char **argv)
                 free(t); free(d); free(e);
                 continue;
             }
-            printf("%.*s family=%s verdict=%s aligned=%u/%u nx=%u x=%u near=%u,%u,%u xr=%u,%u,%u primary=%s contrib=", (int)(strlen(stem) - 5), stem, derive_family_name(res.family),
-                   derive_verdict_name(res.verdict), res.aligned_num, res.aligned_den, res.nx, res.n_x, res.n_near[0], res.n_near[1], res.n_near[2], res.n_xr[0], res.n_xr[1], res.n_xr[2],
+            printf("%.*s family=%s verdict=%s aligned=%u/%u nx=%u x=%u near=%u,%u,%u,%u xr=%u,%u,%u primary=%s contrib=", (int)(strlen(stem) - 5), stem, derive_family_name(res.family),
+                   derive_verdict_name(res.verdict), res.aligned_num, res.aligned_den, res.nx, res.n_x, res.n_near[0], res.n_near[1], res.n_near[2], res.n_near[3], res.n_xr[0], res.n_xr[1], res.n_xr[2],
                    derive_refs[res.primary].name);
             for (k = 0; k < (unsigned)res.n_contrib; k++)
                 printf("%s%s:%u", k ? "," : "", derive_refs[res.contrib[k].ref].name, res.contrib[k].n);
@@ -131,7 +131,8 @@ int main(int argc, char **argv)
                 printf(" ext=");
                 for (k = 0; k < res.rec.n_ext; k++)
                     printf("%s%x:%x", k ? "," : "", (unsigned)ex[k][0] & 0xffffffffu, (unsigned)ex[k][1]);
-            }
+            } else if (res.family == DERIVE_F3DEX1)
+                derive_rec_fields(&res.rec, field, NULL);
             printf("\n");
             if (timing) {
                 fprintf(stderr, "%s: %.3f ms\n", stem, res.work_ns / 1e6);

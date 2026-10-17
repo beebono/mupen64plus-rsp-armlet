@@ -21,7 +21,7 @@ import derive_f2 as F2  # noqa: E402
 import derive_lib as L  # noqa: E402
 import rsp_isa as isa  # noqa: E402
 
-GEN_VERSION = 1
+GEN_VERSION = 2
 M64 = 0xffffffffffffffff
 
 
@@ -38,7 +38,7 @@ INIT_EXCLUDED = ("jr", "jalr", "break", "mtc0", "mfc0", "j", "jal")
 
 
 def shape(w):
-    """-> (hash64, cls, rs0, initable, operand). The same function, in C, is derive.c's dw_make."""
+    """-> (hash64, cls, rs0, initable, operand). The same function, in C, is derive.c's wshape_of."""
     d = isa.decode(w)
     c = d["cls"]
     rs0 = 0
@@ -104,7 +104,9 @@ def generate(dumps):
     for fi, it in items:
         for w in it.img.w:
             h, cls, rs0, init, operand = shape(w)
-            sh[h] = cls | rs0 << 3 | init << 4
+            d = isa.decode(w)
+            rs29 = int(d["cls"] in (isa.C_MEM, isa.C_VMEM) and d["rs"] == 29)
+            sh[h] = cls | rs0 << 3 | init << 4 | rs29 << 5
     shapes = sorted(sh)
     shape_info = [sh[h] for h in shapes]
     sidx = {h: i for i, h in enumerate(shapes)}
@@ -177,6 +179,13 @@ def generate(dumps):
             fs.append(".lay = { %s }" % ", ".join(str(r.lay.get(k, 0)) for k in F2.LAY_FIELDS))
             if r.ext:
                 fs.append(".n_ext = %d, .ext = { %s }" % (len(r.ext), ", ".join("{ %d, %d }" % (p, k) for p, k in r.ext)))
+            P(",\n      ".join(fs) + " },")
+        elif fi == 1:
+            import derive_f1d as D1
+            fs = ["    { .name = \"%s\", .fam = 1" % r.name]
+            fs.append(".reject_mask = 0x%x, .load_key = 0x%016xull, .non = %d, .dlx = %d, .culldl_off = %d" % (r.num["reject_mask"][0], r.load_key or 0, r.flags["non"], r.flags["dlx"], r.flags["culldl_off"]))
+            fs.append(".lay = { %s }" % ", ".join("0x%x" % r.num["lay." + k][0] for k in D1.F1_LAY_FIELDS))
+            fs.append(".f1pc = { %s }" % ", ".join("0x%x" % r.num["pc." + k][0] for k in D1.F1_PC_FIELDS))
             P(",\n      ".join(fs) + " },")
         else:
             kn = r.knobs()

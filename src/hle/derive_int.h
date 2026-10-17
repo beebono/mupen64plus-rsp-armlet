@@ -17,6 +17,9 @@
 #define DERIVE_MAXSEG 4
 #define DERIVE_MAXEXT 16
 #define DERIVE_MAXKNOB 24
+#define DERIVE_NF1PC 24         /* F1_PC_FIELDS of tools/derive_f1d.py (F3DEX_PC_FIELDS of f3dex_bld.h) */
+#define DERIVE_NF1LAY 36        /* F1_LAY_FIELDS (F3DEX_LAY_FIELDS of f3dex_dmem.h), in lay[] of an F3DEX 1.x record */
+#define DERIVE_NF1KNOB 29       /* the first of them that are addresses the code names (F1_LAY_NKNOB) */
 
 /* indices into pc[] and f2pcs[] and lay[] (the order of the Python tool's lists) */
 enum { PC_HEAD, PC_COPY, PC_SYNC, PC_SEGCOPY, PC_EF, PC_ED, PC_TRI1, PC_TRI2, PC_VTX, PC_MTX, PC_GEOM, PC_ENDDL, PC_HALF2, PC_MODVTX, PC_CULLDL, PC_BRANCHZ, PC_MVP, PC_TRI4, PC_LDTX_SPR, PC_LDTX_RECT };
@@ -31,7 +34,8 @@ struct derive_knob {            /* a variant family's knob: value and kind (0 ad
     uint8_t kind;
 };
 
-/* a normalised build record: the F3DEX2 / S2DEX family's (fam 0), or a variant family's (fam 1 F3DEX 1.x, 2 F3D) knobs */
+/* a normalised build record: the F3DEX2 / S2DEX family's (fam 0: pc, f2pcs, lay, flags), the F3DEX 1.x family's (fam 1: lay[0 .. DERIVE_NF1LAY) = F1_LAY_FIELDS, f1pc, non / dlx / culldl_off,
+ * reject_mask, load_key), or the F3D family's knobs (fam 2) */
 struct derive_rec {
     const char *name;
     uint8_t fam;
@@ -48,6 +52,8 @@ struct derive_rec {
         uint8_t kind;
     } ext[DERIVE_MAXEXT];
     struct derive_knob knobs[DERIVE_MAXKNOB];
+    int32_t f1pc[DERIVE_NF1PC];
+    uint8_t non, dlx, culldl_off;
 };
 
 struct derive_seg {             /* a segment of an image: the text (off 0) or an overlay behind it */

@@ -89,6 +89,10 @@ def derive_any(reg, U_uc, family="auto", exclude_recs=()):
             U = F2.Item(U_uc, None, "unknown")
             res = F2.derive(U, refs)
             nx = len(res.x) + len(res.near) + len(getattr(res, "xr_res", {}))
+        elif fam == "f3dex1":
+            U = D1.ItemV(U_uc, None, "unknown")
+            res = D1.derive_f1(U, refs)
+            nx = len(res.x) + len(res.near) + len(res.xr_res)
         else:
             U = D1.ItemV(U_uc, None, "unknown")
             res = D1.derive_variant(U, refs)
@@ -264,8 +268,10 @@ EXPECTED = {
     ("l_b_bg", "lay.mw_max"): "the size of the G_MOVEWORD table (16 in BG): a bound in a compare no other build's code shows",
     ("l_b_bg", "lay.no_lit"): "BG's lighting is another kernel (f3dexbg_fx): the tool reports the lighting overlay as different (X) but cannot name the kernel",
     ("l_b_bg", "lay.lit_vtx"): "the same",
-    ("l_dex095", "flag.non"): "0.95 is another text (71 words unexplained; verdict NONE)",
-    ("l_dex095", "flag.v095"): "no reference with v095 other than itself: the attribute cannot be learned (the tool says so)",
+    ("l_b_095", "pc.persp"): "F3DEX 0.95's G_PERSPNORM handler is in no other reference (F3DLX 0.95, the only other build with it, has no dump): no handler to map it from; the front-end of the derived build declines the command. Verdict NONE (32 unexplained words)",
+    ("l_b_095", "pc.quad"): "the same for G_QUAD",
+    ("l_b_095", "pc.culldl"): "the same for the 0.95 form of G_CULLDL (byte offsets, the last vertex not tested): its code differs from the 1.2x handler",
+    ("l_b_095", "flag.culldl_off"): "follows from the handler: without a G_CULLDL pc the attribute is the primary reference's (and the command declines)",
     ("l_mm", "flag.xbus"): "the XBUS transport is a property of the task transport, not of the text: Mischief Makers' text differs from Tetrisphere's in output-ring code only",
     ("l_sm64", "culldl_mask"): "reject_mask and culldl_mask have the same value in the references; the aligned code shows 0x7070 and 0xffff, which one is which needs the handler context (the tool notes it)",
 }
@@ -295,6 +301,9 @@ def validate(reg, args):
             refs = reg.refs(fam, {Uit.rec.name})
             if fam == "f3dex2":
                 res = F2.derive(F2.Item(Uit.uc, None, "unknown"), refs)
+                near = collections.Counter(res.near.values())
+            elif fam == "f3dex1":
+                res = D1.derive_f1(D1.ItemV(Uit.uc, None, "unknown"), refs)
                 near = collections.Counter(res.near.values())
             else:
                 res = D1.derive_variant(D1.ItemV(Uit.uc, None, "unknown"), refs)
@@ -448,7 +457,39 @@ def mutations(reg, args):
     good = r.rec.pc["vtx"] == 0x4f8
     ok_all &= good
     print("  %-78s -> derived vtx %s %s" % ("jump table entry of G_VTX 0x4f0 -> 0x4f8", hx(r.rec.pc["vtx"]), "caught" if good else "NOT CAUGHT"))
+    for desc, m, check in f1_mutants(reg):
+        r = D1.derive_f1(D1.ItemV(m, None, "unknown"), reg.refs("f3dex1", {"l_b_121"}))
+        good = check(r)
+        ok_all &= good
+        print("  %-78s -> %-5s unexplained %3d %s" % (desc, r.verdict, len(r.x), "caught" if good else "NOT CAUGHT"))
     return ok_all
+
+
+def f1_mutants(reg):
+    """deliberate errors in F3DEX 1.21's text and data (derived against the other F3DEX 1.x builds): -> [(description, Ucode, check of the result)]"""
+    import copy
+    base = next(it for it in reg.fam["f3dex1"] if it.rec.name == "l_b_121")
+    w = base.uc.w
+    idx = base.img.idx_text
+    out = []
+    i = idx(0x2c0)          # ori v0, zero, 0x7070 (G_CULLDL)
+    out.append(("F3DEX 1.21: the G_CULLDL reject mask 0x7070 -> 0x7050", mutate_text(base.uc, {i: (w[i] & 0xffff0000) | 0x7050}),
+                lambda r: r.verdict == "NONE" or (r.rec.num["reject_mask"][0] == 0x7050 and r.verdict != "EXACT")))
+    k = next(k for k in range(len(w)) if isa.decode(w[k]).get("name") == "andi" and isa.decode(w[k])["imm"] == 0x707)
+    out.append(("F3DEX 1.21: the near-plane flag mask 0x707 -> 0x703 (NoN without its code)", mutate_text(base.uc, {k: (w[k] & 0xffff0000) | 0x703}),
+                lambda r: r.rec.flags["non"] == 1 and r.verdict == "NONE"))
+    k = next(k for k in range(len(w)) if isa.decode(w[k]).get("name") == "lw" and isa.decode(w[k])["rs"] == 29 and isa.decode(w[k])["imm"] == 4)
+    out.append(("F3DEX 1.21: one load of the geometry word 4(sp) -> 8(sp)", mutate_text(base.uc, {k: (w[k] & 0xffff0000) | 8}), lambda r: r.verdict == "NONE"))
+    i = idx(0x0e4)          # jr s5 (the window refill's return)
+    out.append(("F3DEX 1.21: the return of the window refill jr s5 -> jr s4", mutate_text(base.uc, {i: (w[i] & ~(31 << 21)) | (20 << 21)}), lambda r: r.verdict == "NONE"))
+    d = bytearray(base.uc.data)
+    off = 0x76 + 2 * 0x3f   # the class-2 table cell of G_TRI1
+    d[off:off + 2] = struct.pack(">H", 0x1000 | 0x1c4)
+    m = copy.copy(base.uc)
+    m.data = bytes(d)
+    m.stem = "mutant-data"
+    out.append(("F3DEX 1.21: the handler table cell of G_TRI1 0x1bc -> 0x1c4", m, lambda r: r.rec.num["pc.tri1"][0] != 0x1bc))
+    return out
 
 
 # ---------------------------------------------------------------------------------------------------------------------------------------------------------------

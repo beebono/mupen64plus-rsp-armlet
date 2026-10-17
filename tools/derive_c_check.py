@@ -35,17 +35,17 @@ def fmt(stem, fam, res, U):
     near = collections.Counter(getattr(res, "near", {}).values())
     xr = collections.Counter(getattr(res, "xr_res", {}).values())
     nxr = sum(xr.values())
-    if fam == "f3dex2":
+    if fam in ("f3dex2", "f3dex1"):
         nx = len(res.x) + len(res.near) + nxr
     else:
         nx = len(res.x) + nxr
     o.append("nx=%d" % nx)
     o.append("x=%d" % len(res.x))
-    o.append("near=%d,%d,%d" % (near["init"], near["light-positional"], near["light-small"]))
+    o.append("near=%d,%d,%d,%d" % (near["init"], near["light-positional"], near["light-small"], near["geom-guarded"]))
     o.append("xr=%d,%d,%d" % (xr["init"], xr["extra"], xr["deleted"]))
     o.append("primary=%s" % res.primary)
     o.append("contrib=%s" % ",".join("%s:%d" % kv for kv in res.contrib.items()))
-    trouble = fam == "f3dex2" and bool(res.prim.conflict or res.prim.ambig)
+    trouble = fam in ("f3dex2", "f3dex1") and bool(res.prim.conflict or res.prim.ambig)
     o.append("trouble=%d" % trouble)
     if fam == "f3dex2":
         f = res.rec.fields()
@@ -54,6 +54,9 @@ def fmt(stem, fam, res, U):
                 continue
             o.append("%s=%x" % (k, (v if v is not None else 0) & (0xffffffffffffffff if k == "load_key" else 0xffffffff)))
         o.append("ext=%s" % ",".join("%x:%x" % (p & 0xffffffff, kd) for p, kd in sorted(res.rec.ext)))
+    elif fam == "f3dex1":
+        for k, v in res.rec.fields().items():
+            o.append("%s=%x" % (k, (v if v is not None else 0) & (0xffffffffffffffff if k == "load_key" else 0xffffffff)))
     return " ".join(o)
 
 
@@ -78,6 +81,8 @@ def compare(a, b, label):
         return 0
     da, db = dict(x.split("=", 1) if "=" in x else (x, "") for x in ta[1:]), dict(x.split("=", 1) if "=" in x else (x, "") for x in tb[1:])
     diffs = [k for k in sorted(set(da) | set(db)) if da.get(k) != db.get(k)]
+    if not diffs and ta[0] == tb[0]:
+        return 0                            # (the same fields in another order)
     shown = ", ".join("%s py=%s c=%s" % (k, da.get(k), db.get(k)) for k in diffs[:12])
     print("DIFF %s: %s%s" % (label, shown, " ... (%d fields)" % len(diffs) if len(diffs) > 12 else ""))
     return 1
@@ -125,7 +130,29 @@ def mutants(reg, exe):
         bad += d
         print("  %-45s %s, %s" % (desc, "C = Python" if not d else "C != PYTHON", "result changed" if changed else "NOT CAUGHT"))
         bad += 0 if changed else 1
-    return len(cases), bad
+    # the F3DEX 1.x mutants of derive_build.py mutate (F3DEX 1.21's text and data against the other F3DEX 1.x builds)
+    base1 = next(it for it in reg.fam["f3dex1"] if it.rec.name == "l_b_121")
+    refs1 = reg.refs("f3dex1", {"l_b_121"})
+    U0 = D1.ItemV(base1.uc, None, "unknown")
+    ref1 = fmt("m", "f3dex1", D1.derive_f1(U0, refs1), U0)
+    muts = B.f1_mutants(reg)
+    for k, (desc, m, check) in enumerate(muts):
+        p = os.path.join(tmp, "f%d.text" % k)
+        open(p, "wb").write(struct.pack(">1024I", *m.w))
+        open(p[:-5] + ".data", "wb").write(bytes(m.data))
+        ext = base1.uc.path[:-5] + ".ext"
+        if os.path.exists(ext):
+            shutil.copy(ext, p[:-5] + ".ext")
+        U = D1.ItemV(m, None, "unknown")
+        res = D1.derive_f1(U, refs1)
+        pl = fmt("f%d" % k, "f3dex1", res, U)
+        cl = run_c(exe, [p], ["--family", "f3dex1", "--exclude", "l_b_121"])[0]
+        changed = pl.split(" ", 1)[1] != ref1.split(" ", 1)[1]
+        d = compare(pl, cl, desc)
+        bad += d
+        print("  %-45s %s, %s" % (desc[:45], "C = Python" if not d else "C != PYTHON", "result changed" if changed else "NOT CAUGHT"))
+        bad += 0 if changed else 1
+    return len(cases) + len(muts), bad
 
 
 def main():
@@ -181,6 +208,9 @@ def main():
                     res = F2.derive(F2.Item(it.uc, None, "unknown"), refs)
                     U = F2.Item(it.uc, None, "unknown")
                     res = F2.derive(U, refs)
+                elif fam == "f3dex1":
+                    U = D1.ItemV(it.uc, None, "unknown")
+                    res = D1.derive_f1(U, refs)
                 else:
                     U = D1.ItemV(it.uc, None, "unknown")
                     res = D1.derive_variant(U, refs)

@@ -24,7 +24,7 @@ enum { C_J, C_BR, C_MEM, C_VMEM, C_ALUI, C_OTHER, C_NOP };
 enum { ST_OK, ST_PC, ST_KNOB, ST_PAD, ST_PAT, ST_X };
 enum { EV_PC, EV_CF, EV_IMM, EV_MEM };
 enum { K_ADDR, K_SIZE, K_MASK };
-enum { NEAR_INIT, NEAR_POS, NEAR_SMALL };
+enum { NEAR_INIT, NEAR_POS, NEAR_SMALL, NEAR_GEOM };
 enum { XR_INIT, XR_EXTRA, XR_DELETED };
 enum { KN_REJECT = 100 };       /* knob name ids: LY_* for the layout, this for the reject mask */
 
@@ -94,7 +94,7 @@ static int is_break(uint32_t w) { return is_special(w, 0x0d); }
 /* the shape of a word (tools/derive_refs_gen.py shape()): hash, class, rs == 0, init-eligible, operand */
 struct wshape {
     uint64_t h;
-    uint8_t cls, rs0, init;
+    uint8_t cls, rs0, init, rs29;
     uint32_t opd;
 };
 
@@ -105,6 +105,7 @@ static void wshape_of(uint32_t w, struct wshape *s)
     unsigned op = w >> 26, rs = (w >> 21) & 31, rt = (w >> 16) & 31;
     s->cls = (uint8_t)c;
     s->rs0 = 0;
+    s->rs29 = (c == C_MEM || c == C_VMEM) && rs == 29;
     s->opd = 0;
     s->init = 0;
     switch (c) {
@@ -154,7 +155,7 @@ struct dimg {
     uint32_t *w;                /* the real words (the unknown only) */
     uint32_t *sid;              /* shape id */
     uint32_t *opd;
-    uint8_t *cls, *flg;         /* flg: bit 0 rs == 0, bit 1 init-eligible */
+    uint8_t *cls, *flg;         /* flg: bit 0 rs == 0, bit 1 init-eligible, bit 2 a load / store relative to $29 */
     uint16_t *pc;
     uint8_t *seg;
     int nsegs;
@@ -227,7 +228,7 @@ static int img_ref(struct dimg *im, const struct derive_ref *r)
                 im->sid[i] = v >> 16;
                 im->opd[i] = v & 0xffff;
                 im->cls[i] = inf & 7;
-                im->flg[i] = (uint8_t)(((inf >> 3) & 1) | (((inf >> 4) & 1) << 1));
+                im->flg[i] = (uint8_t)(((inf >> 3) & 1) | (((inf >> 4) & 1) << 1) | (((inf >> 5) & 1) << 2));
             }
         }
     }
@@ -373,7 +374,7 @@ static int img_unknown(struct dimg *im, const struct derive_in *in, struct unkma
         im->sid[i] = id >= 0 ? (uint32_t)id : unk_id(um, s.h);
         im->opd[i] = s.opd;
         im->cls[i] = s.cls;
-        im->flg[i] = (uint8_t)(s.rs0 | (s.init << 1));
+        im->flg[i] = (uint8_t)(s.rs0 | (s.init << 1) | (s.rs29 << 2));
     }
     return 0;
 }
@@ -679,6 +680,14 @@ static int knobs_of(const struct derive_rec *r, struct knob *ks)
         if (r->reject_mask) {
             ks[n].name = KN_REJECT; ks[n].val = r->reject_mask; ks[n].kind = K_MASK; n++;
         }
+    } else if (r->fam == DERIVE_F3DEX1) {
+        for (k = 0; k < DERIVE_NF1KNOB; k++)
+            if (r->lay[k] >= 0x10) {
+                ks[n].name = k; ks[n].val = r->lay[k]; ks[n].kind = K_ADDR; n++;
+            }
+        if (r->reject_mask >= 0x10) {
+            ks[n].name = KN_REJECT; ks[n].val = r->reject_mask; ks[n].kind = K_MASK; n++;
+        }
     } else {
         for (k = 0; k < r->n_knobs; k++) {
             ks[n].name = k; ks[n].val = r->knobs[k].val; ks[n].kind = r->knobs[k].kind == 0 ? K_ADDR : K_MASK; n++;
@@ -836,17 +845,18 @@ static int pairing_make(struct pairing *P, int ref, const struct dimg *U, int nk
             P->n_pr++;
         }
     }
-    /* _collect */
+    /* _collect (F3DEX 1.x: an operand relative to $29 = 0x110 is the DMEM address 0x110 + offset) */
     for (i = 0; i < R->n; i++) {
-        uint32_t vr, vu;
+        uint32_t vr, vu, add;
         int c;
         j = P->pr[i];
         if (j < 0)
             continue;
         c = R->cls[i];
+        add = P->rec->fam == DERIVE_F3DEX1 && (c == C_MEM || c == C_VMEM) && (R->flg[i] & 4) ? 0x110u : 0u;
         if (R->opd[i] == U->opd[j]) {
             if (c == C_MEM || c == C_VMEM) {
-                same_ops[nsame].v = R->opd[i];
+                same_ops[nsame].v = (R->opd[i] + add) & 0xffff;
                 same_ops[nsame++].kind = 0;
             } else if (c == C_ALUI) {
                 same_ops[nsame].v = R->opd[i];
@@ -879,8 +889,8 @@ static int pairing_make(struct pairing *P, int ref, const struct dimg *U, int nk
             ev[nev].vu = vu;
         } else if (c == C_MEM || c == C_VMEM) {
             ev[nev].kind = EV_MEM;
-            ev[nev].vr = R->opd[i] & 0xffff;
-            ev[nev].vu = U->opd[j] & 0xffff;
+            ev[nev].vr = (R->opd[i] + add) & 0xffff;
+            ev[nev].vu = (U->opd[j] + add) & 0xffff;
         } else
             continue;                                   /* ("other": the shapes are whole words there, so aligned words are equal) */
         nev++;
@@ -1430,7 +1440,7 @@ static void overlay_words(const struct dimg *im, const uint8_t *data, size_t len
 struct f2work {
     int verdict;
     int n_x, nx_total;
-    unsigned n_near[3], n_xr[3];
+    unsigned n_near[4], n_xr[3];
     int primary;
     int n_contrib;
     int contrib[DERIVE_MAXREFS];
@@ -1887,6 +1897,436 @@ done:
 }
 
 /* ---- the variant families (derive_f1d.derive_variant): only what decides the family and the verdict --------------------------------------------------------------------- */
+/* ---- the F3DEX 1.x derivation (derive_f1d.derive_f1) --------------------------------------------------------------------------------------------------------------------- */
+#define F1_GEOM_DEF (0x1u | 0x2u | 0x4u | 0x200u | 0x1000u | 0x2000u | 0x10000u | 0x20000u | 0x40000u | 0x80000u | 0x800000u)
+static int is_op(uint32_t w, unsigned op) { return (w >> 26) == op; }
+static unsigned w_rs(uint32_t w) { return (w >> 21) & 31; }
+static unsigned w_rt(uint32_t w) { return (w >> 16) & 31; }
+static unsigned w_rd(uint32_t w) { return (w >> 11) & 31; }
+/* the call form's words, from a real word (the unknown) */
+static int u_save_reg(uint32_t w) { return is_special(w, 0x20) && w_rs(w) == 0 && w_rt(w) == 31 && w_rd(w) != 0 ? (int)w_rd(w) : -1; }
+static int u_jal_tgt(uint32_t w) { return is_op(w, 3) ? (int)((w & 0x3ffffff) << 2 & 0xfff) : -1; }
+static int u_j_tgt(uint32_t w) { return is_op(w, 2) ? (int)((w & 0x3ffffff) << 2 & 0xfff) : -1; }
+static int u_jr_reg(uint32_t w) { return is_jr(w) ? (int)w_rs(w) : -1; }
+/* the same from a reference word (a shape and an operand: the shapes of the register forms are looked up) */
+struct rshapes { int add_ra[32], jr[32], jsid[2]; };
+static void rshapes_init(struct rshapes *z)
+{
+    unsigned r;
+    for (r = 0; r < 32; r++) {
+        z->add_ra[r] = r ? shape_find_j((31u << 16) | (r << 11) | 0x20) : -2;
+        z->jr[r] = shape_find_j((r << 21) | 8);
+        if (z->add_ra[r] < 0) z->add_ra[r] = -2;
+        if (z->jr[r] < 0) z->jr[r] = -2;
+    }
+    z->jsid[0] = shape_find_j(0x08000000u);
+    z->jsid[1] = shape_find_j(0x0c000000u);
+}
+static int r_save_reg(const struct rshapes *z, const struct dimg *R, int i)
+{
+    int r;
+    for (r = 1; r < 32; r++)
+        if ((int)R->sid[i] == z->add_ra[r])
+            return r;
+    return -1;
+}
+static int r_jal_tgt(const struct rshapes *z, const struct dimg *R, int i) { return R->cls[i] == C_J && (int)R->sid[i] == z->jsid[1] ? j_tgt(R->opd[i]) : -1; }
+static int r_j_tgt(const struct rshapes *z, const struct dimg *R, int i) { return R->cls[i] == C_J && (int)R->sid[i] == z->jsid[0] ? j_tgt(R->opd[i]) : -1; }
+static int r_jr_reg(const struct rshapes *z, const struct dimg *R, int i)
+{
+    int r;
+    for (r = 0; r < 32; r++)
+        if ((int)R->sid[i] == z->jr[r])
+            return r;
+    return -1;
+}
+
+/* triple(img, cand, k0): the call form at index k0 among the sorted candidate indices; out = { k0, k1, k2, target } */
+static int triple_u(const struct dimg *U, const int *cand, int nc, int k0, int *out)
+{
+    int r = u_save_reg(U->w[k0]), a, b;
+    if (r < 0)
+        return 0;
+    for (a = 0; a < nc; a++) {
+        int k1 = cand[a];
+        if (k0 < k1 && k1 <= k0 + 8 && u_jal_tgt(U->w[k1]) >= 0) {
+            for (b = 0; b < nc; b++) {
+                int k2 = cand[b];
+                if (k1 < k2 && k2 <= k0 + 8 && u_jr_reg(U->w[k2]) == r) {
+                    out[0] = k0; out[1] = k1; out[2] = k2; out[3] = u_jal_tgt(U->w[k1]);
+                    return 1;
+                }
+            }
+            return 0;
+        }
+    }
+    return 0;
+}
+static int triple_r(const struct rshapes *z, const struct dimg *R, const int *cand, int nc, int k0, int *out)
+{
+    int r = r_save_reg(z, R, k0), a, b;
+    if (r < 0)
+        return 0;
+    for (a = 0; a < nc; a++) {
+        int k1 = cand[a];
+        if (k0 < k1 && k1 <= k0 + 8 && r_jal_tgt(z, R, k1) >= 0) {
+            for (b = 0; b < nc; b++) {
+                int k2 = cand[b];
+                if (k1 < k2 && k2 <= k0 + 8 && r_jr_reg(z, R, k2) == r) {
+                    out[0] = k0; out[1] = k1; out[2] = k2; out[3] = r_jal_tgt(z, R, k1);
+                    return 1;
+                }
+            }
+            return 0;
+        }
+    }
+    return 0;
+}
+
+static int anchor_r(const struct pairing *P, int j)
+{
+    int k = j - 1;
+    while (k >= 0 && P->pu[k] < 0)
+        k--;
+    return k >= 0 ? P->pu[k] : -1;
+}
+
+/* derive_f1d.tail_calls: uw[j] / rw[i] = 1 for the words the call-form / tail-jump equivalence explains */
+static int tail_calls(const struct pairing *P, const struct dimg *U, uint8_t *uw, uint8_t *rw)
+{
+    const struct dimg *R = &P->R;
+    struct rshapes z;
+    int *xu = (int *)malloc((size_t)(U->n + 1) * sizeof(int)), *xrs = (int *)malloc((size_t)(R->n + 1) * sizeof(int)), nxu = 0, nxrs, a, b, t[4];
+    if (!xu || !xrs) {
+        free(xu); free(xrs);
+        return -1;
+    }
+    rshapes_init(&z);
+    for (a = 0; a < U->n; a++)
+        if (P->st[a] == ST_X)
+            xu[nxu++] = a;
+    for (a = 0; a < nxu; a++) {
+        int j0 = xu[a], an;
+        if (!triple_u(U, xu, nxu, j0, t))
+            continue;
+        an = anchor_r(P, j0);
+        for (b = 0; b < R->n; b++)
+            if (P->xr[b] && !rw[b] && an - 12 <= b && b <= an + 12 && r_j_tgt(&z, R, b) == t[3]) {
+                uw[t[0]] = uw[t[1]] = uw[t[2]] = 1;
+                rw[b] = 1;
+                break;
+            }
+    }
+    nxrs = 0;
+    for (b = 0; b < R->n; b++)
+        if (P->xr[b] && !rw[b])
+            xrs[nxrs++] = b;
+    for (a = 0; a < nxu; a++) {
+        int j0 = xu[a], an, q;
+        if (uw[j0] || u_j_tgt(U->w[j0]) < 0)
+            continue;
+        an = anchor_r(P, j0);
+        for (q = 0; q < nxrs; q++) {
+            int i0 = xrs[q];
+            if (!(an - 12 <= i0 && i0 <= an + 12))
+                continue;
+            if (triple_r(&z, R, xrs, nxrs, i0, t) && t[3] == u_j_tgt(U->w[j0])) {
+                uw[j0] = 1;
+                rw[t[0]] = rw[t[1]] = rw[t[2]] = 1;
+                break;
+            }
+        }
+    }
+    free(xu);
+    free(xrs);
+    return 0;
+}
+
+/* derive_f1d.geom_guarded: gw[j] = 1 for the words of an unaligned run guarded by an undefined geometry bit */
+static void geom_guarded(const struct pairing *P, const struct dimg *U, unsigned geom, uint8_t *gw)
+{
+    int j0 = 0;
+    while (j0 < U->n) {
+        int j1, k, allx = 1;
+        if (P->pu[j0] >= 0) {
+            j0++;
+            continue;
+        }
+        j1 = j0;
+        while (j1 + 1 < U->n && P->pu[j1 + 1] < 0 && U->seg[j1 + 1] == U->seg[j0])
+            j1++;
+        for (k = j0; k <= j1; k++)
+            if (P->st[k] != ST_X)
+                allx = 0;
+        if (j1 - j0 + 1 >= 3 && allx) {
+            uint32_t w0 = U->w[j0], w1 = U->w[j0 + 1], w2 = U->w[j0 + 2];
+            if (is_op(w0, 0x23) && is_op(w1, 0x0c) && is_op(w2, 0x04) && (w_rs(w0) == 0 || w_rs(w0) == 29)) {
+                unsigned addr = ((w0 & 0xffff) + (w_rs(w0) == 29 ? 0x110u : 0u)) & 0xffff, bit = w1 & 0xffff, rt = w_rt(w0);
+                int end = j1 + 1;
+                unsigned tgt = (U->pc[j0 + 2] + 4u + 4u * (unsigned)sx16(w2 & 0xffff)) & 0xfff;
+                if (addr == geom && w_rs(w1) == rt && w_rt(w1) == rt && bit && !(bit & (bit - 1)) && !(bit & F1_GEOM_DEF) && w_rs(w2) == rt && w_rt(w2) == 0 &&
+                    end < U->n && U->seg[end] == U->seg[j0] && U->pc[end] == tgt && P->pu[end] >= 0)
+                    for (k = j0; k <= j1; k++)
+                        gw[k] = 1;
+            }
+        }
+        j0 = j1 + 1;
+    }
+}
+
+/* the composite of derive_f1's candidate primary q: cur[j] = 1 for the words left unexplained; returns their number; contrib (optional) gets the order */
+static int f1_composite(struct pairing **order, int nrefs, uint8_t *const *expl, int q, const struct dimg *U, uint8_t *cur, struct f2work *out)
+{
+    int pool[DERIVE_MAXREFS], npool = 0, i, j, ncur = 0;
+    for (i = 0; i < nrefs; i++)
+        if (i != q)
+            pool[npool++] = i;
+    for (j = 0; j < U->n; j++)
+        ncur += cur[j] = order[q]->st[j] == ST_X;
+    while (ncur && npool) {
+        int bestq = -1, bestn = -1, p;
+        for (p = 0; p < npool; p++) {
+            int n = 0;
+            for (j = 0; j < U->n; j++)
+                n += cur[j] & expl[pool[p]][j];
+            if (n > bestn) {
+                bestn = n;
+                bestq = p;
+            }
+        }
+        if (bestn == 0)
+            break;
+        if (out) {
+            out->contrib[out->n_contrib] = order[pool[bestq]]->ref;
+            out->contrib_n[out->n_contrib++] = (unsigned)bestn;
+        }
+        for (j = 0; j < U->n; j++)
+            if (expl[pool[bestq]][j] && cur[j]) {
+                cur[j] = 0;
+                ncur--;
+            }
+        for (p = bestq; p + 1 < npool; p++)
+            pool[p] = pool[p + 1];
+        npool--;
+    }
+    return ncur;
+}
+
+/* the reference words of P that the unknown lacks and nothing replaces (Python: i not in hunk_of_r or a word of its hunk unexplained) */
+static int f1_xr_kept(const struct pairing *P, const struct dimg *U, const uint8_t *cur, int i)
+{
+    int run = P->hunk[i], e;
+    if (run < 0)
+        return 1;
+    for (e = run; e < U->n && P->pu[e] < 0 && U->seg[e] == U->seg[run]; e++)
+        if (cur[e])
+            return 1;
+    return 0;
+}
+
+static int derive_f1(const struct derive_in *in, struct dimg *U, const struct dctx *X, const int *refs, int nrefs, struct f2work *out)
+{
+    struct pairing *prs = (struct pairing *)calloc((size_t)nrefs, sizeof(struct pairing));
+    struct pairing *order[DERIVE_MAXREFS], *order1[DERIVE_MAXREFS], *prim;
+    uint8_t *cur = NULL, *expl[DERIVE_MAXREFS], *uw = NULL, *rw = NULL, *gw = NULL, *cat = NULL;
+    int i, j, ndone = 0, rc = -1, q, undecided = 0, nu = U->n < 1024 ? U->n : 1024;
+    int dlx, non, culldl_off;
+    struct derive_rec *rec = &out->rec;
+    struct merged *mg = NULL;
+    memset(expl, 0, sizeof(expl));
+    if (!prs)
+        return -1;
+    for (i = 0; i < nrefs; i++) {
+        if (pairing_make(&prs[i], refs[i], U, X->nkeys, &X->b2j))
+            goto done;
+        ndone++;
+        order[i] = &prs[i];
+    }
+    sort_pairings(order, nrefs);
+    for (i = 0; i < nrefs; i++) {
+        expl[i] = (uint8_t *)malloc((size_t)U->n);
+        if (!expl[i])
+            goto done;
+        for (j = 0; j < U->n; j++)
+            expl[i][j] = order[i]->st[j] != ST_X;
+    }
+    cur = (uint8_t *)malloc((size_t)U->n + 1);
+    uw = (uint8_t *)calloc((size_t)U->n + 1, 1);
+    gw = (uint8_t *)calloc((size_t)U->n + 1, 1);
+    mg = (struct merged *)malloc(sizeof(*mg));
+    if (!cur || !uw || !gw || !mg)
+        goto done;
+    /* dlx: the words only the references of one value explain */
+    {
+        int ev0 = 0, ev1 = 0, hi, lo;
+        for (j = 0; j < U->n; j++) {
+            int g0 = 0, g1 = 0;
+            for (i = 0; i < nrefs; i++)
+                if (expl[i][j]) {
+                    if (order[i]->rec->dlx) g1 = 1; else g0 = 1;
+                }
+            ev0 += g0 && !g1;
+            ev1 += g1 && !g0;
+        }
+        hi = ev0 > ev1 ? ev0 : ev1;
+        lo = ev0 > ev1 ? ev1 : ev0;
+        if (hi >= 8 && hi >= 4 * lo)
+            dlx = ev1 > ev0;
+        else {
+            dlx = order[0]->rec->dlx;
+            undecided = 1;
+        }
+    }
+    /* non: the near-plane mask 0x703 and the w-sign shifts of the NoN vertex code */
+    {
+        int n703 = 0, n707 = 0, nsign = 0;
+        for (j = 0; j < nu; j++) {
+            uint32_t w = U->w[j];
+            if (is_op(w, 0x0c) && (w & 0xffff) == 0x703) n703++;
+            if (is_op(w, 0x0c) && (w & 0xffff) == 0x707) n707++;
+            if (j > 0 && is_special(w, 2) && (((w >> 6) & 31) == 9 || ((w >> 6) & 31) == 13) && w_rd(w) == w_rt(w) && is_op(U->w[j - 1], 0x0c) && (U->w[j - 1] & 0xffff) == 0x8000 &&
+                w_rt(U->w[j - 1]) == w_rt(w))
+                nsign++;
+        }
+        if (n703 && nsign >= 2)
+            non = 1;
+        else if (!n703 && !nsign && n707)
+            non = 0;
+        else {
+            non = order[0]->rec->non;
+            undecided = 1;
+        }
+    }
+    /* the primary: the fewest words left unexplained after the composite, counting its own words the unknown lacks */
+    {
+        int best = -1, bestc = 0;
+        for (q = 0; q < nrefs; q++) {
+            int c = f1_composite(order, nrefs, expl, q, U, cur, NULL), x;
+            for (x = 0; x < order[q]->R.n; x++)
+                if (order[q]->xr[x] && f1_xr_kept(order[q], U, cur, x))
+                    c++;
+            if (best < 0 || c < bestc) {
+                best = q;
+                bestc = c;
+            }
+        }
+        prim = order[best];
+        order1[0] = prim;
+        for (i = 0, j = 1; i < nrefs; i++)
+            if (order[i] != prim)
+                order1[j++] = order[i];
+        (void)f1_composite(order, nrefs, expl, best, U, cur, out);
+    }
+    out->primary = prim->ref;
+    out->aligned_num = (unsigned)prim->n_pr;
+    /* the record */
+    memset(rec, 0, sizeof(*rec));
+    rec->name = "(derived)";
+    rec->fam = DERIVE_F3DEX1;
+    merge_knobs(order1, nrefs, mg);
+    for (i = 0; i < DERIVE_NF1LAY; i++)
+        rec->lay[i] = i < DERIVE_NF1KNOB && mg->has[i] ? mg->val[i] : prim->rec->lay[i];
+    rec->reject_mask = mg->has[KN_REJECT] ? mg->val[KN_REJECT] : prim->rec->reject_mask;
+    {
+        uint8_t tg[0x1000];
+        unsigned op;
+        memset(tg, 0, sizeof(tg));
+        for (op = 0; op < 256; op++) {
+            long a;
+            if (op > 0x09 && op < 0xaf)
+                continue;
+            if (op > 0xbf)
+                break;
+            a = op < 0x40 ? (long)rec->lay[0] + 2L * op : (long)rec->lay[1] + 2L * (op & 0x7f);
+            if (a >= 0 && (size_t)a + 2 <= in->data_len)
+                tg[u16d(in->data, in->data_len, a) & 0xffc] = 1;
+        }
+        rec->f1pc[0] = prim->rec->f1pc[0];                  /* head: the start-up code's, copied */
+        for (i = 1; i < DERIVE_NF1PC; i++) {
+            int v = 0, a;
+            for (a = 0; a < nrefs; a++) {
+                int pr = order1[a]->rec->f1pc[i], m;
+                if (!pr)
+                    continue;
+                m = map_pc(order1[a], U, pr);
+                if (m > 0 && m < 0x1000 && tg[m]) {
+                    v = m;
+                    break;
+                }
+            }
+            rec->f1pc[i] = v;
+        }
+    }
+    {
+        int cpc = rec->f1pc[22], hit = 0, k;                /* culldl */
+        if (cpc) {
+            int base = ((cpc - 0x80) & 0xfff) / 4;
+            for (k = 0; k < 8 && base + k < U->n; k++) {
+                uint32_t w = U->w[base + k];
+                if (is_op(w, 0x25) && w_rs(w) != 0 && (w & 0xffff) == rec->lay[18])
+                    hit = 1;
+            }
+            culldl_off = !hit;
+        } else
+            culldl_off = prim->rec->culldl_off;
+    }
+    rec->non = (uint8_t)non;
+    rec->dlx = (uint8_t)dlx;
+    rec->culldl_off = (uint8_t)culldl_off;
+    rec->load_key = derive_fnv_words(in->text, 0xf48 / 4);
+    /* the known equivalent rewrites and the guarded features */
+    rw = (uint8_t *)calloc((size_t)prim->R.n + 1, 1);
+    cat = (uint8_t *)calloc((size_t)prim->R.n + 1, 1);
+    if (!rw || !cat || tail_calls(prim, U, uw, rw))
+        goto done;
+    geom_guarded(prim, U, rec->lay[4], gw);
+    for (j = 0; j < U->n; j++) {
+        if (uw[j])
+            cur[j] = 0;
+        if (gw[j] && cur[j]) {
+            cur[j] = 0;
+            out->n_near[NEAR_GEOM]++;
+        }
+    }
+    for (j = 0; j < U->n; j++)
+        out->n_x += cur[j];
+    {
+        int nxr = 0, s0 = 0, i0;
+        for (i0 = 0; i0 < prim->R.n; i0++)
+            if (prim->xr[i0] && !rw[i0] && f1_xr_kept(prim, U, cur, i0))
+                cat[i0] = 2;
+        while (s0 < prim->R.n) {
+            if (cat[s0] == 2) {
+                int e = s0;
+                while (e < prim->R.n && cat[e] == 2)
+                    e++;
+                if (e - s0 < 16)
+                    for (i0 = s0; i0 < e; i0++)
+                        cat[i0] = 3;
+                s0 = e;
+            } else
+                s0++;
+        }
+        for (i0 = 0; i0 < prim->R.n; i0++)
+            if (cat[i0]) {
+                out->n_xr[cat[i0] - 1]++;
+                nxr++;
+            }
+        out->trouble = prim->any_trouble;
+        out->nx_total = (int)(out->n_x + out->n_near[NEAR_GEOM] + (unsigned)nxr);
+        out->verdict = (out->n_x || out->n_xr[XR_DELETED] || undecided || out->trouble) ? DERIVE_NONE : (nxr || out->n_near[NEAR_GEOM]) ? DERIVE_NEAR : DERIVE_EXACT;
+    }
+    rc = 0;
+done:
+    for (i = 0; i < DERIVE_MAXREFS; i++)
+        free(expl[i]);
+    free(cur); free(uw); free(rw); free(gw); free(cat); free(mg);
+    for (i = 0; i < ndone; i++)
+        pairing_free(&prs[i]);
+    free(prs);
+    return rc;
+}
+
 static int derive_variant(const struct derive_in *in, struct dimg *U, const struct dctx *X, const int *refs, int nrefs, struct f2work *out)
 {
     struct pairing *prs = (struct pairing *)calloc((size_t)nrefs, sizeof(struct pairing));
@@ -2095,6 +2535,8 @@ int derive_run(const struct derive_in *in, struct derive_result *out)
         U.active = ~0u;
         if (fam == DERIVE_F3DEX2)
             rc = derive_f2(in, &U, &X, refs, nrefs, w[fam]);
+        else if (fam == DERIVE_F3DEX1)
+            rc = derive_f1(in, &U, &X, refs, nrefs, w[fam]);
         else
             rc = derive_variant(in, &U, &X, refs, nrefs, w[fam]);
         if (rc)
@@ -2132,10 +2574,10 @@ int derive_run(const struct derive_in *in, struct derive_result *out)
         out->aligned_den = (unsigned)U.n;
         out->nx = (unsigned)b->nx_total;
         out->n_x = (unsigned)b->n_x;
-        for (i = 0; i < 3; i++) {
+        for (i = 0; i < 4; i++)
             out->n_near[i] = b->n_near[i];
+        for (i = 0; i < 3; i++)
             out->n_xr[i] = b->n_xr[i];
-        }
         out->primary = b->primary;
         out->n_contrib = b->n_contrib;
         for (i = 0; i < b->n_contrib; i++) {
@@ -2143,7 +2585,7 @@ int derive_run(const struct derive_in *in, struct derive_result *out)
             out->contrib[i].n = b->contrib_n[i];
         }
         out->knob_trouble = b->trouble;
-        if (best == DERIVE_F3DEX2)
+        if (best == DERIVE_F3DEX2 || best == DERIVE_F3DEX1)
             out->rec = b->rec;
     }
     for (fam = 0; fam < 3; fam++)
@@ -2164,10 +2606,31 @@ static const char *const lay_names[DERIVE_NLAY] = { "mv", "p", "mvp", "persp_nor
     "tex_scale_s", "tex_scale_t", "geom", "mvp_valid", "lights_valid", "lights_size", "light_raw", "light_base", "tg", "light_scale", "light_scale_zex", "vtab", "clipmask", "culltab", "in",
     "in_end", "jump_table", "movemem_tab", "moveword_adj", "desc_light", "desc_clip", "clip_planes", "clip_masks", "out_toggle", "geom_def", "mw_max", "out_bytes", "pipe_sync", "no_lit", "lit_vtx" };
 
+static const char *const f1_lay_names[DERIVE_NF1LAY] = { "jt0", "jt2", "half1", "persp", "geom", "omh", "oml", "texture", "rdp_wp", "lights", "mtx_sp", "mtx_lim", "depth", "fifo", "segs",
+    "light", "mm_tab", "mw_tab", "vtab", "viewport", "fog", "retstack", "mv", "proj", "mvp", "vbuf", "window", "operand", "outbuf", "lim", "tgbias", "vsign", "clip_k", "planes", "tg", "plane_masks" };
+static const char *const f1_pc_names[DERIVE_NF1PC] = { "head", "nop", "mtx", "movemem", "vtx", "dl", "loaduc", "branchz", "tri2", "modvtx", "half2", "half1", "persp", "quad", "clrgeom", "setgeom",
+    "enddl", "oml", "omh", "texture", "moveword", "popmtx", "culldl", "tri1" };
+
 void derive_rec_fields(const struct derive_rec *r, void (*f)(const char *name, unsigned long long v, void *arg), void *arg)
 {
     char nm[64];
     int k;
+    if (r->fam == DERIVE_F3DEX1) {
+        for (k = 0; k < DERIVE_NF1LAY; k++) {
+            snprintf(nm, sizeof(nm), "lay.%s", f1_lay_names[k]);
+            f(nm, r->lay[k], arg);
+        }
+        for (k = 0; k < DERIVE_NF1PC; k++) {
+            snprintf(nm, sizeof(nm), "pc.%s", f1_pc_names[k]);
+            f(nm, (unsigned long long)(long long)r->f1pc[k] & 0xffffffffull, arg);
+        }
+        f("reject_mask", r->reject_mask, arg);
+        f("flag.non", r->non, arg);
+        f("flag.dlx", r->dlx, arg);
+        f("flag.culldl_off", r->culldl_off, arg);
+        f("load_key", r->load_key, arg);
+        return;
+    }
     for (k = 0; k < DERIVE_NPC; k++) {
         snprintf(nm, sizeof(nm), "pc.%s", pc_names[k]);
         f(nm, (unsigned long long)(long long)r->pc[k] & 0xffffffffull, arg);
