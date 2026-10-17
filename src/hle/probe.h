@@ -14,6 +14,7 @@
 
 #include "armlet.h"
 #include "gfx_ucode.h"
+#include "hle.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -44,6 +45,8 @@ struct probe_summary {
     char note[200];
 };
 int armlet_probe_summary(uint64_t text_id, struct probe_summary *out);   /* 0: the pair is known */
+/* test aid (tools/hle/probe_replay.c --task): the canned tasks with a registered build, no derivation, all at once; returns the number that differed from the JIT (or -1) */
+int armlet_probe_run_registered(struct armlet_ctx *c, const struct hle_ucode *u);
 #else
 static inline void armlet_probe_init(struct armlet_ctx *c) { (void)c; }
 static inline void armlet_probe_reset(void) {}

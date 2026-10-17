@@ -222,6 +222,7 @@ void armlet_config_load(struct armlet_config *cfg)
         armlet_log(M64MSG_WARNING, "unknown GfxProbeNear '%s' (strict or tolerant); using strict", pnear);
     cfg->probe_latch = (env = getenv("ARMLET_PROBE_LATCH")) && *env && *env != '0';
     cfg->probe_force = (env = getenv("ARMLET_PROBE_FORCE")) && *env && *env != '0';
+    cfg->probe_none_x = (env = getenv("ARMLET_PROBE_NONE_X")) && *env ? (unsigned)atoi(env) : 0;
     cfg->probe_seeds = (env = getenv("ARMLET_PROBE_SEEDS")) && *env ? (unsigned)atoi(env) : 0;
     if (cfg->probe_seeds > 40)
         cfg->probe_seeds = 40;

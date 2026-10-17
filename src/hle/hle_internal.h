@@ -109,6 +109,7 @@ struct hle_probe_opts {
     int tol;                                    /* near-match tolerance for the RDP stream: shade coefficients only, 2 levels / 1/128 level per pixel (hle_core.c, stream_tolerable) */
     /* a DMEM byte (address addr, native value na, JIT value nb) that the tolerance admits: nonzero; dmem is the native end state */
     int (*dmem_ok)(const struct hle_ucode *u, const uint32_t *dmem, unsigned addr, unsigned na, unsigned nb);
+    void (*perturb)(const struct hle_ucode *u, uint32_t *native_dmem);   /* test builds only: changes the native end state before the compare (mutations 352, 353) */
 };
 enum { HLE_PROBE_EQUAL = 0, HLE_PROBE_DECLINED, HLE_PROBE_MISMATCH, HLE_PROBE_INCONCLUSIVE, HLE_PROBE_TOLERANT };
 struct hle_probe_out {
@@ -119,8 +120,10 @@ struct hle_probe_out {
     double native_us, jit_us;
     uint64_t stream_len;
 };
+/* `rdram`: the canned task's own 8 MiB of RDRAM (the game's is not touched); the RDRAM compared: the output ring [win_lo, win_hi) and the matrix stack [win2_lo, win2_hi) */
 int armlet_hle_probe_pair(const struct hle_ucode *uc, const PrspNativeSnap *before, const struct hle_probe_opts *opts, uint32_t win_lo, uint32_t win_hi, uint32_t win2_lo, uint32_t win2_hi,
-                          struct hle_probe_out *out);   /* the RDRAM compared: the output ring [win_lo, win_hi) and the matrix stack [win2_lo, win2_hi) */
+                          uint32_t *rdram, struct hle_probe_out *out);
+void armlet_hle_set_rdram(uint32_t *rdram);                      /* probe_rdram.cpp */
 int armlet_hle_register_dynamic(const struct hle_ucode *u);     /* a build derived at run time: found by armlet_hle_find and armlet_hle_next after the registered ones */
 void armlet_hle_unregister_dynamic(const struct hle_ucode *u);
 

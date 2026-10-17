@@ -493,9 +493,22 @@ static void rej_case(struct probe_case *c, struct dl *d, struct rng *r, unsigned
         tri1(d, v0 + 3 * g, v0 + 3 * g + 1, v0 + 3 * g + 2);
         cmd(d, (0x05u << 24) | ((v0 + 3 * g + 2) * 2 << 16) | ((v0 + 3 * g + 1) * 2 << 8) | (v0 + 3 * g) * 2, 0);      /* (the other winding) */
     }
-    for (g = 0; g < 6; g++) {                           /* G_CULLDL over a group: the list ends when the mask says all its vertices are outside; a triangle behind it shows whether it did */
-        cmd(d, (0x03u << 24) | ((v0 + 3 * g) * 2), (v0 + 3 * g + 2) * 2);
-        tri1(d, v0 + 18, v0 + 19, v0 + 20);
+    /* G_CULLDL over a group ends the list it is in when the mask says all the group's vertices are outside. Each test is a list of its own (called, so that the end of one does not hide the next):
+     * G_CULLDL, then the triangle of the inside group; the triangle shows whether the list ended. */
+    for (g = 0; g < 6; g++) {
+        uint8_t t[24];
+        unsigned k;
+        struct dl sub;
+        memset(&sub, 0, sizeof(sub));
+        cmd(&sub, (0x03u << 24) | ((v0 + 3 * g) * 2), (v0 + 3 * g + 2) * 2);
+        tri1(&sub, v0 + 18, v0 + 19, v0 + 20);
+        cmd(&sub, 0xdf000000, 0);
+        for (k = 0; k < 3; k++) {
+            t[8 * k] = (uint8_t)(sub.w[k][0] >> 24); t[8 * k + 1] = (uint8_t)(sub.w[k][0] >> 16); t[8 * k + 2] = (uint8_t)(sub.w[k][0] >> 8); t[8 * k + 3] = (uint8_t)sub.w[k][0];
+            t[8 * k + 4] = (uint8_t)(sub.w[k][1] >> 24); t[8 * k + 5] = (uint8_t)(sub.w[k][1] >> 16); t[8 * k + 6] = (uint8_t)(sub.w[k][1] >> 8); t[8 * k + 7] = (uint8_t)sub.w[k][1];
+        }
+        put(c, 0xa00 + 0x20 * g, t, 24);
+        cmd(d, 0xde000000, c->base + 0xa00 + 0x20 * g);
     }
     cmd(d, 0xdf000000, 0);
 }

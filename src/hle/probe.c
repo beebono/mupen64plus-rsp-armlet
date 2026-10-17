@@ -13,6 +13,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/mman.h>
 #include <time.h>
 
 #include "armlet.h"
@@ -36,7 +37,7 @@ enum { PS_NEW, PS_PROBING, PS_DONE };
 
 struct pair {
     uint64_t tid, did;
-    int state, outcome, latched, from_cache, force;
+    int state, outcome, latched, from_cache, force, experiment;
     struct dbuild *b;
     struct derive_result dr;
     unsigned next, total;
@@ -45,7 +46,7 @@ struct pair {
     unsigned done_kind[PROBE_NCASES], need_kind[PROBE_NCASES];
     double derive_ms, probe_ms;
     int rec_equal;
-    const char *first_diff;
+    const char *first_diff, *incon_why;
     char note[200];
     char first_report[600];
 };
@@ -54,8 +55,9 @@ static struct {
     int init;
     struct pair pairs[PAIR_MAX];
     unsigned step;                       /* canned tasks per offer */
-    int trace;
+    int trace, check, force_cache;
     uint32_t std_sig;
+    char why[96];
 } P;
 
 static inline uint64_t now_ns(void)
@@ -86,14 +88,6 @@ static void rd_bytes(const struct armlet_ctx *c, uint32_t addr, uint8_t *out, si
         out[i] = r[((addr + (uint32_t)i) & 0x7fffff) ^ SWZ];
 }
 
-static void wr_bytes(struct armlet_ctx *c, uint32_t addr, const uint8_t *in, size_t n)
-{
-    uint8_t *r = (uint8_t *)c->rsp.RDRAM;
-    size_t i;
-    for (i = 0; i < n; i++)
-        r[((addr + (uint32_t)i) & 0x7fffff) ^ SWZ] = in[i];
-}
-
 void armlet_probe_init(struct armlet_ctx *c)
 {
     const char *path = c->cfg.ucode_cache;
@@ -102,10 +96,10 @@ void armlet_probe_init(struct armlet_ctx *c)
     if (!c->cfg.probe)
         return;
     P.init = 1;
-    P.step = (e = getenv("ARMLET_PROBE_STEP")) && *e ? (unsigned)atoi(e) : 4;
-    if (!P.step)
-        P.step = 4;
+    P.step = (e = getenv("ARMLET_PROBE_STEP")) && *e ? (unsigned)atoi(e) : 4;       /* (0: derive only, no canned task: a test aid) */
     P.trace = (e = getenv("ARMLET_PROBE_TRACE")) && *e && *e != '0';
+    P.check = (e = getenv("ARMLET_PROBE_CHECK")) && *e && *e != '0';
+    P.force_cache = (e = getenv("ARMLET_PROBE_FORCE_CACHE")) && *e && *e != '0';       /* tests: the forced (registered) ucodes use the cache too */
     if (!strcmp(path, "off"))
         path = "";
     (void)ucache_open(path);
@@ -216,28 +210,62 @@ static int near_dmem_ok(const struct hle_ucode *u, const uint32_t *dmem, unsigne
     return 0;
 }
 
+#ifdef ARMLET_HLE_MUTATE
+/* test builds: the colour of the first vertex slot in the native end state is changed by 1 (352: within the tolerance) or 3 (353: outside it) */
+static void perturb_dmem(const struct hle_ucode *u, uint32_t *dmem)
+{
+    const struct f3dex2_build *b = (const struct f3dex2_build *)u->fam_data;
+    unsigned slot = ((const hle_u16a *)dmem)[(b->lay->vtab ^ 2) >> 1] & 0xfff;
+    ((uint8_t *)dmem)[(slot + 0x10) ^ 3] += ARMLET_HLE_MUTATE == 352 ? 1 : 3;
+}
+#endif
+
 /* ---- one canned task -------------------------------------------------------------------------------------------------------------------------------------------------------- */
 static PrspNativeSnap g_real, g_pb;
+
+/* The canned task's RDRAM: an 8 MiB anonymous mapping of its own (pages that nobody writes cost nothing), into which the ucode's text, its overlays and its data segment are copied from the
+ * game's RDRAM at the addresses the OSTask names; the ring, the matrix stack and the canned data go to addresses that do not collide with them. The game's RDRAM is read, never written. */
+static uint32_t *g_priv;
+
+static uint32_t *priv_rdram(void)
+{
+    if (!g_priv) {
+        void *m = mmap(NULL, 0x800000, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        g_priv = m == MAP_FAILED ? NULL : (uint32_t *)m;
+    }
+    return g_priv;
+}
+
+static void priv_put(uint32_t addr, const uint8_t *in, size_t n)
+{
+    uint8_t *r = (uint8_t *)g_priv;
+    size_t i;
+    for (i = 0; i < n; i++)
+        r[((addr + (uint32_t)i) & 0x7fffff) ^ SWZ] = in[i];
+}
 
 /* returns HLE_PROBE_*; fills out. The state is as it was when this was called, whatever happens. */
 static int run_canned(struct armlet_ctx *c, struct pair *p, unsigned kind, unsigned seed, struct hle_probe_out *out)
 {
-    struct probe_case cs;
-    uint8_t keep[PROBE_MEM];
+    static struct probe_case cs;
+    static uint8_t buf[0x3000];
+    static uint8_t *guard;                              /* ARMLET_PROBE_CHECK=1 (tests): a copy of the game's RDRAM, to show that a canned task does not change it */
     struct hle_probe_opts opts;
-    uint32_t lo, hi, base, sp_pc;
+    uint32_t ta, da, ds, base, lo, hi, sp_pc;
     int st;
 
     memset(out, 0, sizeof(*out));
-    prsp_native_save(&g_real);
-    lo = g_real.dmem[0xfe8 >> 2] & 0x7ffff8;
-    hi = g_real.dmem[0xfec >> 2] & 0x7ffff8;
-    /* The canned task's data lives in the last 0x2000 bytes of the game's RDP output ring (nothing reads the ring after the lists have been taken, and the video plugin copies a list when it is
-     * handed over), and the ring the canned task is told about ends where that data begins: the front-ends decline a read from inside the ring, and the output must not reach the data. */
-    if (hi <= lo || hi > 0x800000 || hi - lo < 0xa000) {
+    if (!priv_rdram()) {
         out->status = HLE_PROBE_INCONCLUSIVE;
-        out->why = "the RDP output ring is smaller than 40 KiB";
+        out->why = "no memory for the canned tasks' RDRAM";
         return out->status;
+    }
+    prsp_native_save(&g_real);
+    if (P.check) {
+        if (!guard)
+            guard = (uint8_t *)malloc(0x800000);
+        if (guard)
+            memcpy(guard, c->rsp.RDRAM, 0x800000);
     }
     if (g_real.cr[11] & 1) {
         out->status = HLE_PROBE_INCONCLUSIVE;
@@ -249,17 +277,41 @@ static int run_canned(struct armlet_ctx *c, struct pair *p, unsigned kind, unsig
         out->why = "the JIT's status poll time-out has dropped";
         return out->status;
     }
-    base = hi - 0x2000;
+    ta = g_real.dmem[0xfd0 >> 2] & 0x7ffffc;
+    da = g_real.dmem[0xfd8 >> 2] & 0x7ffffc;
+    ds = g_real.dmem[0xfdc >> 2];
+    if (!ds || ds > 0x1000)
+        ds = ds ? 0x1000 : 0x800;
+    /* the ring, the canned data and the matrix stack: three blocks at the top of RDRAM, clear of the text with its overlays (3 x 4 KiB) and of the data */
+    lo = 0x7a0000;
+    hi = 0x7c0000;
+    base = 0x7d0000;
+    if ((ta + 0x3000 > lo && ta < 0x7e0000) || (da + ds > lo && da < 0x7e0000)) {
+        lo = 0x300000;
+        hi = 0x320000;
+        base = 0x330000;
+        if ((ta + 0x3000 > lo && ta < 0x340000) || (da + ds > lo && da < 0x340000)) {
+            out->status = HLE_PROBE_INCONCLUSIVE;
+            out->why = "the ucode's text or data lies where the canned tasks' ring would be";
+            return out->status;
+        }
+    }
+    /* the ucode's text, its overlays behind it and its data, as the game's RDRAM has them now */
+    rd_bytes(c, ta, buf, 0x3000);
+    priv_put(ta, buf, 0x3000);
+    rd_bytes(c, da, buf, ds);
+    priv_put(da, buf, ds);
     probe_case_make(&cs, kind, seed, base);
-    rd_bytes(c, base, keep, PROBE_MEM);
-    wr_bytes(c, base, cs.mem, PROBE_MEM);
+    priv_put(base, cs.mem, PROBE_MEM);
 
     memcpy(&g_pb, &g_real, sizeof(g_pb));
     g_pb.dmem[0xfe0 >> 2] = base + 0x1200;              /* OSTask.dram_stack: the matrix stack of G_MTX with push, behind the case's data */
     g_pb.dmem[0xfe4 >> 2] = 0x400;
-    g_pb.dmem[0xfec >> 2] = base;                       /* OSTask.output_buff_size: the end of the ring */
-    g_pb.dmem[0xff0 >> 2] = base;                       /* OSTask.data_ptr */
-    g_pb.dmem[0xff4 >> 2] = cs.dl_bytes;                /* data_size */
+    g_pb.dmem[0xfe8 >> 2] = lo;                         /* OSTask.output_buff, output_buff_size: the ring */
+    g_pb.dmem[0xfec >> 2] = hi;
+    g_pb.dmem[0xff0 >> 2] = base;                       /* OSTask.data_ptr, data_size */
+    g_pb.dmem[0xff4 >> 2] = cs.dl_bytes;
+    g_pb.dmem[0xff8 >> 2] = base + 0x1600;              /* the yield area (the canned tasks do not yield) */
     g_pb.dmem[0xfc4 >> 2] = 0;                          /* flags: no yield */
     g_pb.cr[4] &= ~3u;                                  /* SP_STATUS: not halted, not broken */
     g_pb.cr[2] = g_pb.cr[3] = 0xff8;                    /* the DMA length registers, as any earlier task leaves them (the lean front-end writes the ring without a DMA and leaves them as they are) */
@@ -271,13 +323,25 @@ static int run_canned(struct armlet_ctx *c, struct pair *p, unsigned kind, unsig
     memset(&opts, 0, sizeof(opts));
     opts.tol = c->cfg.probe_tol;
     opts.dmem_ok = c->cfg.probe_tol ? near_dmem_ok : NULL;
+#ifdef ARMLET_HLE_MUTATE
+    if (ARMLET_HLE_MUTATE == 352 || ARMLET_HLE_MUTATE == 353)
+        opts.perturb = perturb_dmem;
+#endif
 
     sp_pc = *c->rsp.SP_PC_REG;
-    st = armlet_hle_probe_pair(&p->b->uc, &g_pb, &opts, lo, base, base + 0x1200, base + 0x1600, out);
+    st = armlet_hle_probe_pair(&p->b->uc, &g_pb, &opts, lo, hi, base + 0x1200, base + 0x1600, g_priv, out);
     prsp_native_load(&g_real);                          /* the state, the registers, MI_INTR and the status poll bookkeeping as they were; the JIT drops what no longer matches IMEM */
     prsp_native_resync();
     *c->rsp.SP_PC_REG = sp_pc;
-    wr_bytes(c, base, keep, PROBE_MEM);
+    if (P.check && guard && memcmp(guard, c->rsp.RDRAM, 0x800000))
+        armlet_log(M64MSG_ERROR, "probe: a canned task changed the game's RDRAM");
+    if (P.trace) {                                      /* (development: the restore must give back every byte) */
+        static PrspNativeSnap chk;
+        prsp_native_save(&chk);
+        if (memcmp(chk.dmem, g_real.dmem, sizeof(chk.dmem)) || memcmp(chk.imem, g_real.imem, sizeof(chk.imem)) || memcmp(chk.cr, g_real.cr, sizeof(chk.cr)) || chk.irq != g_real.irq)
+            armlet_log(M64MSG_ERROR, "probe: the state after a canned task differs from the one before it");
+    }
+    /* (what the canned task wrote to the private RDRAM was undone by the sandbox; the next task rewrites the text, data and case it needs) */
     return st;
 }
 
@@ -303,8 +367,10 @@ static void probe_steps(struct armlet_ctx *c, struct pair *p, unsigned max)
             p->done_kind[kind]++;
             break;
         case HLE_PROBE_DECLINED:
-            if (o.why && strstr(o.why, "status poll timeout has dropped"))
+            if (o.why && strstr(o.why, "status poll timeout has dropped")) {
                 p->n_inconclusive++;
+                p->incon_why = o.why;
+            }
             else {
                 p->n_declined++;
                 if (P.trace)
@@ -318,6 +384,7 @@ static void probe_steps(struct armlet_ctx *c, struct pair *p, unsigned max)
             break;
         default:
             p->n_inconclusive++;
+            p->incon_why = o.why;
             break;
         }
         if (P.trace && st == HLE_PROBE_MISMATCH)
@@ -341,7 +408,7 @@ static int evaluate(struct pair *p, char *why, size_t whysz)
         return PROBE_OUT_FAIL;
     }
     if (conclusive * 10 < p->total * 6) {
-        snprintf(why, whysz, "only %u of %u canned tasks were conclusive (the JIT or the ring did not allow the rest)", conclusive, p->total);
+        snprintf(why, whysz, "only %u of %u canned tasks were conclusive (%s)", conclusive, p->total, p->incon_why ? p->incon_why : "the JIT or the ring did not allow the rest");
         return PROBE_OUT_INCONCLUSIVE;
     }
     if (done * 4 < conclusive * 3) {
@@ -398,7 +465,7 @@ static void finish(struct armlet_ctx *c, struct pair *p)
     if (out == PROBE_OUT_FAIL && p->first_report[0])
         armlet_log(M64MSG_INFO, "probe: first difference, case %s", p->first_report);
     pr = out == PROBE_OUT_PASS ? UC_PROBE_PASS : out == PROBE_OUT_PASS_TOL ? UC_PROBE_PASS_TOL : out == PROBE_OUT_FAIL ? UC_PROBE_FAIL : UC_PROBE_NONE;
-    if (!p->force && out != PROBE_OUT_INCONCLUSIVE)
+    if ((!p->force || P.force_cache) && !p->experiment && out != PROBE_OUT_INCONCLUSIVE)
         store_entry(p, pr);
     if (out == PROBE_OUT_PASS || out == PROBE_OUT_PASS_TOL)
         latch(c, p);
@@ -431,7 +498,7 @@ static void first_sight(struct armlet_ctx *c, struct pair *p, const struct armle
     for (i = 0; i < 1024; i++)
         text[i] = *(const uint32_t *)((const uint8_t *)c->rsp.RDRAM + ((ta + 4 * i) & 0x7ffffc));
     p->dr.family = DERIVE_F3DEX2;
-    if (ce && !p->force) {
+    if (ce && (!p->force || P.force_cache)) {
         /* seen before (this tool version, these references): the verdict and the probe's result are in the cache */
         p->from_cache = 1;
         p->dr.verdict = ce->verdict;
@@ -453,6 +520,14 @@ static void first_sight(struct armlet_ctx *c, struct pair *p, const struct armle
             snprintf(p->note, sizeof(p->note), "cached: the probe %s", ce->probe == UC_PROBE_FAIL ? "failed" : "found the build unsupported");
             armlet_log(M64MSG_INFO, "probe: ucode %016" PRIx64 " data %016" PRIx64 ": %s", p->tid, p->did, p->note);
             return;
+        }
+        if (p->force) {
+            const struct hle_ucode *reg = dbuild_registered(p->dr.rec.load_key);
+            if (reg) {
+                struct derive_rec rr;
+                dbuild_rec_of(reg, &rr);
+                p->rec_equal = dbuild_rec_equal(&p->dr.rec, &rr, &p->first_diff);
+            }
         }
         {
             struct dbuild *b = (struct dbuild *)calloc(1, sizeof(*b));
@@ -508,12 +583,15 @@ static void first_sight(struct armlet_ctx *c, struct pair *p, const struct armle
         }
         p->derive_ms = (double)(now_ns() - t0) / 1e6;
     }
-    if (p->dr.family != DERIVE_F3DEX2 || p->dr.verdict == DERIVE_NONE) {
+    if (p->dr.family == DERIVE_F3DEX2 && p->dr.verdict == DERIVE_NONE && c->cfg.probe_none_x && p->dr.n_x + p->dr.n_xr[2] <= c->cfg.probe_none_x) {
+        p->experiment = 1;                              /* an experiment (ARMLET_PROBE_NONE_X): the record is as derived, the verdict stays NONE, nothing is cached */
+        armlet_log(M64MSG_INFO, "probe: ucode %016" PRIx64 ": the derivation says NONE (%u unexplained, %u missing words); probing it anyway (ARMLET_PROBE_NONE_X)", p->tid, p->dr.n_x, p->dr.n_xr[2]);
+    } else if (p->dr.family != DERIVE_F3DEX2 || p->dr.verdict == DERIVE_NONE) {
         p->state = PS_DONE;
         p->outcome = PROBE_OUT_NO_CANDIDATE;
         snprintf(p->note, sizeof(p->note), "the derivation says %s (%s family, %u of %u words aligned)", derive_verdict_name(p->dr.verdict), derive_family_name(p->dr.family), p->dr.aligned_num, p->dr.aligned_den);
         armlet_log(M64MSG_INFO, "probe: ucode %016" PRIx64 " data %016" PRIx64 ": %s (%.1f ms); no probe", p->tid, p->did, p->note, p->derive_ms);
-        if (!p->force) {
+        if (!p->force || P.force_cache) {
             p->dr.primary = p->dr.primary < 0 ? 0 : p->dr.primary;
             store_entry(p, UC_PROBE_NONE);
         }
@@ -545,7 +623,7 @@ static void first_sight(struct armlet_ctx *c, struct pair *p, const struct armle
             p->outcome = PROBE_OUT_UNSUPPORTED;
             snprintf(p->note, sizeof(p->note), "derived %s, but no build can be made of it: %s", derive_verdict_name(p->dr.verdict), why);
             armlet_log(M64MSG_INFO, "probe: ucode %016" PRIx64 " data %016" PRIx64 ": %s; no probe", p->tid, p->did, p->note);
-            if (!p->force)
+            if ((!p->force || P.force_cache) && !p->experiment)
                 store_entry(p, UC_PROBE_UNSUPPORTED);
             return;
         }
@@ -583,8 +661,30 @@ void armlet_probe_offer(struct armlet_ctx *c, const struct armlet_ucode_id *u)
         first_sight(c, p, u, did, da, ds);
         return;                                         /* (the first canned tasks run on the next graphics task: the derivation took long enough for this one) */
     }
-    if (p->state == PS_PROBING)
+    if (p->state == PS_PROBING && P.step)
         probe_steps(c, p, P.step);
+}
+
+int armlet_probe_run_registered(struct armlet_ctx *c, const struct hle_ucode *u)
+{
+    static struct pair p;
+    struct dbuild *b = (struct dbuild *)calloc(1, sizeof(*b));
+    unsigned i, bad = 0;
+    if (!b)
+        return -1;
+    b->uc = *u;
+    memset(&p, 0, sizeof(p));
+    p.b = b;
+    p.tid = u->id;
+    schedule(&p, c->cfg.probe_seeds ? c->cfg.probe_seeds : 3);
+    for (i = 0; i < p.total; i++) {
+        struct hle_probe_out o;
+        int st = run_canned(c, &p, p.kind[i], p.seed[i], &o);
+        if (st == HLE_PROBE_MISMATCH)
+            bad++;
+    }
+    free(b);
+    return (int)bad;
 }
 
 bool armlet_probe_gate(struct armlet_ctx *c, const struct armlet_ucode_id *u)

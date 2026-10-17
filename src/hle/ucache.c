@@ -16,6 +16,13 @@
 #include "derive.h"
 #include "ucache.h"
 
+/* test builds (cc -DARMLET_HLE_MUTATE=N tools/hle/test_ucache.c, tools/hle/mutcheck_ucache.sh): a deliberate error N that tools/hle/test_ucache.c must catch */
+#ifdef ARMLET_HLE_MUTATE
+#define UMUT(n, ok, bad) (ARMLET_HLE_MUTATE == (n) ? (bad) : (ok))
+#else
+#define UMUT(n, ok, bad) (ok)
+#endif
+
 struct hdr {
     char magic[8];
     uint32_t bom, format, tool, count, esize, crc;
@@ -87,7 +94,7 @@ static void load_file(void)
         unsigned q;
         if (fread(&e, sizeof(e), 1, f) != 1)
             break;                                         /* truncated: the entries before it stand */
-        if (e.crc != entry_crc(&e) || e.tool != ucache_tool_version())
+        if ((UMUT(345, e.crc != entry_crc(&e), 0)) || UMUT(347, e.tool != ucache_tool_version(), 0))
             continue;                                      /* damaged, or made by another version of the tool */
         for (q = 0; q < U.n; q++)
             if (U.e[q].text_id == e.text_id && U.e[q].data_id == e.data_id)
@@ -97,7 +104,7 @@ static void load_file(void)
                 U.e[q] = e;
             continue;
         }
-        if (U.n < UCACHE_MAX_ENTRIES) {
+        if (U.n < UMUT(346, UCACHE_MAX_ENTRIES, 100000u)) {
             U.e = (struct ucache_entry *)realloc(U.e, (U.n + 1) * sizeof(e));
             if (!U.e) {
                 U.n = 0;
@@ -146,6 +153,8 @@ static int write_file(void)
     unsigned i;
     int ok = 1;
     snprintf(tmp, sizeof(tmp), "%s.tmp%ld", U.path, (long)getpid());
+    if (UMUT(349, 0, 1))
+        snprintf(tmp, sizeof(tmp), "%s", U.path);              /* (not atomic: the file is rewritten in place) */
     f = fopen(tmp, "wb");
     if (!f && errno == ENOENT) {                           /* the directory of the file does not exist yet */
         char dir[1100];
@@ -175,6 +184,8 @@ static int write_file(void)
     if (ok)
         (void)fsync(fileno(f));
     ok &= fclose(f) == 0;
+    if (UMUT(349, 0, 1))
+        return ok ? 0 : -1;
     if (!ok || rename(tmp, U.path)) {
         unlink(tmp);
         return -1;
@@ -185,10 +196,11 @@ static int write_file(void)
 int ucache_store(const struct ucache_entry *src)
 {
     struct ucache_entry e = *src;
-    unsigned i, q = U.n;
+    unsigned i, q;
     if (!U.open)
         return 0;
     load_file();                                           /* another process may have added entries since: merge before writing */
+    q = U.n;
     e.tool = ucache_tool_version();
     e.seq = ++U.seq;
     e.crc = entry_crc(&e);
@@ -198,7 +210,7 @@ int ucache_store(const struct ucache_entry *src)
             break;
         }
     if (q == U.n) {
-        if (U.n == UCACHE_MAX_ENTRIES) {                   /* full: the least recently used entry goes */
+        if (U.n == UMUT(346, UCACHE_MAX_ENTRIES, 100000u)) {                   /* full: the least recently used entry goes */
             unsigned old = 0;
             for (i = 1; i < U.n; i++)
                 if (U.e[i].seq < U.e[old].seq)

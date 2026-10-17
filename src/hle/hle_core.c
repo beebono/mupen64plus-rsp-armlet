@@ -167,6 +167,10 @@ static struct {
     int rdp_emul;                       /* probe: the JIT runs in the sandbox, where nobody takes the RDP lists: this does what the video plugin does to DPC_START / DPC_CURRENT */
     uint32_t ram_lo, ram_n_len;         /* probe: ram_n holds only [ram_lo, ram_lo + ram_n_len) and [ram_lo2, ram_lo2 + ram_n_len2) of the RDRAM, one after the other (0: all of it, verify) */
     uint32_t ram_lo2, ram_n_len2;
+    struct { uint32_t lo, len; size_t off; } ram_x[16];       /* probe: more ranges, the ones the native run wrote outside the two windows (copied after it) */
+    unsigned n_ram_x;
+    uint8_t *ram_xbuf;
+    size_t ram_xlen;
     /* statistics */
     uint64_t tasks, native, declined, verified, mismatches, ticks;
     struct {
@@ -476,6 +480,12 @@ static const uint8_t *ram_n_at(uint32_t addr)
         return K.ram_n + (addr - K.ram_lo);
     if (K.ram_n_len2 && addr >= K.ram_lo2 && addr + 4 <= K.ram_lo2 + K.ram_n_len2)
         return K.ram_n + K.ram_n_len + (addr - K.ram_lo2);
+    {
+        unsigned i;
+        for (i = 0; i < K.n_ram_x; i++)
+            if (addr >= K.ram_x[i].lo && addr + 4 <= K.ram_x[i].lo + K.ram_x[i].len)
+                return K.ram_xbuf + K.ram_x[i].off + (addr - K.ram_x[i].lo);
+    }
     return NULL;
 }
 
@@ -673,7 +683,7 @@ static void compare_tasks(struct report *r, const struct hle_ucode *u, const Prs
                         uint32_t addr = (d + j) & 0x7ffffc;
                         const uint8_t *np = ram_n_at(addr);
                         if (!np) {
-                            rep(r, "  RDRAM[%06x] written by DMA %s outside the compared window\n", addr, side ? "(JIT)" : "(native)");
+                            rep(r, "  RDRAM[%06x] written by DMA %s outside the compared window (event %zu: dmem %03x dram %06x len %08x)\n", addr, side ? "(JIT)" : "(native)", k, e->v[k].a, e->v[k].b, e->v[k].c);
                             goto next_range;
                         }
                         if (memcmp(np, (const uint8_t *)K.v.rdram + addr, 4)) {
@@ -1220,8 +1230,26 @@ int armlet_hle_harness_jit(const struct hle_ucode *uc, const PrspNativeSnap *bef
  * sandbox, then the JIT runs it from the same state, in the sandbox too (its RDP lists are not handed to the video plugin, its RDRAM writes are undone), and the end states are compared as the
  * verify does. The RDRAM compare keeps only the window [win_lo, win_hi) of the output ring (a DMA write outside it is reported). The caller restores the RSP state (prsp_native_load) and the
  * RDRAM it scribbled on; the SP_PC register must be 0 when this is called. */
+static int probe_pair(const struct hle_ucode *uc, const PrspNativeSnap *before, const struct hle_probe_opts *opts, uint32_t win_lo, uint32_t win_hi, uint32_t win2_lo, uint32_t win2_hi,
+                      struct hle_probe_out *out);
+
 int armlet_hle_probe_pair(const struct hle_ucode *uc, const PrspNativeSnap *before, const struct hle_probe_opts *opts, uint32_t win_lo, uint32_t win_hi, uint32_t win2_lo, uint32_t win2_hi,
-                          struct hle_probe_out *out)
+                          uint32_t *rdram, struct hle_probe_out *out)
+{
+    uint32_t *keep;
+    int st;
+    init_once();
+    keep = K.v.rdram;
+    K.v.rdram = rdram;                                  /* the canned task's RDRAM: the front-end and the JIT's DMA both work on it (probe_rdram.cpp) */
+    armlet_hle_set_rdram(rdram);
+    st = probe_pair(uc, before, opts, win_lo, win_hi, win2_lo, win2_hi, out);
+    K.v.rdram = keep;
+    armlet_hle_set_rdram(keep);
+    return st;
+}
+
+static int probe_pair(const struct hle_ucode *uc, const PrspNativeSnap *before, const struct hle_probe_opts *opts, uint32_t win_lo, uint32_t win_hi, uint32_t win2_lo, uint32_t win2_hi,
+                      struct hle_probe_out *out)
 {
     struct report r;
     uint64_t t0;
@@ -1232,7 +1260,6 @@ int armlet_hle_probe_pair(const struct hle_ucode *uc, const PrspNativeSnap *befo
 
     memset(out, 0, sizeof(*out));
     init_once();
-    K.verify = 0;
     win_lo &= 0x7ffff8;
     win_hi &= 0x7ffff8;
     win2_lo &= 0x7ffff8;
@@ -1263,6 +1290,8 @@ int armlet_hle_probe_pair(const struct hle_ucode *uc, const PrspNativeSnap *befo
         return out->status;
     }
     prsp_native_save(K.sn);
+    if (opts && opts->perturb)
+        opts->perturb(uc, K.sn->dmem);
     memcpy(win, (const uint8_t *)K.v.rdram + win_lo, win_hi - win_lo);
     memcpy(win + (win_hi - win_lo), (const uint8_t *)K.v.rdram + win2_lo, win2_hi - win2_lo);
     K.ram_n = win;
@@ -1270,6 +1299,46 @@ int armlet_hle_probe_pair(const struct hle_ucode *uc, const PrspNativeSnap *befo
     K.ram_n_len = win_hi - win_lo;
     K.ram_lo2 = win2_lo;
     K.ram_n_len2 = win2_hi - win2_lo;
+    K.n_ram_x = 0;
+    K.ram_xlen = 0;
+    {   /* the native run's DMA writes outside the two windows (a microcode writes small things of its own: a word at RDRAM 0 in Ocarina of Time's): their bytes, to be compared with what the JIT leaves there */
+        size_t q;
+        for (q = 0; q < K.ev[0].n && K.n_ram_x < 16; q++) {
+            const PrspNativeEvent *e = &K.ev[0].v[q];
+            uint32_t length, skip, dram, row;
+            unsigned count;
+            if (e->kind != PRSP_EV_DMA_WR)
+                continue;
+            length = ((e->c & 0xfff) + 1 + 7) & ~7u;
+            skip = (e->c >> 20) & 0xfff;
+            count = (e->c >> 12) & 0xff;
+            if (((e->a & 0x1ffc & 0xfff) + length) > 0x1000)
+                length = 0x1000 - (e->a & 0x1ffc & 0xfff);
+            dram = e->b & 0x7ffff8;
+            for (row = 0; row <= count && K.n_ram_x < 16; row++, dram += length + skip) {
+                unsigned w;
+                int inside = 0;
+                if (dram + length > 0x800000 || K.ram_xlen + length > (64u << 10))
+                    continue;
+                if ((dram >= win_lo && dram + length <= win_hi) || (dram >= win2_lo && dram + length <= win2_hi))
+                    inside = 1;
+                for (w = 0; w < K.n_ram_x; w++)
+                    if (dram >= K.ram_x[w].lo && dram + length <= K.ram_x[w].lo + K.ram_x[w].len)
+                        inside = 1;
+                if (inside)
+                    continue;
+                K.ram_xbuf = (uint8_t *)realloc(K.ram_xbuf, K.ram_xlen + length);
+                if (!K.ram_xbuf)
+                    abort();
+                memcpy(K.ram_xbuf + K.ram_xlen, (const uint8_t *)K.v.rdram + dram, length);
+                K.ram_x[K.n_ram_x].lo = dram;
+                K.ram_x[K.n_ram_x].len = length;
+                K.ram_x[K.n_ram_x].off = K.ram_xlen;
+                K.n_ram_x++;
+                K.ram_xlen += length;
+            }
+        }
+    }
     out->n_events = (unsigned)K.ev[0].n;
     sandbox_off();
     prsp_native_record(0);
@@ -1293,6 +1362,30 @@ int armlet_hle_probe_pair(const struct hle_ucode *uc, const PrspNativeSnap *befo
     r.count = 0;
     g_popt = opts;
     g_ptol_used = 0;
+#ifdef ARMLET_HLE_MUTATE
+    if ((ARMLET_HLE_MUTATE == 350 || ARMLET_HLE_MUTATE == 351) && K.st[0].bytes) {
+        /* test builds: the native stream is perturbed in its first shaded triangle, to show what the near-match tolerance admits (350: the red base value of the shade block one level up; it must pass
+         * with the tolerance and fail without) and what it does not (351: one bit of an edge coefficient; it must fail either way) */
+        uint64_t pos = 0, k;
+        while (pos + 8 <= K.st[0].len) {
+            unsigned op = K.st[0].bytes[pos] & 0x3f, sz = uc->rdp_cmd_size ? uc->rdp_cmd_size(K.st[0].bytes[pos]) : hle_rdp_cmd_size(op);
+            if (op >= 0x0c && op <= 0x0f && pos + sz <= K.st[0].len) {
+                if (ARMLET_HLE_MUTATE == 350) {
+                    unsigned r = ((unsigned)K.st[0].bytes[pos + 32] << 8 | K.st[0].bytes[pos + 33]) + 1;
+                    K.st[0].bytes[pos + 32] = (uint8_t)(r >> 8);
+                    K.st[0].bytes[pos + 33] = (uint8_t)r;
+                }
+                else
+                    K.st[0].bytes[pos + 8 + 3] ^= 1;
+                K.st[0].hash = 0xcbf29ce484222325ull;
+                for (k = 0; k < K.st[0].len; k++)
+                    K.st[0].hash = (K.st[0].hash ^ K.st[0].bytes[k]) * 0x100000001b3ull;
+                break;
+            }
+            pos += sz ? sz : 8;
+        }
+    }
+#endif
     if (!(K.sj->cr[4] & SP_STATUS_BROKE)) {                  /* the JIT stopped without ending the task (its poll time-out, a wait for the CPU): nothing to compare */
         out->status = HLE_PROBE_INCONCLUSIVE;
         out->why = "the JIT did not finish the task";
@@ -1304,6 +1397,7 @@ int armlet_hle_probe_pair(const struct hle_ucode *uc, const PrspNativeSnap *befo
     K.ram_n = keep;
     K.ram_n_len = K.ram_n_len2 = 0;
     K.ram_lo = K.ram_lo2 = 0;
+    K.n_ram_x = 0;
     out->stream_len = K.st[0].len;
     out->n_diff = r.count;
     snprintf(out->report, sizeof(out->report), "%.*s", (int)(r.n < sizeof(out->report) - 1 ? r.n : sizeof(out->report) - 1), r.buf);

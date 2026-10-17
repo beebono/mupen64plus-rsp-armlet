@@ -1,7 +1,7 @@
 /*
  * arMLEt - tools/hle/probe_replay.c: the probe (src/hle/probe.c) on ucode dumps, without a game
  *
- *   armlet-probe-replay [--cache FILE] [--latch] [--force] [--tol] [--seeds N] [--trace] [--rep N] TEXTFILE...
+ *   armlet-probe-replay [--cache FILE] [--latch] [--force] [--tol] [--seeds N] [--none-x N] [--trace] [--rep N] TEXTFILE...
  *
  * TEXTFILE is a <id>.<datahash>.text dump of tools/ucode_dump_shim.c (.data and .ext next to it). For each one a private RSP is set up as at the start of a graphics task of that
  * microcode (the text in RDRAM and in IMEM at 0x80, the data segment in DMEM, an OSTask, a 128 KiB RDP output ring), and armlet_probe_offer is called the way the dispatch does until
@@ -20,6 +20,8 @@
 
 #include "armlet.h"
 #include "gfx_ucode.h"
+#include "hle/dbuild.h"
+#include "hle/derive.h"
 #include "hle/hle_internal.h"
 #include "hle/probe.h"
 #include "native/native.h"
@@ -114,6 +116,95 @@ static void put_be(uint32_t addr, const uint8_t *b, size_t n)
         W.rdram[((addr + (uint32_t)i) & 0x7fffff) ^ 3] = b[i];
 }
 
+/* --task SNAP: does running the canned tasks before a real task change that task's result? (a snapshot of hle.task-*.snap from ARMLET_HLE_CAPTURE: the state at the start of a game's task, the RDRAM rows it reads)
+ * The JIT runs the task from the snapshot (A); then the canned tasks run with the registered build, and the JIT runs the task again from the same state (B). A and B must be identical. */
+static int task_test(const char *path, unsigned rounds)
+{
+    FILE *f = fopen(path, "rb");
+    struct armlet_snapfile_hdr h;
+    static PrspNativeSnap before, after_a, after_b, cur;
+    unsigned i, nd = 0;
+    uint8_t *ram0;
+    const struct hle_ucode *uc;
+    struct armlet_ucode_id u;
+    if (!f || fread(&h, sizeof(h), 1, f) != 1 || h.magic != ARMLET_SNAPFILE_MAGIC || fread(&before, sizeof(before), 1, f) != 1) {
+        fprintf(stderr, "%s: not a snapshot\n", path);
+        return 2;
+    }
+    memset(W.rdram, 0, 0x800000);
+    for (i = 0; i < h.n_rows; i++) {
+        uint32_t rh[2], j, w;
+        if (fread(rh, 4, 2, f) != 2)
+            return 2;
+        for (j = 0; j < rh[1]; j += 4) {
+            if (fread(&w, 4, 1, f) != 1)
+                return 2;
+            memcpy(W.rdram + ((rh[0] + j) & 0x7ffffc), &w, 4);
+        }
+    }
+    fclose(f);
+    uc = armlet_hle_find(h.ucode);
+    if (!uc) {
+        fprintf(stderr, "%s: no registered build for %016llx\n", path, (unsigned long long)h.ucode);
+        return 2;
+    }
+    ram0 = malloc(0x800000);
+    memcpy(ram0, W.rdram, 0x800000);
+    before.pc = h.entry_pc;
+    memset(&W.ctx.cfg, 0, sizeof(W.ctx.cfg));
+    W.ctx.cfg.gfx_mode = ARMLET_GFX_HLE;
+    W.ctx.cfg.probe = 1;
+    snprintf(W.ctx.cfg.ucode_cache, sizeof(W.ctx.cfg.ucode_cache), "off");
+    armlet_hle_init(&W.ctx);
+    memset(&u, 0, sizeof(u));
+    u.id = h.ucode;
+#define RUN_JIT(out) do { prsp_native_load(&before); prsp_native_resync(); memcpy(W.rdram, ram0, 0x800000); W.regs[4] &= ~3u; W.sp_pc = h.entry_pc; parallelRSPDoRspCycles(~0u); prsp_native_save(&(out)); } while (0)
+    RUN_JIT(after_a);
+    {
+        uint8_t *ra = malloc(0x800000);
+        memcpy(ra, W.rdram, 0x800000);
+        for (i = 0; i < rounds; i++) {
+            int bad;
+            prsp_native_load(&before);
+            prsp_native_resync();
+            memcpy(W.rdram, ram0, 0x800000);
+            W.regs[4] &= ~3u;
+            W.sp_pc = h.entry_pc;
+            bad = armlet_probe_run_registered(&W.ctx, uc);
+            printf("  canned tasks with the registered build: %d differ\n", bad);
+            prsp_native_load(&before);
+            prsp_native_resync();
+            memcpy(W.rdram, ram0, 0x800000);
+            W.regs[4] &= ~3u;
+            W.sp_pc = h.entry_pc;
+            parallelRSPDoRspCycles(~0u);
+            prsp_native_save(&after_b);
+            nd = 0;
+            if (memcmp(after_a.dmem, after_b.dmem, sizeof(after_a.dmem))) {
+                unsigned k;
+                for (k = 0; k < 4096; k++)
+                    if (((uint8_t *)after_a.dmem)[k] != ((uint8_t *)after_b.dmem)[k] && nd++ < 8)
+                        printf("  DMEM[%03x]: before the canned tasks %02x, after %02x\n", k ^ 3, ((uint8_t *)after_a.dmem)[k], ((uint8_t *)after_b.dmem)[k]);
+            }
+            if (memcmp(after_a.imem, after_b.imem, sizeof(after_a.imem)))
+                printf("  IMEM differs\n"), nd++;
+            if (memcmp(after_a.cr, after_b.cr, sizeof(after_a.cr)))
+                printf("  registers differ\n"), nd++;
+            if (memcmp(ra, W.rdram, 0x800000))
+                printf("  RDRAM differs\n"), nd++;
+            if (memcmp(after_a.sr, after_b.sr, sizeof(after_a.sr)))
+                printf("  scalar registers differ\n"), nd++;
+            if (memcmp(after_a.vr, after_b.vr, sizeof(after_a.vr)))
+                printf("  vector registers differ\n"), nd++;
+            (void)cur;
+        }
+        free(ra);
+    }
+    free(ram0);
+    printf("TASK %s: %s\n", path, nd ? "the task's result CHANGED after the canned tasks" : "the task's result is the same");
+    return nd != 0;
+}
+
 static const char *outcome_name(int o)
 {
     switch (o) {
@@ -131,7 +222,7 @@ static const char *outcome_name(int o)
 int main(int argc, char **argv)
 {
     int i, force = 0, latch = 0, tol = 0, reps = 1;
-    unsigned seeds = 0;
+    unsigned seeds = 0, none_x = 0;
     const char *cache = "off";
     int nfail = 0;
     int world = 0;
@@ -146,8 +237,39 @@ int main(int argc, char **argv)
             tol = 1;
         else if (!strcmp(argv[i], "--trace"))
             l_trace = 1;
-        else if (!strcmp(argv[i], "--cache") && i + 1 < argc)
+        else if (!strcmp(argv[i], "--sync")) {          /* the generated references (derive_refs.c) against the registered tables */
+            unsigned r, bad = 0, n = 0;
+            for (r = 0; r < derive_n_recs; r++) {
+                const struct hle_ucode *u;
+                struct derive_rec rr;
+                const char *first;
+                if (derive_recs[r].fam != DERIVE_F3DEX2)
+                    continue;
+                u = dbuild_registered(derive_recs[r].load_key);
+                n++;
+                if (!u) {
+                    printf("SYNC %s: no registered build with its load key\n", derive_recs[r].name);
+                    bad++;
+                    continue;
+                }
+                dbuild_rec_of(u, &rr);
+                if (!dbuild_rec_equal(&derive_recs[r], &rr, &first)) {
+                    printf("SYNC %s: differs from the registered build (%s)\n", derive_recs[r].name, first);
+                    bad++;
+                }
+            }
+            printf("SYNC %u F3DEX2 references, %u out of step with the tables\n", n, bad);
+            nfail += bad != 0;
+        } else if (!strcmp(argv[i], "--task") && i + 1 < argc) {
+            if (!world) {
+                world_init();
+                world = 1;
+            }
+            nfail += task_test(argv[++i], (unsigned)reps);
+        } else if (!strcmp(argv[i], "--cache") && i + 1 < argc)
             cache = argv[++i];
+        else if (!strcmp(argv[i], "--none-x") && i + 1 < argc)
+            none_x = (unsigned)atoi(argv[++i]);
         else if (!strcmp(argv[i], "--seeds") && i + 1 < argc)
             seeds = (unsigned)atoi(argv[++i]);
         else if (!strcmp(argv[i], "--rep") && i + 1 < argc)
@@ -214,6 +336,7 @@ int main(int argc, char **argv)
                 W.ctx.cfg.probe_force = force;
                 W.ctx.cfg.probe_tol = tol;
                 W.ctx.cfg.probe_seeds = seeds;
+                W.ctx.cfg.probe_none_x = none_x;
                 snprintf(W.ctx.cfg.ucode_cache, sizeof(W.ctx.cfg.ucode_cache), "%s", cache);
                 armlet_hle_init(&W.ctx);
                 memset(&u, 0, sizeof(u));

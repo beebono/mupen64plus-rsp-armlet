@@ -15,6 +15,8 @@ ln -sf "$N/tools/rsp-shim.so" "$N/tools/input-det.so" "$N/tools/audio-adump.so" 
 ln -sf "$FOIR_SO" "$X/plug/mupen64plus-rdp-foir.so"
 printf '%s\n' "$@" > "$X/runs.txt"
 if [ -x "$R/out/native-tools/armlet-native-replay" ]; then "$R/out/native-tools/armlet-native-replay" --masks > "$X/masks.txt"; else rm -f "$X/masks.txt"; fi
+# EXTRA_MASKS="<id>:lo-hi,lo-hi;<id>:..." (hex): dead DMEM ranges of ucodes that are not in the tables (the probe's latched builds, tools/hle/probe_replay.c), appended to the masks both sides use
+if [ -n "$EXTRA_MASKS" ]; then _m=$(cat "$X/masks.txt" 2>/dev/null); printf '%s%s\n' "${_m:+$_m;}" "$EXTRA_MASKS" > "$X/masks.txt"; fi
 export SDL_VIDEODRIVER=offscreen SDL_AUDIODRIVER=dummy HOME=$X/home XDG_DATA_HOME=$X/home XDG_CONFIG_HOME=$X/home XDG_CACHE_HOME=$X/home/cache
 MUPEN="$CONSOLE --corelib $CORE_DIR/libmupen64plus.so.2 --datadir $R/../mupen64plus-core/data"; ROMDIR=$R/..; VIDARGS=
 WRAP="systemd-run --user --scope -q -p MemoryMax=${MEMMAX:-2G} -p MemorySwapMax=0"; GAP=1
