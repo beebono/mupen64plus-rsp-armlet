@@ -19,7 +19,7 @@ differences of the three microcodes passed as parameters; what is their own is t
 
 | front-end | microcodes | the F3D functions with |
 |---|---|---|
-| `src/hle/hle_rare.c` (one parameterised implementation) | Diddy Kong Racing `72a1416f6d8445c3`, Jet Force Gemini `410cfbcf87378a9c` | `has_off` (the vertex offset vector), `F3D_TRIV_RARE` (cull bits, unscaled texture block, no minimum z slope), `f3d_clip_tri` |
+| `src/hle/hle_rare.c` (one parameterised implementation) | Diddy Kong Racing `909f82e8f8da6456`, Jet Force Gemini `c2aca403f282af1b` | `has_off` (the vertex offset vector), `F3D_TRIV_RARE` (cull bits, unscaled texture block, no minimum z slope), `f3d_clip_tri` |
 | `src/hle/hle_indy.c` | Indiana Jones `a6c64e8d82ca6346` | `fog_wide` (the 32-bit fog), `clip_acc` 1, `F3D_TRIV_INDY` (cull bit 13 only, own colour at every vertex, a triangle of area zero is rejected, not culled), `sort_given` (the vertex order from the microcode's table), `f3d_clip_tri_seq` (its clipper walks the polygon in input order) |
 
 Both front-ends run the boot code and the initialisation (OS code, the overlay manager's first load) on the interpreter (`hle_rsp_run`, the exact reference of the framework) up to the command loop, then
@@ -103,8 +103,8 @@ scripts/build.sh native --tools; scripts/build.sh aarch64 --tools; scripts/build
 out/native-tools/armlet-native-replay --quiet test-output/rare/snap/*.snap test-output/indy/snap/*.snap
 qemu-aarch64-static -L /usr/aarch64-linux-gnu out/aarch64-tools/armlet-native-replay --quiet test-output/rare/snap/*.snap     # and aarch64-tools-scalar
 # synthetic tasks (the template is a captured task start of the game; SYN_TEXT / INDY_TEXT the 0x3000 bytes of the ucode text as the game's RDRAM holds it)
-SYN_TEXT=dkr.text python3 tools/rare/synth.py dkr test-output/rare/syn2 200 7 test-output/rare/snap/hle.task-72a1416f6d8445c3-3.snap
-SYN_TEXT=jfg.text python3 tools/rare/synth.py jfg test-output/rare/synj2 200 7 test-output/rare/snap/hle.task-410cfbcf87378a9c-3.snap
+SYN_TEXT=dkr.text python3 tools/rare/synth.py dkr test-output/rare/syn2 200 7 test-output/rare/snap/hle.task-909f82e8f8da6456-3.snap
+SYN_TEXT=jfg.text python3 tools/rare/synth.py jfg test-output/rare/synj2 200 7 test-output/rare/snap/hle.task-c2aca403f282af1b-3.snap
 INDY_TEXT=indy.text python3 tools/rare/synth_indy.py test-output/rare/syni 300 1 test-output/indy/snap/hle.task-a6c64e8d82ca6346-100.snap
 out/native-tools/armlet-native-replay --oracle --quiet test-output/rare/syn2/*.snap          # synj2, syni
 # perturbed tasks

@@ -103,7 +103,7 @@ EXPORT unsigned int CALL DoRspCycles(unsigned int c)
         us = (us + 3) & ~3u;
         if (!ds || ds > 0x1000) ds = ds ? 0x1000 : 0x800;
         ds = (ds + 3) & ~3u;
-        th = fnv(rinfo.RDRAM + ua, us);
+        th = fnv(rinfo.RDRAM + ua, 0x1000);   /* the id: the whole 4 KiB (src/gfx_ucode.c) */
         rd_be(tb, rinfo.RDRAM, ua, 0x1000); rd_be(db, rinfo.RDRAM, da, ds);   /* the whole 4 KiB: the last 0x80 bytes are code the microcode loads itself when ucode_size says 0xf80 */
         { uint32_t x = 0; (void)x; }
         { uint64_t x = 0xcbf29ce484222325ull; for (i = 0; i < ds; i++) x = (x ^ db[i]) * 0x100000001b3ull; dh = x; }

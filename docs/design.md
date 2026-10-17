@@ -218,8 +218,9 @@ The rsp-hle asserts are compiled out (`-DNDEBUG`), as in upstream's release buil
 ## Graphics ucode identification
 
 `gfx_ucode.c` identifies the microcode of a task by hashing its text: FNV-1a-64, one 32-bit host-endian RDRAM word per step, over
-`ucode_size` bytes of `TASK_UCODE` (at most 4 KiB; 0xf80 when the game leaves the field 0, as several do). This is the key the earlier
-instruction-profiling work used. rsp-hle's own cache is keyed on the ucode's *address* and says nothing about what is at that address, so it
+**the whole 4 KiB at `TASK_UCODE`, whatever `ucode_size` says**. (Games pass 0, 0xf80 or 0x1000 for one text: the boot code loads 0xf80 bytes and the
+microcode loads the tail itself. Until 2026-10-16 the hash covered `ucode_size` bytes, so one text had up to three ids: Rocket's F3DEX 2.07 and Donkey Kong 64's
+were the same 4 KiB under two ids, 5 of the 58 ids of the survey were such duplicates, and registering a text meant registering it per size; [ucode-survey.md](ucode-survey.md).) rsp-hle's own cache is keyed on the ucode's *address* and says nothing about what is at that address, so it
 is not trusted for this. The id is recomputed only when the text changed: four recent texts are kept and compared with `memcmp`
 (vectorised in libc) against RDRAM first. The hash itself is a serial multiply chain and has no NEON form; there is a scalar reference only
 (`armlet_ucode_hash`).
@@ -340,6 +341,8 @@ goes to the JIT. A mutation number (`MUT(n, ...)`, `scripts/build.sh native --to
 | an S2DEX opcode of 0x54 .. 0x7f (undefined): its jump table entry lies in the display list buffer (the table is at 0x370, the buffer at 0x418) | the microcode reads the entry from the list's own bytes when the command comes; the front-end classified it at the build's start | 310 |
 | a display list address that is not 8-aligned (`G_DL`, `G_BRANCH_Z`) | the refill DMA rounds down; the lean mode reads from the address | 240 |
 | `G_BRANCH_Z` of F3DEX2 2.04 / 2.04H compares the screen z (it compared the clip w, as F3DZEX does) | a vertex whose clip w and screen z differ | 259 |
+| `G_BRANCH_Z` of F3DEX 2.06 (`0bbe`) compares the screen z although the build has the F3DZEX triangle code (`bz_z`; derived from `zex` alone it compared the clip w) | a vertex whose clip w and screen z differ; the synthetic `misc` case found it (149 of 1000 seeds) | 317 |
+| any task once the JIT's SP_STATUS poll timeout has dropped from 0x7fff to 16 (parallel-rsp does that for good after the first task that polled for the CPU; Gauntlet Legends' display list branches to itself until the CPU patches it) | the JIT then halts every task at its 16th poll of a register and resumes it in the next call: the end state of the call is part of a task, and the front-ends run whole tasks (`hle_core.c`, `native_run`; all families) | 316 |
 
 Found by the same fuzzing and fixed (they are reachable by lists a game can write): the F3D triangle's `f3d_tri_in.sort_given` was never set (stack garbage decided whether the vertices were sorted by Indiana Jones' table: Wave Race and Pilotwings
 captures differed from the JIT in 5 to 9 of 24 tasks, nondeterministically; mutation 228), and the build constants of two F3DEX2 builds were wrong: Ocarina of Time's and Pokemon Snap's reject mask is 0x70b0 (the w lane), not 0x7030 (a triangle or `G_CULLDL`

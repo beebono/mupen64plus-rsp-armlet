@@ -877,17 +877,15 @@ static const struct hle_dead_range l_dead[] = {
 };
 
 #define U(var, uid, nm, bld) HLE_UCODE(var) = { .id = (uid), .name = (nm), .fam = &l_fam, .fam_data = &(bld), .dead = l_dead, .n_dead = sizeof(l_dead) / sizeof(l_dead[0]), .ring_off = 0xfe8 }
-U(l_bk, 0x208a567e9aead5eaull, "F3DEX 1.21 (Banjo-Kazooie, Glover, Bomberman Hero)", l_dex);
+U(l_bk, 0x208a567e9aead5eaull, "F3DEX 1.21 (Banjo-Kazooie, Glover, Bomberman Hero, Quest 64)", l_dex);
 U(l_sf, 0xfd5a31ccf6d40b62ull, "F3DEX.NoN 1.22 (Star Fox 64, Quake, Wetrix)", l_non);
-U(l_ts_ex, 0x047252e810e35d56ull, "F3DEX 1.23 (Toy Story 2, Earthworm Jim 3D, Mystical Ninja, SpaceStation)", l_dex);
+U(l_ts_ex, 0x047252e810e35d56ull, "F3DEX 1.23 (Toy Story 2, Earthworm Jim 3D, Mystical Ninja, SpaceStation, Pokemon Puzzle League)", l_dex);
 U(l_ts_lx, 0x7502cfb7098eeffbull, "F3DLX 1.23 (Toy Story 2, A Bug's Life)", l_dlx);
 U(l_mk_ex, 0x34dad67335a54cdaull, "F3DEX 0.95 (Mario Kart 64)", l_dex095);
 U(l_mk_lx, 0x5f33f7c2be924de0ull, "F3DLX 0.95", l_dlx095);
-U(l_wo, 0x19bd8c825b9b3f72ull, "F3DLX 1.21 (Wipeout 64)", l_dlx);
+U(l_wo, 0x76c763bc18ad3ab3ull, "F3DLX 1.21 (Wipeout 64)", l_dlx);
 U(l_cf, 0x0a7cc6c93363c663ull, "F3DLX.NoN 1.21 (Clay Fighter SC)", l_dlxn);
 U(l_ig, 0xcc09096cb6a48e7bull, "F3DLX.NoN 1.23 (Iggy's Reckin' Balls, Penny Racers)", l_dlxn);
-U(l_pp, 0x1de5ed1ca5f278abull, "F3DEX 1.23 (Pokemon Puzzle League)", l_dex);
-U(l_q6, 0x9ac3b68bf66e164full, "F3DEX 1.23 (Quest 64)", l_dex);
 U(l_tu, 0x5063f108118bf62aull, "F3DEX.NoN 1.00 (Turok)", l_non);
 
 #endif

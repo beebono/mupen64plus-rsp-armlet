@@ -374,7 +374,7 @@ def main():
     byfull = {}
     for u in uc.values():
         byfull.setdefault(u["full"], []).append(u)
-    print("distinct 4 KiB texts: %d (the ucode id also depends on ucode_size: %d ids)" % (len(byfull), len(texts)))
+    print("distinct 4 KiB texts: %d (the ucode id depended on ucode_size before 2026-10-16: %d ids then)" % (len(byfull), len(texts)))
     reps = {th: us[0] for th, us in texts.items()}
     for th, u in list(reps.items()):
         pass

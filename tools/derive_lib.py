@@ -199,6 +199,9 @@ class Ucode:
         self.banner = banner_of(self.text_b, self.data)
 
     def ids(self):
+        # the ucode id is the FNV of the whole 4 KiB (src/gfx_ucode.c, since 2026-10-16); hf80 is the id of dumps taken before, hf48 the key of a G_LOAD_UCODE
+        if self.loaded:     # (a text a G_LOAD_UCODE loads is imaged differently from a task start's: only its load key names it)
+            return {self.hf48}
         return {self.h4k, self.hf80, self.hf48}
 
 

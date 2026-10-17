@@ -146,14 +146,9 @@ EXPORT m64p_error CALL PluginGetVersion(m64p_plugin_type *t, int *v, int *a, con
 static void mask_identify(void)
 {
     if (n_masks && rinfo.DMEM && *(const unsigned *)(rinfo.DMEM + 0xfc0) == 1 && *(const unsigned *)(rinfo.DMEM + 0xfcc) <= 0x1000) {
-        unsigned addr = *(const unsigned *)(rinfo.DMEM + 0xfd0) & 0x7fffff & ~3u, size = *(const unsigned *)(rinfo.DMEM + 0xfd4), i, k;
+        unsigned addr = *(const unsigned *)(rinfo.DMEM + 0xfd0) & 0x7fffff & ~3u, i, k;
         unsigned long long id = 0xcbf29ce484222325ull;
-        if (!size)
-            size = 0xf80;
-        if (size > 0x1000)
-            size = 0x1000;
-        size = (size + 3) & ~3u;
-        for (i = 0; i < size; i += 4)
+        for (i = 0; i < 0x1000; i += 4)
             id = (id ^ *(const unsigned *)(rinfo.RDRAM + ((addr + i) & 0x7ffffc))) * 0x100000001b3ull;
         for (k = 0; k < n_masks; k++)
             if (masks[k].id == id)

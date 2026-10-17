@@ -138,6 +138,8 @@ def fmt_f2_record(reg, res, U, name, ident):
         fs.append(".gen204 = 1")
     if rec.zex:
         fs.append(".zex = 1")
+    if rec.bz_z:
+        fs.append(".bz_z = 1")
     fs.append(".reject_mask = %s" % hx(rec.reject_mask, 4))
     if lay_name:
         fs.append(".lay = &%s" % lay_name)
@@ -213,7 +215,7 @@ def report(reg, fam, res, U, args):
         P("  flag evidence (words that only references with the value explain: value 0, value 1): %s" % res.flag_evidence)
         P("")
         ids = sorted({st.split(".")[0] for st, x in reg.C.by_stem.items() if x.h4k == uc.h4k and not st.startswith("L")}) or ["%016x" % uc.h4k]
-        P("/* ucode ids of this text (FNV over ucode_size bytes: one per size the games pass): %s */" % ", ".join(ids))
+        P("/* ucode ids of this text (FNV over the 4 KiB; dumps taken before 2026-10-16 are named by the FNV over ucode_size bytes, one per size the games pass): %s */" % ", ".join(ids))
         P(fmt_f2_record(reg, res, U, "new", "0x" + ids[0]))
     else:
         P("record (derived): " + ", ".join("%s=%s" % (k, hx(v[0], 3) if isinstance(v[0], int) and v[0] > 9 else v[0]) for k, v in res.rec.num.items()) + "; " + ", ".join("%s=%s" % kv for kv in res.rec.flags.items()))

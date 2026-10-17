@@ -56,11 +56,11 @@ Builds (ids as gfx_ucode.c logs them) and the games they were run with:
 |---|---|
 | F3DEX 1.21 `208a567e9aead5ea` | Banjo-Kazooie, Glover, Bomberman Hero |
 | F3DEX.NoN 1.22 `fd5a31ccf6d40b62` | Star Fox 64, Quake, Wetrix |
-| F3DEX 1.23 `047252e810e35d56`, `9ac3b68bf66e164f`, `1de5ed1ca5f278ab` | Toy Story 2 (2D), Earthworm Jim 3D, Mystical Ninja, SpaceStation Silicon Valley; Quest 64; Pokemon Puzzle League |
+| F3DEX 1.23 `047252e810e35d56`, `208a567e9aead5ea`, `047252e810e35d56` | Toy Story 2 (2D), Earthworm Jim 3D, Mystical Ninja, SpaceStation Silicon Valley; Quest 64; Pokemon Puzzle League |
 | F3DLX 1.23 `7502cfb7098eeffb` | Toy Story 2 (3D), A Bug's Life |
 | F3DEX 0.95 `34dad67335a54cda` | Mario Kart 64 |
 | F3DLX 0.95 `5f33f7c2be924de0` | (never seen running) |
-| F3DLX 1.21 `19bd8c825b9b3f72` | Wipeout 64 |
+| F3DLX 1.21 `76c763bc18ad3ab3` | Wipeout 64 |
 | F3DLX.NoN 1.21 `0a7cc6c93363c663`, 1.23 `cc09096cb6a48e7b` | Clay Fighter Sculptor's Cut; Iggy's Reckin' Balls, Penny Racers |
 | F3DEX.NoN 1.00 `5063f108118bf62a` | Turok |
 

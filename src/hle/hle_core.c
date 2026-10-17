@@ -82,6 +82,16 @@ const struct hle_ucode *armlet_hle_find(uint64_t id)
     return NULL;
 }
 
+/* two entries with one id would shadow each other (armlet_hle_find takes the first): the ids are the FNV of the whole 4 KiB text, so this is a table error (the same text registered twice) */
+static void check_unique_ids(void)
+{
+    const struct hle_ucode *a = NULL, *b;
+    while ((a = armlet_hle_next(a)) != NULL)
+        for (b = armlet_hle_next(a); b; b = armlet_hle_next(b))
+            if (a->id == b->id)
+                armlet_log(M64MSG_ERROR, "hle: two table entries with the ucode id %016" PRIx64 ": \"%s\" and \"%s\"", a->id, a->name, b->name);
+}
+
 /* ---- state ------------------------------------------------------------------------------------------------------------------------------------------------------ */
 enum { R_DMA_WR = 1, R_MTC0 };
 struct rec {
@@ -703,6 +713,7 @@ static void init_once(void)
     if (K.init)
         return;
     K.init = 1;
+    check_unique_ids();
     armlet_native_ensure_host();
     prsp_native_view(&K.v);
     K.s0 = calloc(3, sizeof(*K.s0));
@@ -730,6 +741,18 @@ static void jit_run(struct armlet_ctx *c)
     armlet_rdp_defer_task_end();
 }
 
+/* test builds only (scripts/build.sh native --hmut=N): a deliberate error N, to show that the tests catch it (docs/testing.md) */
+#ifdef ARMLET_HLE_MUTATE
+#define MUT(n, ok, bad) (ARMLET_HLE_MUTATE == (n) ? (bad) : (ok))
+#else
+#define MUT(n, ok, bad) (ok)
+#endif
+
+/* parallel-rsp starts with SP_STATUS_TIMEOUT 0x7fff: a task that polls SP_STATUS that often is halted (it waits for the CPU). After the first such halt it is 16 for good ("from now on, wait 16 times"),
+ * and the JIT then halts every task at its 16th poll of a register (one per command), resuming it in the next call: the end state of the first call is a part of the task, which no front-end that runs
+ * the whole task models (Gauntlet Legends: a display list that spins on itself until the CPU patches it, 207 of its 209 other tasks differed). The poll limits of the front-ends are for 0x7fff. */
+enum { PRSP_TIMEOUT_INIT = 0x7fff };
+
 /* The native run in the sandbox, from the state as it is. HLE_OK: the task is complete, the sandbox is still on (the caller commits or compares, then sandbox(0));
  * else the state is restored and the sandbox is off. */
 static int native_run(struct armlet_ctx *c, const struct hle_ucode *uc, int record, int interp)
@@ -752,6 +775,10 @@ static int native_run(struct armlet_ctx *c, const struct hle_ucode *uc, int reco
     K.why = NULL;
     K.broke = 0;
     prsp_native_save(K.s0);
+    if (MUT(316, K.s0->sp_status_timeout != PRSP_TIMEOUT_INIT, 0)) {
+        K.why = "the JIT's status poll timeout has dropped (an earlier task waited for the CPU)";
+        return HLE_DECLINE;
+    }
     memset(K.v.mfc0_count, 0, 32 * sizeof(short));        /* the JIT does this at the start of every task */
     if (record) {
         side_reset(0, uc);

@@ -1,7 +1,8 @@
 /*
  * arMLEt - gfx_ucode.c
  *
- * The ucode id is a serial multiply chain, so there is no NEON form of it; what makes it cheap is that it is only
+ * The ucode id is FNV-1a-64 over the whole 4 KiB at OSTask.ucode, whatever ucode_size says (0xf80 and 0x1000 are two sizes of the same text: the boot code loads
+ * 0xf80 bytes and the microcode loads the tail itself). It is a serial multiply chain, so there is no NEON form of it; what makes it cheap is that it is only
  * recomputed when a 4 KiB memcmp (libc, vectorised) of the ucode text against the last copies says the text changed.
  *
  * Copyright (C) 2026 arMLEt contributors
@@ -144,12 +145,8 @@ const struct armlet_ucode_id *armlet_gfx_identify(const struct armlet_ctx *c, bo
     struct slot *s = NULL;
     unsigned i;
 
-    /* many games leave ucode_size 0 (their boot code loads 0xf80 bytes regardless) */
-    if (!size)
-        size = 0xf80;
-    if (size > TEXT_MAX)
-        size = TEXT_MAX;
-    size = (size + 3) & ~3u;
+    /* ucode_size is not part of the identity (0, 0xf80 and 0x1000 all occur for one text): the id covers the whole 4 KiB */
+    size = TEXT_MAX;
     if (addr + size <= RDRAM_MASK + 1) {
         text = rdram + addr;
     } else {
