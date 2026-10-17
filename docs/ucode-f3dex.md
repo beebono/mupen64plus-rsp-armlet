@@ -188,7 +188,7 @@ an HLE). Full 256-entry grids per build and the dispatch registers are in [dl.md
 | 0x03 | G_MOVEMEM | same | state |
 | 0x04 | G_VTX | same | light |
 | 0x06 | G_DL | same | dl |
-| 0xaf | G_LOAD_UCODE (not run, read only; refuse) | absent | state |
+| 0xaf | G_LOAD_UCODE (handler 0xf8c / 0xf80 in F3DLX, in the IMEM tail that stays: native-f3dex.md section 3 has the operands and what it does; run by the task-level front-end on the interpreter) | absent | state |
 | 0xb0 | G_BRANCH_Z | no-op | dl |
 | 0xb1 | G_TRI2 (two triangles) | same | section 5 |
 | 0xb2 | G_MODIFYVTX | G_RDPHALF_2 | state, rdp |
@@ -356,7 +356,8 @@ text ([ucode-derive.md](ucode-derive.md), "F3DEX 1.x records that run").
   (dead list slots only); F3DLX clipping off leaves stale flag halfwords in new vertices (light.md section 10). An HLE that wants bit-exact DMEM has to model or mask those; the outputs that reach the RDP do not depend on them.
 * **RDP flush per command.** Every RDP-producing command flushes at once (no threshold); `$23` is 0xce0 at command boundaries. F3DLX protocol: DPC_END is written by the callers (rdp.md section 9).
 * **Yield and end of task**: the end overlay writes SP_STATUS; a yield saves DMEM 0..0xbff (3072 bytes) to the OSTask `yield_data_ptr` (dl.md section 6).
-* **Undefined behaviour**: undefined opcode cells, LOAD_UCODE, DL stack overflow beyond 18 entries (silently dropped call), matrix stack pointer at the limit (push refused, matrix still applied): an HLE should refuse or reproduce the documented behaviour.
+* **G_LOAD_UCODE** (read from the code, then run on the interpreter and the JIT by the synthetic tasks of `tools/hle/mksyn_ex1.py`): `w1` = text address, `G_RDPHALF_1`'s word (DMEM 0x10c) = data address, `w0 & 0xffff` = the data DMA length register. The handler saves the next command's address (`k0 + k1 - gp`) in OSTask.data_ptr (0xff0) and the text address in OSTask.ucode (0xfd0), DMAs the first 0xf18 bytes of the text to IMEM 0x80 and the data to DMEM 0 (F3DEX2: 0xf48 bytes and 0x180), waits and jumps to IMEM 0x80: the new microcode starts as a fresh task at the saved display list position. IMEM 0 .. 0x7f and 0xf98 .. 0xfff (text bytes 0xf80 .. 0xfff and 0xf18 .. 0xf7f: the loop head and the DMA routines) stay.
+* **Undefined behaviour**: undefined opcode cells, DL stack overflow beyond 18 entries (silently dropped call), matrix stack pointer at the limit (push refused, matrix still applied): an HLE should refuse or reproduce the documented behaviour.
 
 ## 8. Leftover DMEM: mask candidates (NOT established)
 
@@ -382,7 +383,7 @@ at the clipper entry and `sh $0, 2($14)` after each new vertex, with equivalents
 ## 9. Status and what is not verified
 
 * Verified: everything marked in section 2 (289 spec-routine runs over the six builds, 2000 cases each, 0 BAD in the last full run; more cases and seeds in the area documents).
-* Not verified: pieces that involve SP DMA or RDRAM (the harness has none): G_LOAD_UCODE, the RDRAM side of matrix push/pop, the flush's DMA data and polling loops, the prefetch DMA's RDRAM reads; the yield/resume path other than by the scratch driver in dl.md;
+* Not verified by the spec routines: pieces that involve SP DMA or RDRAM (the harness has none; G_LOAD_UCODE is covered by the replay tests of docs/testing.md, "F3DEX 1.x G_LOAD_UCODE"): the RDRAM side of matrix push/pop, the flush's DMA data and polling loops, the prefetch DMA's RDRAM reads; the yield/resume path other than by the scratch driver in dl.md;
   F3DLX 0.95 behaviour that was only read from the shared code (`mk64_f3dlx95` passes the same spec routines but was never seen running a game); MK64's RDPHALF/PERSPNORM opcode numbers (tables, not a Mario Kart list).
 * Facts taken from SDK knowledge rather than from the microcode: the names of geometry-mode bits, the fog parameter convention, the LookAt colours (light.md section 11).
 * The leftover-DMEM table in section 8 is a candidate list, not a mask list.

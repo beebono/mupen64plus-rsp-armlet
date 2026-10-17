@@ -16,7 +16,10 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "armlet.h"
+#include "gfx_ucode.h"
 #include "hle.h"
+#include "probe.h"
 #include "f3dex_fx.h"
 #include "f3dex_dmem.h"
 #include "f3dex_bld.h"
@@ -128,6 +131,9 @@ struct f3dex_task {
     uint32_t pend_ptr, pend_n, vend;      /* the output not yet written (staged in stage[]), and the DPC_END the microcode would have written last */
     int vend_dirty;
     uint32_t junk;                      /* bit k: slot k was loaded by an F3DLX G_VTX with G_CLIPPING off: the microcode's clip flags there are junk, ours are 0 */
+    uint32_t uc;                        /* the RDRAM address of the text the microcode runs (OSTask.ucode, DMEM 0xfd0, which G_LOAD_UCODE rewrites) */
+    uint32_t p_uc, p_data;              /* the task's own text and data pointers (the key of the tasks that decline at a load, load_known) */
+    unsigned nloads;
     int exact;                          /* issue the DMA reads of the microcode (window, operand buffer): DMEM as the microcode leaves it, the SP register write events */
     const struct f3dex_build *fx;
 };
@@ -616,6 +622,186 @@ static void make_kinds(struct f3dex_task *f)
         f->kind[op] = (uint8_t)classify(f->b, 0, hle_dm16(f->t, f->L->jt2 + 2 * (op & 0x7f)) & 0xffc);
 }
 
+
+/* ---- G_LOAD_UCODE (docs/native-f3dex.md section 5) ------------------------------------------------------------------------------------------------------------------------------- */
+/* Tasks that load another text in the middle and decline at the command (SpaceStation Silicon Valley and Pokemon Puzzle League load S2DEX 1.x) have done native work for nothing: the text and data pointers of
+ * a task are remembered with the number of tasks that ran with them and the number that declined at a load. When more than half did, the next tasks with the same pair decline at once, every 64th runs again
+ * (the F3DEX2 front-end's rule, hle_f3dex2.c; the counts are halved from 1024 runs on). */
+static struct { uint32_t uc, data; unsigned runs, loads, skip; } l_loads[8];
+static unsigned l_nloads;
+
+static int load_known(const struct hle_task *t)
+{
+    unsigned i;
+    for (i = 0; i < l_nloads; i++)
+        if (l_loads[i].uc == hle_dm32(t, 0xfd0) && l_loads[i].data == hle_dm32(t, 0xfd8)) {
+            if (MUT(466, l_loads[i].loads * 2 > l_loads[i].runs, 1) && ++l_loads[i].skip % 64 != 0)
+                return 1;
+            if (++l_loads[i].runs >= 1024) {
+                l_loads[i].runs /= 2;
+                l_loads[i].loads /= 2;
+            }
+            return 0;
+        }
+    return 0;
+}
+
+static void load_note(const struct f3dex_task *f)
+{
+    unsigned i;
+    for (i = 0; i < l_nloads; i++)
+        if (l_loads[i].uc == f->p_uc && l_loads[i].data == f->p_data) {
+            l_loads[i].loads++;
+            return;
+        }
+    if (l_nloads < sizeof(l_loads) / sizeof(l_loads[0])) {
+        l_loads[l_nloads].uc = f->p_uc;
+        l_loads[l_nloads].data = f->p_data;
+        l_loads[l_nloads].runs = 1;
+        l_loads[l_nloads++].loads = 1;
+    }
+}
+
+/* The build a G_LOAD_UCODE loads: the one whose text is the first 0xf48 bytes at `src` (f3dex1_build.load_key; a build the probe latched for this text has the key as its id: probe.c, and comes first, as in the
+ * F3DEX2 front-end's loaded_build). Only a build of this front-end can be taken over. The keys of the last two texts are remembered (compared with memcmp against RDRAM). NULL: not a registered (or latched) build. */
+static const struct hle_ucode *loaded_build(const struct hle_task *t, uint32_t src)
+{
+    static struct { uint8_t text[0xf48]; uint32_t addr; uint64_t key; int used; } slot[2];
+    static unsigned next;
+    const struct hle_ucode *u;
+    uint64_t key = 0;
+    unsigned i;
+    for (i = 0; i < 2; i++)
+        if (slot[i].used && slot[i].addr == src && !memcmp(slot[i].text, t->rdram + src, 0xf48)) {
+            key = slot[i].key;
+            break;
+        }
+    if (i == 2) {
+        key = armlet_ucode_hash(t->rdram, src, 0xf48);
+        i = next++ & 1;
+        memcpy(slot[i].text, t->rdram + src, 0xf48);
+        slot[i].addr = src;
+        slot[i].key = key;
+        slot[i].used = 1;
+    }
+    key = MUT(467, key, ~key);
+    u = armlet_hle_find(key);
+    if (u && u->fam == &f3dex1_fam && ((const struct f3dex1_build *)u->fam_data)->load_key == key) {
+        static const struct hle_ucode *logged[8];
+        static unsigned nlogged;
+        unsigned q;
+        for (q = 0; q < nlogged && logged[q] != u; q++)
+            ;
+        if (q == nlogged && nlogged < 8 && !strncmp(u->name, "derived", 7)) {
+            logged[nlogged++] = u;
+            armlet_log(M64MSG_INFO, "hle: G_LOAD_UCODE of %016llx runs the latched build \"%s\"", (unsigned long long)key, u->name);
+        }
+        return u;
+    }
+    for (u = armlet_hle_next(NULL); u; u = armlet_hle_next(u))
+        if (u->fam == &f3dex1_fam && key && ((const struct f3dex1_build *)u->fam_data)->load_key == key)
+            return u;
+    return NULL;
+}
+
+/* The state of the loop from the interpreter at the first fetch of the microcode's command loop: at the start of the task and after the initialisation of a microcode that G_LOAD_UCODE started. Declines a state
+ * the front-end does not know. */
+static int enter(struct f3dex_task *f, const struct hle_cpu *c)
+{
+    struct hle_task *t = f->t;
+    const struct f3dex_layout *L = f->L;
+    f->k0 = c->r[HLE_REG_K0] - 320;                     /* $26 = the address after the first window */
+    f->gp = 320;
+    f->ov = OV_TEXT;
+    f->wp = hle_dm32(t, L->rdp_wp);
+    f->fstart = hle_dm32(t, L->fifo);
+    f->fend = hle_dm32(t, L->fifo + 4);
+    if (f->wp & 7)
+        return hle_decline(t, "RDP write pointer not 8-byte aligned");
+    if ((f->k0 & 7) || c->r[27] != L->window || c->r[28] != L->operand || c->r[23] != L->outbuf)
+        return hle_decline(t, "unusual state at the command loop");
+    make_kinds(f);
+    return HLE_OK;
+}
+
+/* G_LOAD_UCODE (opcode 0xaf; w1: the text's RDRAM address; G_RDPHALF_1's word, DMEM L->half1: the data's; w0 & 0xffff: the data's DMA length register). The command's handler (pc f3dex1_build.pc[loaduc], in the
+ * part of the text that stays in IMEM) saves the display list position (the next command's address, k0 + k1 - gp) in OSTask.data_ptr (DMEM 0xff0) and the text address in OSTask.ucode (0xfd0), copies the first
+ * 0xf18 bytes of the text to IMEM 0x80 and the data to DMEM 0, waits for the DMA and starts the new text at IMEM 0x80. That is the start of a task that continues the old one: the initialisation (a "fresh" start, the
+ * flags word of OSTask is clear) patches the DMA table with the new text address, sets the FIFO bounds and the RDP write pointer from OSTask (the data overwrites the DMEM words they are kept in, so they are
+ * the data image's, which the task has to have prepared), fetches the first window from data_ptr and enters the loop. It runs on the interpreter, as at the start of the task, up to the new build's first command
+ * fetch. What the microcode carries across is what that code does not write: DMEM above the data it loads (OSTask, the matrices and the vertex buffer when the data is shorter than they begin, the segments table
+ * ...), IMEM outside the text copied (0 .. 0x7f and 0xf98 .. 0xfff: the loop head and the DMA routines, equal in the 1.2x builds: tails that differ decline), the SP / DPC registers and RDRAM. The loop's own
+ * state is made anew from the interpreter's (enter), and the staged output goes to the FIFO first, so that RDRAM, DPC_END and DMEM have what the microcode has at the command. The same text is a re-initialisation
+ * (the display list goes on where it was); the text of another registered (or latched) F3DEX 1.x build changes the record the loop works with. Anything else declines. Returns HLE_STOP to go on, or what f3dex_run returns. */
+static int load_ucode(struct f3dex_task *f, struct hle_cpu *c, uint32_t w0, uint32_t w1)
+{
+    struct hle_task *t = f->t;
+    const struct f3dex_layout *L = f->L;
+    const struct f3dex1_build *nb = f->b;
+    uint32_t src = w1 & 0x7ffff8, cur = f->uc & 0x7ffff8, size = ((w0 & 0xfff) | 7) + 1;
+    int rc;
+
+    if (++f->nloads > 64)
+        return hle_decline(t, "too many G_LOAD_UCODE in a task");
+    if (src + 0x1000 > 0x800000 || cur + 0x1000 > 0x800000) {
+        load_note(f);
+        return hle_decline(t, "G_LOAD_UCODE outside RDRAM");
+    }
+    if (memcmp(t->rdram + src, t->rdram + cur, 0x1000)) {
+        const struct hle_ucode *nu = loaded_build(t, src);
+        if (MUT(463, 1, 0))                             /* (the probe derives a loaded text too: the data image is what DMA fills DMEM 0 with, `size` bytes) */
+            armlet_probe_note_load(src, hle_dm32(t, L->half1), (w0 & 0xfff) + 1);
+        if (f->trace)
+            fprintf(stderr, "F3DEX G_LOAD_UCODE text %08x key %016llx data %08x -> %s\n", src, (unsigned long long)armlet_ucode_hash(t->rdram, src, 0xf48), hle_dm32(t, L->half1), nu ? nu->name : "(not registered)");
+        if (!nu || (t->ctx && !armlet_gfx_allowed(&t->ctx->cfg, nu->id))) {
+            load_note(f);
+            return hle_decline(t, "G_LOAD_UCODE of another ucode");
+        }
+        if (MUT(464, memcmp(t->rdram + src + 0xf18, t->rdram + cur + 0xf18, 0x1000 - 0xf18), 0)) {
+            load_note(f);
+            return hle_decline(t, "G_LOAD_UCODE: the part of the text that stays in IMEM differs");
+        }
+        nb = (const struct f3dex1_build *)nu->fam_data;
+        if (MUT(470, size < 0x800, 0)) {                /* the data segments of the builds differ in a few constants (the end of the overlay window ..) that the other build's code reads: only a whole image is a state the front-end knows */
+            load_note(f);
+            return hle_decline(t, "G_LOAD_UCODE of another build with a partial data image");
+        }
+    }
+    if (f3dex_lay(&nb->fx)->vtab < f3dex_lay(&nb->fx)->mw_tab + 2 || !nb->pc[F1PC_head])
+        return hle_decline(t, "the build's G_MOVEWORD table has no room");
+    if (f->junk && size > L->vbuf) {                   /* (only a decline: the slots the data overwrites would hold its flags and no longer be junk, which the native code would have to follow) */
+        load_note(f);
+        return hle_decline(t, "G_LOAD_UCODE data over F3DLX vertices loaded with clipping off");
+    }
+
+    if (MUT(462, 0, 1))                                 /* (a mutation: the command does nothing) */
+        return HLE_STOP;
+    sync_out(f);                                        /* RDRAM, the FIFO write pointer in DMEM and DPC_END as the microcode has them */
+    c->r[HLE_REG_T9] = w0;                              /* the registers as the loop head leaves them for the handler */
+    c->r[HLE_REG_T8] = w1;
+    c->r[HLE_REG_K0] = f->k0 + f->gp;
+    c->r[HLE_REG_K1] = L->operand - f->gp;
+    c->r[28] = L->operand;
+    if (MUT(460, 0, 1))
+        c->r[HLE_REG_K0] = f->k0 + f->gp + 8;
+    c->pc = f->b->pc[F1PC_loaduc];
+    c->stop_pc = nb->pc[F1PC_head];
+    rc = hle_rsp_run(t, c);
+    if (rc == HLE_OK)
+        return HLE_OK;                                  /* the task ended in the initialisation */
+    if (rc != HLE_STOP)
+        return HLE_DECLINE;
+    if (*t->cr[4] & 0x80)
+        return hle_decline(t, "yield request pending");
+    f->uc = MUT(468, src, f->uc);
+    f->b = MUT(461, nb, f->b);
+    f->L = f3dex_lay(&f->b->fx);
+    f->fx = &f->b->fx;
+    if (enter(f, c) != HLE_OK)
+        return HLE_DECLINE;
+    return HLE_STOP;
+}
+
 static int f3dex_run(struct hle_task *t, const struct hle_ucode *u)
 {
     const struct f3dex1_build *b = (const struct f3dex1_build *)u->fam_data;
@@ -644,6 +830,11 @@ static int f3dex_run(struct hle_task *t, const struct hle_ucode *u)
         return hle_decline(t, "yield request pending");
     if (L->vtab < L->mw_tab + 2)
         return hle_decline(t, "the build's G_MOVEWORD table has no room");
+    f.uc = hle_dm32(t, 0xfd0);
+    f.p_uc = f.uc;
+    f.p_data = hle_dm32(t, 0xfd8);
+    if (load_known(t))
+        return hle_decline(t, "an earlier task with these pointers loaded another ucode");
 
     /* the boot code and the microcode's initialisation, on the interpreter, up to the command loop head */
     uint64_t tt0 = P.prof ? now_ns() : 0, ti0 = tt0;
@@ -655,17 +846,8 @@ static int f3dex_run(struct hle_task *t, const struct hle_ucode *u)
         return HLE_OK;                                  /* the boot code ended the task (a pending signal): exactly as the microcode */
     if (rc != HLE_STOP)
         return HLE_DECLINE;
-    f.k0 = c.r[HLE_REG_K0] - 320;                       /* $26 = the address after the first window */
-    f.gp = 320;
-    f.ov = OV_TEXT;
-    f.wp = hle_dm32(t, L->rdp_wp);
-    f.fstart = hle_dm32(t, L->fifo);
-    f.fend = hle_dm32(t, L->fifo + 4);
-    if (f.wp & 7)
-        return hle_decline(t, "RDP write pointer not 8-byte aligned");
-    if ((f.k0 & 7) || c.r[27] != L->window || c.r[28] != L->operand || c.r[23] != L->outbuf)
-        return hle_decline(t, "unusual state at the command loop");
-    make_kinds(&f);
+    if (enter(&f, &c) != HLE_OK)
+        return HLE_DECLINE;
 
     for (;;) {
         uint32_t w0, w1;
@@ -727,8 +909,14 @@ static int f3dex_run(struct hle_task *t, const struct hle_ucode *u)
                 if (emit8(&f, hle_dm32(t, L->half1), w1) != HLE_OK)
                     return HLE_DECLINE;
                 break;
-            case K1_LOADUC:                                 /* (not followed: this front-end does not switch builds, so the probe is not told of the loaded text either) */
-                return hle_decline(t, "G_LOAD_UCODE");
+            case K1_LOADUC: {
+                int r = load_ucode(&f, &c, w0, w1);
+                if (r != HLE_STOP)
+                    return r;
+                b = f.b;
+                L = f.L;
+                break;
+            }
             case K1_BRANCHZ: {
                 unsigned va = hle_dm16(t, L->vtab + (w0 & 0xfff));
                 uint32_t vz = hle_dm32(t, va + 0x1c);
