@@ -21,6 +21,7 @@ sys.path.insert(0, HERE)
 import derive_build as B  # noqa: E402
 import derive_f1d as D1  # noqa: E402
 import derive_f2 as F2  # noqa: E402
+import derive_f3d as F3  # noqa: E402
 
 
 def build_tool(out_dir):
@@ -45,7 +46,7 @@ def fmt(stem, fam, res, U):
     o.append("xr=%d,%d,%d" % (xr["init"], xr["extra"], xr["deleted"]))
     o.append("primary=%s" % res.primary)
     o.append("contrib=%s" % ",".join("%s:%d" % kv for kv in res.contrib.items()))
-    trouble = fam in ("f3dex2", "f3dex1") and bool(res.prim.conflict or res.prim.ambig)
+    trouble = bool(res.prim.conflict or res.prim.ambig)
     o.append("trouble=%d" % trouble)
     if fam == "f3dex2":
         f = res.rec.fields()
@@ -54,7 +55,7 @@ def fmt(stem, fam, res, U):
                 continue
             o.append("%s=%x" % (k, (v if v is not None else 0) & (0xffffffffffffffff if k == "load_key" else 0xffffffff)))
         o.append("ext=%s" % ",".join("%x:%x" % (p & 0xffffffff, kd) for p, kd in sorted(res.rec.ext)))
-    elif fam == "f3dex1":
+    else:
         for k, v in res.rec.fields().items():
             o.append("%s=%x" % (k, (v if v is not None else 0) & (0xffffffffffffffff if k == "load_key" else 0xffffffff)))
     return " ".join(o)
@@ -152,7 +153,29 @@ def mutants(reg, exe):
         bad += d
         print("  %-45s %s, %s" % (desc[:45], "C = Python" if not d else "C != PYTHON", "result changed" if changed else "NOT CAUGHT"))
         bad += 0 if changed else 1
-    return len(cases) + len(muts), bad
+    # the F3D mutants (Super Mario 64's text and data against the other F3D builds)
+    base3 = next(it for it in reg.fam["f3d"] if it.rec.name == "l_sm64")
+    refs3 = reg.refs("f3d", {"l_sm64"})
+    U0 = D1.ItemV(base3.uc, None, "unknown")
+    ref3 = fmt("m", "f3d", F3.derive_f3d(U0, refs3), U0)
+    muts3 = B.f3_mutants(reg)
+    for k, (desc, m, check) in enumerate(muts3):
+        p = os.path.join(tmp, "g%d.text" % k)
+        open(p, "wb").write(struct.pack(">1024I", *m.w))
+        open(p[:-5] + ".data", "wb").write(bytes(m.data))
+        ext = base3.uc.path[:-5] + ".ext"
+        if os.path.exists(ext):
+            shutil.copy(ext, p[:-5] + ".ext")
+        U = D1.ItemV(m, None, "unknown")
+        res = F3.derive_f3d(U, refs3)
+        pl = fmt("g%d" % k, "f3d", res, U)
+        cl = run_c(exe, [p], ["--family", "f3d", "--exclude", "l_sm64"])[0]
+        changed = pl.split(" ", 1)[1] != ref3.split(" ", 1)[1]
+        d = compare(pl, cl, desc)
+        bad += d
+        print("  %-45s %s, %s" % (desc[:45], "C = Python" if not d else "C != PYTHON", "result changed" if changed else "NOT CAUGHT"))
+        bad += 0 if changed else 1
+    return len(cases) + len(muts) + len(muts3), bad
 
 
 def main():
@@ -213,7 +236,7 @@ def main():
                     res = D1.derive_f1(U, refs)
                 else:
                     U = D1.ItemV(it.uc, None, "unknown")
-                    res = D1.derive_variant(U, refs)
+                    res = F3.derive_f3d(U, refs)
                 pl = fmt(it.uc.stem, fam, res, U)
                 cl = run_c(exe, [it.uc.path], ["--family", fam, "--exclude", name])[0]
                 bad += compare(pl, cl, "%s (%s)" % (it.name, fam))

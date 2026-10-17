@@ -20,7 +20,7 @@ extern "C" {
 #endif
 
 /* bump when the derivation's decisions change (the cache is keyed with it) */
-#define DERIVE_TOOL_VERSION 2
+#define DERIVE_TOOL_VERSION 3
 
 enum { DERIVE_NONE = 0, DERIVE_NEAR = 1, DERIVE_EXACT = 2 };
 enum { DERIVE_F3DEX2 = 0, DERIVE_F3DEX1 = 1, DERIVE_F3D = 2, DERIVE_AUTO = -1 };
@@ -52,7 +52,7 @@ struct derive_result {
         unsigned n;
     } contrib[DERIVE_MAXREFS];
     int knob_trouble;               /* a constant read differently at different places (the verdict is NONE) */
-    struct derive_rec rec;          /* DERIVE_F3DEX2 and DERIVE_F3DEX1: the derived record (name "(derived)"; F3DEX2: load_key, pcs, layout, flags, reject mask, extension table; F3DEX 1.x: derive_int.h) */
+    struct derive_rec rec;          /* the derived record (name "(derived)"; F3DEX2: load_key, pcs, layout, flags, reject mask, extension table; F3DEX 1.x and F3D: derive_int.h) */
     unsigned fam_aligned[3][2];     /* per family tried: aligned words, image words (0 / 0 when not tried) */
     unsigned fam_nx[3];
     int fam_verdict[3];
