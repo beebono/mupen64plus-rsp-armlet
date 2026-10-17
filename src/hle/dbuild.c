@@ -128,8 +128,8 @@ static int make_f1(struct dbuild *d, uint64_t text_id, const struct derive_resul
     prec = &derive_recs[pr->rec];
     for (k = 0; k < DERIVE_NF1PC; k++) {
         int v = rec->f1pc[k];
-        if (v == 0 && prec->f1pc[k] == 0)
-            continue;                                   /* (no such command in the primary reference either: it declines) */
+        if (v == 0 && k > F1PC_nop)
+            continue;                                   /* (the derivation found no handler the text's tables lead to: the command declines) */
         if (v <= 0 || v >= 0x1000 || (v & 3)) {
             *why = "a handler pc of the record is missing or not an instruction address";
             return 1;
