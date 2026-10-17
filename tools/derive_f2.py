@@ -9,7 +9,7 @@ import rsp_isa as isa
 # ---------------------------------------------------------------------------------------------------------------------------------------------------------------
 # the record
 # ---------------------------------------------------------------------------------------------------------------------------------------------------------------
-PC_FIELDS = ["head", "copy", "sync", "segcopy", "ef", "ed", "tri1", "tri2", "vtx", "mtx", "geom", "enddl", "half2", "modvtx", "culldl", "branchz", "mvp", "tri4"]
+PC_FIELDS = ["head", "copy", "sync", "segcopy", "ef", "ed", "tri1", "tri2", "vtx", "mtx", "geom", "enddl", "half2", "modvtx", "culldl", "branchz", "mvp", "tri4", "ldtx_spr", "ldtx_rect"]
 F2PCS_FIELDS = ["dl", "texture", "texrect", "half1", "moveword", "popmtx", "movemem", "omh", "oml"]
 LAY_ADDR = ["mv", "p", "mvp", "persp_norm", "viewport_scale", "viewport_trans", "clip_ratio", "const31", "const30", "fog_mul", "fog_ofs", "texture", "tex_scale_s", "tex_scale_t", "geom",
             "mvp_valid", "lights_valid", "lights_size", "light_raw", "light_base", "tg", "light_scale", "light_scale_zex", "vtab", "clipmask", "culltab", "in", "in_end", "jump_table",

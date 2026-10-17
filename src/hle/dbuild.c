@@ -38,6 +38,7 @@ void dbuild_rec_of(const struct hle_ucode *u, struct derive_rec *r)
     r->pc[PC_HEAD] = b->head; r->pc[PC_COPY] = b->copy; r->pc[PC_SYNC] = b->sync; r->pc[PC_SEGCOPY] = b->segcopy; r->pc[PC_EF] = b->ef; r->pc[PC_ED] = b->ed;
     r->pc[PC_TRI1] = b->tri1; r->pc[PC_TRI2] = b->tri2; r->pc[PC_VTX] = b->vtx; r->pc[PC_MTX] = b->mtx; r->pc[PC_GEOM] = b->geom; r->pc[PC_ENDDL] = b->enddl;
     r->pc[PC_HALF2] = b->half2; r->pc[PC_MODVTX] = b->modvtx; r->pc[PC_CULLDL] = b->culldl; r->pc[PC_BRANCHZ] = b->branchz; r->pc[PC_MVP] = b->mvp; r->pc[PC_TRI4] = b->tri4;
+    r->pc[PC_LDTX_SPR] = b->ldtx_spr; r->pc[PC_LDTX_RECT] = b->ldtx_rect;
     if (b->pcs) {
         r->f2pcs[P2_DL] = b->pcs->dl; r->f2pcs[P2_TEXTURE] = b->pcs->texture; r->f2pcs[P2_TEXRECT] = b->pcs->texrect; r->f2pcs[P2_HALF1] = b->pcs->half1;
         r->f2pcs[P2_MOVEWORD] = b->pcs->moveword; r->f2pcs[P2_POPMTX] = b->pcs->popmtx; r->f2pcs[P2_MOVEMEM] = b->pcs->movemem; r->f2pcs[P2_OMH] = b->pcs->omh; r->f2pcs[P2_OML] = b->pcs->oml;
@@ -97,37 +98,59 @@ int dbuild_make(struct dbuild *d, uint64_t text_id, const struct derive_result *
     unsigned k = 0;
     static const int need[] = { PC_HEAD, PC_COPY, PC_SYNC, PC_SEGCOPY, PC_EF, PC_ED, PC_TRI1, PC_TRI2, PC_VTX, PC_MTX, PC_GEOM, PC_ENDDL, PC_HALF2, PC_MODVTX, PC_CULLDL, PC_BRANCHZ };
     const struct derive_ref *pr;
+    const struct derive_rec *prec;
 
     memset(d, 0, sizeof(*d));
     if (r->family != DERIVE_F3DEX2) {
         *why = "not of the F3DEX2 family";
         return 1;
     }
-    if (rec->n_ext) {
-        *why = "dialect commands (S2DEX) are run by code in the front-end that is keyed on its registered builds";
+    if (r->primary < 0) {
+        *why = "no primary reference";
         return 1;
     }
+    pr = &derive_refs[r->primary];
+    prec = &derive_recs[pr->rec];
+    /* a pc is a handler's address; 0 / 0xffff (no such handler) only where the primary reference has the same marker (conv_pc keeps them: the derived record has them exactly there) */
+#define ABSENT(v, rv) (((v) == 0 || (v) == 0xffff) && (v) == (rv))
     for (k = 0; k < sizeof(need) / sizeof(need[0]); k++)
-        if (rec->pc[need[k]] <= 0 || rec->pc[need[k]] >= 0x1000 || (rec->pc[need[k]] & 3)) {
+        if (!ABSENT(rec->pc[need[k]], prec->pc[need[k]]) && (rec->pc[need[k]] <= 0 || rec->pc[need[k]] >= 0x1000 || (rec->pc[need[k]] & 3))) {
             *why = "a handler pc of the record is missing or not an instruction address";
             return 1;
         }
     for (k = 0; k < DERIVE_NF2PCS; k++)
-        if (rec->f2pcs[k] < 0 || rec->f2pcs[k] >= 0x1000 || (rec->f2pcs[k] & 3)) {
+        if (!ABSENT(rec->f2pcs[k], prec->f2pcs[k]) && (rec->f2pcs[k] < 0 || rec->f2pcs[k] >= 0x1000 || (rec->f2pcs[k] & 3))) {
             *why = "a command pc of the record is not an instruction address";
             return 1;
         }
-    if (!rec->reject_mask) {
+#undef ABSENT
+    if (!rec->reject_mask && rec->pc[PC_TRI1]) {
         *why = "no reject mask";
         return 1;
     }
-    pr = &derive_refs[r->primary];
-    pu = dbuild_registered(derive_recs[pr->rec].load_key);
+    if (rec->n_ext > DERIVE_MAXEXT) {
+        *why = "too many dialect commands";
+        return 1;
+    }
+    for (k = 0; k < rec->n_ext; k++)
+        if (rec->ext[k].pc <= 0 || rec->ext[k].pc >= 0x1000 || (rec->ext[k].pc & 3) || rec->ext[k].kind < K_EXT) {
+            *why = "a dialect command's pc of the record is missing or not an instruction address";
+            return 1;
+        }
+    if (rec->n_ext && (rec->pc[PC_LDTX_SPR] <= 0 || rec->pc[PC_LDTX_SPR] >= 0x1000 || (rec->pc[PC_LDTX_SPR] & 3) || rec->pc[PC_LDTX_RECT] <= 0 || rec->pc[PC_LDTX_RECT] >= 0x1000 || (rec->pc[PC_LDTX_RECT] & 3))) {
+        *why = "a continuation pc of G_OBJ_LOADTXTR is missing";
+        return 1;
+    }
+    pu = dbuild_registered(prec->load_key);
     if (!pu) {
         *why = "the primary reference is not a registered build";
         return 1;
     }
     pb = (const struct f3dex2_build *)pu->fam_data;
+    if (rec->n_ext && !pb->ext_cmd) {
+        *why = "dialect commands, but the primary reference has no code for them";
+        return 1;
+    }
     d->primary = r->primary;
     d->verdict = r->verdict;
     d->rec = *rec;
@@ -155,8 +178,21 @@ int dbuild_make(struct dbuild *d, uint64_t text_id, const struct derive_result *
     d->b.load_key = rec->load_key;
     d->b.lay = &d->lay;
     d->b.pcs = &d->pcs;
-    d->b.ext = NULL;
-    d->b.ext_cmd = NULL;
+    d->b.ldtx_spr = rec->pc[PC_LDTX_SPR] > 0 ? (uint16_t)rec->pc[PC_LDTX_SPR] : 0;
+    d->b.ldtx_rect = rec->pc[PC_LDTX_RECT] > 0 ? (uint16_t)rec->pc[PC_LDTX_RECT] : 0;
+    if (rec->n_ext) {
+        for (k = 0; k < rec->n_ext; k++) {
+            d->ext[k][0] = (uint16_t)rec->ext[k].pc;
+            d->ext[k][1] = rec->ext[k].kind;
+        }
+        d->ext[k][0] = 0xffff;
+        d->ext[k][1] = 0;
+        d->b.ext = (const uint16_t (*)[2])d->ext;
+        d->b.ext_cmd = pb->ext_cmd;
+    } else {
+        d->b.ext = NULL;
+        d->b.ext_cmd = NULL;
+    }
 
     snprintf(d->name, sizeof(d->name), "derived %s (%016" PRIx64 ", from %s)", derive_verdict_name(r->verdict), text_id, pr->name);
     d->uc.id = text_id;

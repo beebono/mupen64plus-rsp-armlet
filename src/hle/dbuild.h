@@ -19,6 +19,7 @@ struct dbuild {
     struct f3dex2_build b;
     struct f2_layout lay;
     struct f2_pcs pcs;
+    uint16_t ext[DERIVE_MAXEXT + 1][2];  /* the dialect commands (S2DEX), ending in { 0xffff, 0 } */
     struct hle_dead_range dead[64];
     char name[112];
     struct derive_rec rec;
@@ -30,8 +31,9 @@ struct dbuild {
 const struct hle_ucode *dbuild_registered(uint64_t load_key);
 
 /* Fills d from a derivation result of the F3DEX2 family: the layout, pcs, flags and reject mask of the record; the dead ranges, flags and ring of the primary reference's registered entry (copied,
- * not derived: docs/ucode-derive.md). Returns 0, or nonzero with *why: the record is incomplete (a pc the derivation could not map), the family has dialect code that lives in the front-end
- * (S2DEX), or the primary reference is not registered. */
+ * not derived: docs/ucode-derive.md). A record with dialect commands (S2DEX) runs them with the primary reference's handler code (f3dex2_build.ext_cmd): everything it needs of the build is
+ * in the record (the handler table, the continuation pcs of G_OBJ_LOADTXTR, the layout). A handler that the primary reference marks as absent (0, 0xffff) may be absent. Returns 0, or nonzero with
+ * *why: the record is incomplete (a pc the derivation could not map), or the primary reference is not registered. */
 int dbuild_make(struct dbuild *d, uint64_t text_id, const struct derive_result *r, const char **why);
 
 /* The normalised record of a registered build (hle_f3dex2.c, hle_f3dex2_dialects.c, hle_s2dex2.c): what tools/derive_refs_gen.py reads from the tables. */
