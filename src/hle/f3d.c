@@ -317,6 +317,8 @@ static int cmd_vtx(struct f3d_task *f, uint32_t w0, uint32_t w1)
         return hle_decline(t, "G_VTX length or slot range unusual");
     }
     s = fetch(f, seg(f, w1), w0 & 0x1ff);               /* the class-0 DMA comes first */
+    if ((geom & F3D_G_LIGHTING) && hle_cmd(t, LATCH_K_LIT))
+        return HLE_DECLINE;
     if (geom & F3D_G_LIGHTING) {
         uint32_t l = hle_dm32(t, lay->lights);
         if (f->ov == OV_TEXT || f->ov == OV_CLIP) {
@@ -423,6 +425,8 @@ static int cmd_tri3(struct f3d_task *f, const unsigned idx[3], unsigned flag)
     }
     {   /* clipping */
         struct f3d_clip_out co;
+        if (hle_cmd(t, LATCH_K_CLIP))
+            return HLE_DECLINE;
         const struct f3d_vtx *vp[3] = { &v[0], &v[1], &v[2] };
         unsigned i;
         if (f->ov == OV_LIGHT || f->ov == OV_TEXT) {
@@ -634,6 +638,8 @@ static int f3d_run(struct hle_task *t, const struct hle_ucode *u)
         f.k0 += 8;
         f.gp -= 8;
         op = w0 >> 24;
+        if (hle_cmd(t, op))                             /* (the latch policy's command-kind gate; the count of a replay under validation) */
+            return HLE_DECLINE;
         if (f.trace) fprintf(stderr, "F3D cmd %u @%06x: %08x %08x\n", f.ncmds, f.k0 - 8, w0, w1);
         if (g_pr.ops) opn[op]++;
         if (op >= 0xc0) {                               /* the RDP commands: copied, the segment address of the image commands resolved */
@@ -740,6 +746,8 @@ static int f3d_run(struct hle_task *t, const struct hle_ucode *u)
                 v &= hle_dm16(t, L->vtx_base + 36 + a);
                 a += 40;
             } while (a != w1 && ++guard < 64);
+            if (v != 0 && hle_cmd(t, LATCH_K_CULLDL))
+                return HLE_DECLINE;
             if (v != 0 && enddl(&f))
                 goto end;
             break;

@@ -14,6 +14,7 @@
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
 #include <inttypes.h>
+#include <pthread.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -28,6 +29,7 @@
 #include "rdp_defer.h"
 
 #ifdef ARMLET_NATIVE
+#include "gate.h"
 #include "native/native.h"
 #include "native/native_internal.h"
 
@@ -124,6 +126,15 @@ const struct hle_ucode *armlet_hle_find(uint64_t id)
     return NULL;
 }
 
+const struct hle_ucode *armlet_hle_find_registered(uint64_t id)
+{
+    const struct hle_ucode *const *p;
+    for (p = __start_hle_ucodes; p < __stop_hle_ucodes; p++)
+        if (*p && (*p)->id == id)
+            return *p;
+    return NULL;
+}
+
 /* two entries with one id would shadow each other (armlet_hle_find takes the first): the ids are the FNV of the whole 4 KiB text, so this is a table error (the same text registered twice) */
 static void check_unique_ids(void)
 {
@@ -211,6 +222,10 @@ int hle_exact(void) { return K.exact; }
 void hle_dev_mark(size_t m[2]) { m[0] = K.n_recs; m[1] = K.n_arena; }
 void hle_dev_rewind(const size_t m[2]) { K.n_recs = m[0]; K.n_arena = m[1]; }
 
+/* the detached replay's own SP registers (armlet_hle_dx_run, below) */
+static int dx_mtc0(struct hle_task *t, unsigned rd, uint32_t value);
+static void dx_rdram_write(struct hle_dx *x, uint32_t dram, const uint32_t *words, uint32_t nbytes);
+
 /* hle_rdram_write: the RDRAM writes of a front-end that does not go through the fork's DMA (its sandbox cannot see them) keep their own undo log */
 static struct undo {
     uint32_t addr, n;
@@ -238,6 +253,10 @@ void hle_rdram_write(struct hle_task *t, uint32_t dram, const uint32_t *words, u
     struct undo *u;
     struct rec *r;
     size_t off;
+    if (t->dx) {
+        dx_rdram_write(t->dx, dram & 0x7ffff8, words, nbytes);
+        return;
+    }
     dram &= 0x7ffff8;
     g_undo = grow(g_undo, &g_cap_undo, g_n_undo + 1, sizeof(*g_undo));
     g_uarena = grow(g_uarena, &g_cap_uarena, g_n_uarena + nbytes, 1);
@@ -265,7 +284,11 @@ const char *armlet_hle_last_why(void) { return K.why; }
 
 int hle_decline(struct hle_task *t, const char *why)
 {
-    (void)t;
+    if (t->dx) {
+        if (!t->dx->why)
+            t->dx->why = why;
+        return HLE_DECLINE;
+    }
     if (!K.why)
         K.why = why;
     return HLE_DECLINE;
@@ -276,6 +299,12 @@ int hle_decline(struct hle_task *t, const char *why)
  * fork's sandbox allocates an undo record per row; hle_rdram_write keeps one arena. Rows that wrap, straddle or leave RDRAM take the fork's path. */
 void hle_dma_read(struct hle_task *t, unsigned mem_addr, unsigned dram_addr, uint32_t len)
 {
+    if (t->dx) {
+        dx_mtc0(t, 0, mem_addr);
+        dx_mtc0(t, 1, dram_addr);
+        dx_mtc0(t, 2, len);
+        return;
+    }
     if (!armlet_event_listener && !(len >> 12) && !(mem_addr & 0x1000)) {
         uint32_t length = ((len & 0xfff) + 1 + 7) & ~7u, skip = (len >> 20) & 0xfff;
         uint32_t cache = (mem_addr & 0x1fff) & ~3u, dram = (dram_addr & 0xffffff) & ~7u;
@@ -296,6 +325,12 @@ void hle_dma_read(struct hle_task *t, unsigned mem_addr, unsigned dram_addr, uin
 
 void hle_dma_write(struct hle_task *t, unsigned mem_addr, unsigned dram_addr, uint32_t len)
 {
+    if (t->dx) {
+        dx_mtc0(t, 0, mem_addr);
+        dx_mtc0(t, 1, dram_addr);
+        dx_mtc0(t, 3, len);
+        return;
+    }
     if (!armlet_event_listener && t->log && !(len >> 12) && !(mem_addr & 0x1000)) {
         uint32_t length = ((len & 0xfff) + 1 + 7) & ~7u, skip = (len >> 20) & 0xfff;
         uint32_t cache = (mem_addr & 0x1fff) & ~3u, dram = (dram_addr & 0xffffff) & ~7u;
@@ -351,6 +386,8 @@ int hle_mtc0(struct hle_task *t, unsigned rd, uint32_t value)
 {
     int mode;
     uint32_t cur = *t->cr[10], cache = *t->cr[0] & 0x1ffc, dram = *t->cr[1] & 0x7ffff8;
+    if (t->dx)
+        return dx_mtc0(t, rd, value);
     rd &= 15;
     mode = prsp_native_mtc0(rd, value);
     if (rd == 3 && t->log) {
@@ -386,15 +423,22 @@ int hle_mtc0(struct hle_task *t, unsigned rd, uint32_t value)
 int hle_poll_status(struct hle_task *t, unsigned rt, uint32_t *value)
 {
     int mode = PRSP_NATIVE_MODE_CONTINUE;
-    (void)t;
+    if (t->dx) {                                    /* RSP_MFC0 of SP_STATUS: the poll count of the register read into; at the time-out the RSP halts */
+        struct hle_dx *x = t->dx;
+        *value = x->crv[4];
+        if (++x->mfc0_count[rt & 31] >= x->timeout) {
+            x->crv[4] |= SP_STATUS_HALT;
+            return 1;
+        }
+        return 0;
+    }
     *value = prsp_native_mfc0(4, rt, &mode);
     return mode != PRSP_NATIVE_MODE_CONTINUE;
 }
 
 void hle_cpu_init(struct hle_task *t, struct hle_cpu *c, unsigned pc, unsigned max_steps)
 {
-    (void)t;
-    c->r = K.v.sr;
+    c->r = t->dx ? hle_dx_cpu_sr(t->dx->cpu) : K.v.sr;
     c->pc = pc & 0xffc;
     c->steps = 0;
     c->max_steps = max_steps;
@@ -406,6 +450,11 @@ void hle_break(struct hle_task *t, unsigned end_pc)
     *t->cr[4] |= SP_STATUS_BROKE | SP_STATUS_HALT;
     if (*t->cr[4] & SP_STATUS_INTR_BREAK)
         *t->irq |= 1;
+    if (t->dx) {
+        t->dx->end_pc = end_pc & 0xffc;
+        t->dx->broke = 1;
+        return;
+    }
     K.end_pc = end_pc & 0xffc;
     K.broke = 1;
 }
@@ -467,6 +516,8 @@ static int dead_dmem(const struct hle_ucode *u, unsigned byte)
     return 0;
 }
 
+int hle_dead_dmem_of(const struct hle_ucode *u, unsigned byte) { return dead_dmem(u, byte); }
+
 /* the probe's options of the compare in progress (armlet_hle_probe_pair), or NULL: the near-match tolerance */
 static const struct hle_probe_opts *g_popt;
 static int g_ptol_used;                         /* the tolerance decided something */
@@ -492,11 +543,11 @@ static const uint8_t *ram_n_at(uint32_t addr)
 /* The near-match tolerance for the RDP stream (docs/design.md, "The probe"): the two streams have the same length and differ only inside the shade block of shaded triangles (commands
  * 0x0c .. 0x0f: bytes 32 .. 95), by at most 2 colour levels in a channel's base value (0x20000 of a 16.16) and 1/128 level per pixel step in a slope (0x200). Nothing else, no command word, no
  * edge, texture or depth coefficient, may differ. */
-static int stream_tolerable(const struct hle_ucode *u)
+static int stream_tolerable(const struct hle_ucode *u, const struct hle_stream *sa, const struct hle_stream *sb)
 {
-    const uint8_t *a = K.st[0].bytes, *b = K.st[1].bytes;
-    uint64_t pos = 0, n = K.st[0].len;
-    if (!a || !b || K.st[0].len != K.st[1].len || n > HLE_STREAM_KEEP)
+    const uint8_t *a = sa->bytes, *b = sb->bytes;
+    uint64_t pos = 0, n = sa->len;
+    if (!a || !b || sa->len != sb->len || n > (sa->keep ? sa->keep : HLE_STREAM_KEEP) || n > (sb->keep ? sb->keep : HLE_STREAM_KEEP))
         return 0;
     while (pos < n) {
         unsigned op = a[pos] & 0x3f, sz = u->rdp_cmd_size ? u->rdp_cmd_size(a[pos]) : hle_rdp_cmd_size(op);
@@ -601,7 +652,7 @@ static void compare_tasks(struct report *r, const struct hle_ucode *u, const Prs
         }
     }
     /* the RDP lists, as one byte stream */
-    if ((K.st[0].len != K.st[1].len || (K.st[0].hash != K.st[1].hash && !(K.switched && K.st[0].hash_r == K.st[1].hash_r))) && !(g_popt && g_popt->tol && stream_tolerable(u))) {
+    if ((K.st[0].len != K.st[1].len || (K.st[0].hash != K.st[1].hash && !(K.switched && K.st[0].hash_r == K.st[1].hash_r))) && !(g_popt && g_popt->tol && stream_tolerable(u, &K.st[0], &K.st[1]))) {
         uint64_t k, n = K.st[0].len < K.st[1].len ? K.st[0].len : K.st[1].len;
         rep(r, "  RDP command stream: native %" PRIu64 " bytes %016" PRIx64 ", JIT %" PRIu64 " bytes %016" PRIx64 "\n", K.st[0].len, K.st[0].hash, K.st[1].len, K.st[1].hash);
         if (n > HLE_STREAM_KEEP)
@@ -891,6 +942,7 @@ static int native_run(struct armlet_ctx *c, const struct hle_ucode *uc, int reco
     t.ctx = c;
     t.start_pc = c ? (*c->rsp.SP_PC_REG & 0xfff) : *K.v.pc;
     t.log = 1;
+    hle_bind(&t, uc);
     K.n_recs = K.n_arena = 0;
     g_n_undo = g_n_uarena = 0;
     K.why = NULL;
@@ -930,13 +982,30 @@ static int native_run(struct armlet_ctx *c, const struct hle_ucode *uc, int reco
     return HLE_OK;
 }
 
+static int hle_run_locked(struct armlet_ctx *c, const struct hle_ucode *uc);
+
 int armlet_hle_run(struct armlet_ctx *c, const struct armlet_ucode_id *u)
 {
     const struct hle_ucode *uc = armlet_hle_find(u->id);
-    uint64_t t0;
-
+    int rc;
     if (!uc || !uc->fam || !uc->fam->run)
         return 0;
+    if (armlet_hle_fe_trylock()) {                  /* the validator is replaying a task through the front-ends: this one goes to the JIT (never waits) */
+        init_once();
+        K.tasks++;
+        K.declined++;
+        count_reason("the validator held the front-end lock");
+        return 0;
+    }
+    rc = hle_run_locked(c, uc);
+    armlet_hle_fe_unlock();
+    return rc;
+}
+
+static int hle_run_locked(struct armlet_ctx *c, const struct hle_ucode *uc)
+{
+    uint64_t t0;
+
     init_once();
     K.tasks++;
     if (!(K.tasks & 63))
@@ -1403,6 +1472,328 @@ static int probe_pair(const struct hle_ucode *uc, const PrspNativeSnap *before, 
     snprintf(out->report, sizeof(out->report), "%.*s", (int)(r.n < sizeof(out->report) - 1 ? r.n : sizeof(out->report) - 1), r.buf);
     sandbox_off();
     return out->status;
+}
+
+/* ---- the command-kind gate and the front-end lock (docs/design.md, "The background validator and the latch policy") ----------------------------------------------------------- */
+const char hle_gate_why[] = "a command kind the latched build has not run in a validated task";
+
+int hle_cmd_slow(struct hle_task *t, unsigned kind)
+{
+    if (t->cmds && kind < LATCH_NKINDS)
+        t->cmds[kind]++;
+    if (t->gate && !atomic_load_explicit(&t->gate->open, memory_order_relaxed)) {
+        uint64_t w = kind < LATCH_NKINDS ? atomic_load_explicit(&t->gate->kinds[kind >> 6], memory_order_relaxed) : 0;
+        if (MUT(438, !(w >> (kind & 63) & 1), 0)) {
+            hle_decline(t, hle_gate_why);
+            return 1;
+        }
+    }
+    return 0;
+}
+
+void hle_bind(struct hle_task *t, const struct hle_ucode *u)
+{
+    if (t->dx) {
+        t->gate = NULL;
+        t->cmds = u && u == t->dx->cand ? t->dx->hist : NULL;
+    } else {
+        t->gate = u ? u->gate : NULL;
+        t->cmds = NULL;
+    }
+}
+
+int hle_build_usable(const struct hle_task *t, const struct hle_ucode *u)
+{
+    if (!u || !u->gate)
+        return 1;
+    if (t->dx)                                      /* a replay: the build under validation, and the other candidates a task loads (OoT loads S2DEX and its own text back) */
+        return u == t->dx->cand || !atomic_load_explicit(&u->gate->dead, memory_order_acquire);
+    return atomic_load_explicit(&u->gate->latched, memory_order_acquire);
+}
+
+static pthread_mutex_t g_fe = PTHREAD_MUTEX_INITIALIZER;
+static int g_fe_on;                                 /* set and cleared on the emulation thread while no validator thread runs */
+static _Atomic uint64_t g_fe_busy;
+
+void armlet_hle_fe_enable(int on) { g_fe_on = on; }
+int armlet_hle_fe_trylock(void)
+{
+    if (!g_fe_on)
+        return 0;
+    if (pthread_mutex_trylock(&g_fe) == 0)
+        return 0;
+    atomic_fetch_add_explicit(&g_fe_busy, 1, memory_order_relaxed);
+    return -1;
+}
+void armlet_hle_fe_lock(void) { pthread_mutex_lock(&g_fe); }
+void armlet_hle_fe_unlock(void)
+{
+    if (g_fe_on)
+        pthread_mutex_unlock(&g_fe);
+}
+uint64_t armlet_hle_fe_busy(void) { return atomic_load_explicit(&g_fe_busy, memory_order_relaxed); }
+void armlet_hle_core_init(void) { init_once(); }
+
+/* ---- the detached replay (hle_internal.h, struct hle_dx) ---------------------------------------------------------------------------------------------------------------------- */
+static void dx_note_wr(struct hle_dx *x, uint32_t a, uint32_t n)
+{
+    if (x->n_wr && x->wr[x->n_wr - 1].a + x->wr[x->n_wr - 1].n == a) {   /* (rows that follow each other: one range) */
+        x->wr[x->n_wr - 1].n += n;
+        return;
+    }
+    x->wr = (struct hle_dx_wr *)grow(x->wr, &x->cap_wr, x->n_wr + 1, sizeof(*x->wr));
+    x->wr[x->n_wr].a = a;
+    x->wr[x->n_wr++].n = n;
+}
+
+static void dx_rdram_write(struct hle_dx *x, uint32_t dram, const uint32_t *words, uint32_t nbytes)
+{
+    if (dram + nbytes > 0x800000)
+        nbytes = dram < 0x800000 ? 0x800000 - dram : 0;
+    memcpy(x->rdram + dram, words, nbytes);
+    dx_note_wr(x, dram, nbytes);
+}
+
+/* rsp_dma_read / rsp_dma_write of the fork's rsp/cp0.cpp on the replay's own memories */
+static void dx_dma(struct hle_dx *x, int write, const struct hle_ucode *uc)
+{
+    uint32_t lenreg = x->crv[write ? 3 : 2], length = ((lenreg & 0xfff) + 1 + 7) & ~7u, skip = (lenreg >> 20) & 0xfff;
+    unsigned count = (lenreg >> 12) & 0xff, i = 0;
+    uint32_t mem, dram;
+    x->crv[0] &= ~3u;
+    x->crv[1] &= ~7u;
+    if ((x->crv[0] & 0xfff) + length > 0x1000)
+        length = 0x1000 - (x->crv[0] & 0xfff);
+    mem = x->crv[0];
+    dram = x->crv[1];
+    do {
+        uint32_t ms = mem & 0x1ffc, ds = dram & 0x7ffffc, j;
+        uint32_t *m = (ms & 0x1000) ? x->imem : x->dmem;
+        if ((ms & 0xfff) + length <= 0x1000 && ds + length <= 0x800000) {
+            if (write) {
+                memcpy(x->rdram + ds, m + ((ms & 0xfff) >> 2), length);
+                if (uc->ring_off || !dead_dmem(uc, ms & 0xfff))     /* (a build without a ring: its RDP output chunks come from dead DMEM, compared as the stream) */
+                    dx_note_wr(x, ds, length);
+            } else
+                memcpy(m + ((ms & 0xfff) >> 2), x->rdram + ds, length);
+        } else {
+            for (j = 0; j < length; j += 4) {
+                uint32_t ma = (mem + j) & 0x1ffc, da = (dram + j) & 0x7ffffc;
+                uint32_t *mm = (ma & 0x1000) ? x->imem : x->dmem;
+                if (write) {
+                    memcpy(x->rdram + da, &mm[(ma & 0xfff) >> 2], 4);
+                    if (uc->ring_off || !dead_dmem(uc, mem & 0xfff))
+                        dx_note_wr(x, da, 4);
+                } else
+                    memcpy(&mm[(ma & 0xfff) >> 2], x->rdram + da, 4);
+            }
+        }
+        mem += length;
+        dram += length + skip;
+    } while (++i <= count);
+    x->crv[0] = mem;
+    x->crv[1] = dram;
+    x->crv[write ? 3 : 2] = 0xff8;
+}
+
+/* RSP_MTC0 on the replay's registers. Returns what hle_mtc0 does: nonzero when an SP_STATUS write halts the RSP or raises the interrupt */
+static int dx_mtc0(struct hle_task *t, unsigned rd, uint32_t val)
+{
+    struct hle_dx *x = t->dx;
+    uint32_t *cr = x->crv;
+    switch (rd & 15) {
+    case 0: cr[0] = val & 0x1fff; break;
+    case 1: cr[1] = val & 0xffffff; break;
+    case 2: cr[2] = val; dx_dma(x, 0, t->uc); break;
+    case 3: cr[3] = val; dx_dma(x, 1, t->uc); break;
+    case 4: {
+        uint32_t st = cr[4];
+        unsigned b;
+        static const uint32_t bits[11] = { SP_STATUS_HALT, 0x20 /* SSTEP */, SP_STATUS_INTR_BREAK, 0x80, 0x100, 0x200, 0x400, 0x800, 0x1000, 0x2000, 0x4000 };
+        static const uint32_t clr[11] = { 0x1, 0x20, 0x80, 0x200, 0x800, 0x2000, 0x8000, 0x20000, 0x80000, 0x200000, 0x800000 };
+        for (b = 0; b < 11; b++) {
+            uint32_t sel = val & (clr[b] | clr[b] << 1);
+            if (sel == (clr[b] << 1))
+                st |= bits[b];
+            else if (sel == clr[b])
+                st &= ~bits[b];
+        }
+        switch (val & 0x18) {                       /* SP_CLR_INTR 0x8, SP_SET_INTR 0x10 */
+        case 0x10: x->irq |= 1; break;
+        case 0x08: x->irq &= ~1u; break;
+        default: break;
+        }
+        if (val & 0x4)                              /* SP_CLR_BROKE */
+            st &= ~SP_STATUS_BROKE;
+        cr[4] = st;
+        return (x->irq & 1) || (st & SP_STATUS_HALT);
+    }
+    case 7: cr[7] = 0; break;
+    case 8: cr[8] = cr[10] = cr[9] = val & 0xfffffff8u; break;
+    case 9: {
+        uint32_t cur = cr[10], end = val & 0xfffffff8u;
+        PrspNativeEvent e = { PRSP_EV_CMD_END, cur, end, cr[11], 0 };
+        hle_stream_add(&x->st, &e, x->dmem, (const uint32_t *)x->rdram);
+        cr[9] = end;
+        if ((end & ~7u) > (cur & ~7u))              /* the video plugin took the list (as hle_mtc0 leaves the registers for the commit) */
+            cr[8] = cr[10] = cr[9] = end & ~7u;
+        break;
+    }
+    case 10: case 13: case 14: case 15: break;
+    case 11:
+        cr[11] &= ~(uint32_t)(!!(val & 0x1) << 0);
+        cr[11] |= (uint32_t)(!!(val & 0x2) << 0);
+        cr[11] &= ~(uint32_t)(!!(val & 0x4) << 1);
+        cr[11] |= (uint32_t)(!!(val & 0x8) << 1);
+        cr[11] &= ~(uint32_t)(!!(val & 0x10) << 2);
+        cr[11] |= (uint32_t)(!!(val & 0x20) << 2);
+        cr[15] &= (uint32_t)(!(val & 0x40)) * ~0u;
+        cr[12] &= (uint32_t)(!(val & 0x200)) * ~0u;
+        break;
+    default: cr[rd & 15] = val; break;
+    }
+    return 0;
+}
+
+int armlet_hle_dx_run(struct hle_dx *x, const struct hle_ucode *uc, const PrspNativeSnap *s0)
+{
+    struct hle_task t;
+    unsigned i;
+    int rc;
+    memcpy(x->dmem, s0->dmem, 4096);
+    memcpy(x->imem, s0->imem, 4096);
+    memcpy(x->crv, s0->cr, sizeof(x->crv));
+    for (i = 0; i < 16; i++)
+        x->cr[i] = &x->crv[i];
+    x->irq = s0->irq;
+    memset(x->mfc0_count, 0, sizeof(x->mfc0_count));     /* (the JIT zeroes them at the start of every task) */
+    x->timeout = s0->sp_status_timeout;
+    x->why = NULL;
+    x->end_pc = 0;
+    x->broke = 0;
+    x->n_wr = 0;
+    memset(x->hist, 0, sizeof(x->hist));
+    hle_stream_reset(&x->st, uc);
+    if (!x->st.keep)
+        x->st.keep = 1u << 20;
+    hle_dx_cpu_load(x->cpu, s0, x->dmem, x->imem, (uint32_t *)x->rdram);
+    if (x->timeout != PRSP_TIMEOUT_INIT) {
+        x->why = "the JIT's status poll timeout has dropped (an earlier task waited for the CPU)";
+        return HLE_DECLINE;
+    }
+    memset(&t, 0, sizeof(t));
+    t.dmem = x->dmem;
+    t.imem = x->imem;
+    t.rdram = x->rdram;
+    t.cr = x->cr;
+    t.irq = &x->irq;
+    t.uc = uc;
+    t.ctx = NULL;
+    t.start_pc = s0->pc & 0xfff;
+    t.log = 1;
+    t.dx = x;
+    hle_bind(&t, uc);
+    rc = uc->fam->run(&t, uc);
+    x->switched = t.switched;
+    if (rc == HLE_OK && !x->broke) {
+        x->why = "the family returned without ending the task";
+        rc = HLE_DECLINE;
+    }
+    return rc;
+}
+
+/* the end state of the replay against the JIT's (compare_tasks, external effects) */
+unsigned armlet_hle_dx_compare(const struct hle_dx *x, const struct hle_ucode *u, const struct hle_dx_jit *j, const struct hle_probe_opts *opts, char *out, size_t outsz, int *tol_used)
+{
+    static __thread struct report r;                 /* (8 KiB: not on the validator's stack) */
+    const PrspNativeSnap *b = j->s1;
+    const uint8_t *da = (const uint8_t *)x->dmem, *db = (const uint8_t *)b->dmem;
+    uint32_t ring_lo = 0, ring_hi = 0;
+    unsigned i, nd = 0;
+    size_t k;
+    int tol = 0;
+
+    r.n = 0;
+    r.count = 0;
+    if (u->ring_off) {
+        ring_lo = b->dmem[u->ring_off >> 2] & 0x7ffff8;
+        ring_hi = b->dmem[(u->ring_off >> 2) + 1] & 0x7ffff8;
+    }
+    for (i = 0; i < 4096; i++) {
+        unsigned addr = i ^ 3;
+        if (da[i] != db[i] && !dead_dmem(u, addr)) {
+            if (opts && opts->dmem_ok && opts->dmem_ok(u, x->dmem, addr, da[i], db[i])) {
+                tol = 1;
+                continue;
+            }
+            if (nd++ < 8)
+                rep(&r, "  DMEM[%03x]: native %02x, JIT %02x\n", addr, da[i], db[i]);
+        }
+    }
+    if (nd > 8)
+        rep(&r, "  ... %u DMEM bytes differ in all\n", nd);
+    for (i = 0; i < 1024; i++)
+        if (x->imem[i] != b->imem[i]) {
+            rep(&r, "  IMEM[%03x]: native %08x, JIT %08x\n", i * 4, x->imem[i], b->imem[i]);
+            break;
+        }
+    for (i = 0; i < 16; i++)
+        if (MUT(439, x->crv[i], i == 4 ? x->crv[i] ^ 0x80 : x->crv[i]) != b->cr[i])
+            rep(&r, "  SP/DPC register %u: native %08x, JIT %08x\n", i, x->crv[i], b->cr[i]);
+    if ((x->irq ^ b->irq) & ~0x20u)
+        rep(&r, "  MI_INTR: native %08x, JIT %08x\n", x->irq, b->irq);
+    if (x->end_pc != (b->pc & 0xffc))
+        rep(&r, "  pc: native %03x, JIT %03x\n", x->end_pc, b->pc);
+    if (x->timeout != b->sp_status_timeout)
+        rep(&r, "  SP_STATUS_TIMEOUT: native %d, JIT %d\n", x->timeout, b->sp_status_timeout);
+    if (u->flags & HLE_F_REGS_LIVE) {
+        const uint32_t *sr = hle_dx_cpu_sr(x->cpu);
+        unsigned q;
+        for (q = 1; q < 32; q++)
+            if ((u->live_sregs >> q & 1) && sr[q] != b->sr[q])
+                rep(&r, "  scalar register %u: native %08x, JIT %08x\n", q, sr[q], b->sr[q]);
+    }
+    if (x->st.len != j->st->len || (x->st.hash != j->st->hash && !(x->switched && x->st.hash_r == j->st->hash_r))) {
+        if (opts && opts->tol && stream_tolerable(u, &x->st, j->st))
+            tol = 1;
+        else
+            rep(&r, "  RDP command stream: native %" PRIu64 " bytes %016" PRIx64 ", JIT %" PRIu64 " bytes %016" PRIx64 "\n", x->st.len, x->st.hash, j->st->len, j->st->hash);
+    }
+    /* RDRAM: the rows either side wrote outside the RDP output ring, native bytes against the JIT's final ones */
+    {
+        size_t off = 0;
+        for (k = 0; k < j->n_wr; k++) {             /* the JIT's rows: the replay's RDRAM must hold the same bytes there */
+            const struct hle_dx_wr *w = &j->wr[k];
+            if (memcmp(x->rdram + w->a, j->wr_bytes + off, w->n)) {
+                uint32_t q = 0;
+                while (q + 4 <= w->n && !memcmp(x->rdram + w->a + q, j->wr_bytes + off + q, 4))
+                    q += 4;
+                rep(&r, "  RDRAM[%06x] written by DMA (JIT): native %08x, JIT %08x\n", w->a + q, *(const uint32_t *)(x->rdram + w->a + q), *(const uint32_t *)(j->wr_bytes + off + q));
+            }
+            off += w->n;
+        }
+        for (k = 0; k < x->n_wr; k++) {             /* the replay's rows outside the ring: the JIT must have written them too */
+            uint32_t a = x->wr[k].a, e = a + x->wr[k].n, q;
+            if (u->ring_off && ring_hi > ring_lo && a >= ring_lo && e <= ring_hi)
+                continue;
+            for (q = a; q < e; q += 4) {
+                size_t m;
+                int in = 0;
+                if (u->ring_off && ring_hi > ring_lo && q >= ring_lo && q + 4 <= ring_hi)
+                    continue;
+                for (m = 0; m < j->n_wr && !in; m++)
+                    in = q >= j->wr[m].a && q + 4 <= j->wr[m].a + j->wr[m].n;
+                if (!in) {
+                    rep(&r, "  RDRAM[%06x] written by DMA (native) where the JIT wrote nothing\n", q);
+                    break;
+                }
+            }
+        }
+    }
+    if (tol_used)
+        *tol_used = tol && !r.count;
+    snprintf(out, outsz, "%.*s", (int)r.n, r.buf);
+    return r.count;
 }
 
 void armlet_hle_core_reset(void)

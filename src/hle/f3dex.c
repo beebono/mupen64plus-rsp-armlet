@@ -17,6 +17,7 @@
 #include <string.h>
 
 #include "hle.h"
+#include "latch.h"
 #include "f3dex_fx.h"
 #include "f3dex_dmem.h"
 #include "f3dex_bld.h"
@@ -429,6 +430,8 @@ static int cmd_vtx(struct f3dex_task *f, uint32_t w0, uint32_t w1)
     s = fetch(f, seg(f, w1), w0 & 0x3ff);               /* the class-0 DMA comes first */
     if (geom & F3DEX_G_LIGHTING) {
         uint32_t l = hle_dm32(t, f->L->lights);
+        if (hle_cmd(t, LATCH_K_LIT))
+            return HLE_DECLINE;
         if (f->ov != OV_LIGHT) {
             load_overlay(f, 2);
             f->ov = OV_LIGHT;
@@ -507,6 +510,8 @@ static int tri_one(struct f3dex_task *f, unsigned a0, unsigned a1, unsigned a2, 
         struct f3dex_clip_out co;
         const struct f3dex_vtx *vp[3] = { &v[0], &v[1], &v[2] };
         unsigned i;
+        if (hle_cmd(t, LATCH_K_CLIP))
+            return HLE_DECLINE;
         if (f->ov != OV_CLIP) {
             load_overlay(f, 1);
             f->ov = OV_CLIP;
@@ -679,6 +684,8 @@ static int f3dex_run(struct hle_task *t, const struct hle_ucode *u)
         f.k0 += 8;
         f.gp -= 8;
         op = w0 >> 24;
+        if (hle_cmd(t, op))                             /* (the latch policy's command-kind gate; the count of a replay under validation) */
+            return HLE_DECLINE;
         if (f.trace) fprintf(stderr, "F3DEX cmd %u: %08x %08x\n", f.ncmds, w0, w1);
         if (op >= 0xc0) {                               /* the RDP commands: copied, the segment address of the image commands resolved */
             if (op >= 0xfd)
@@ -808,7 +815,10 @@ static int f3dex_run(struct hle_task *t, const struct hle_ucode *u)
                     }
                 }
                 if (acc != 0) {
-                    int e = enddl(&f);
+                    int e;
+                    if (hle_cmd(t, LATCH_K_CULLDL))
+                        return HLE_DECLINE;
+                    e = enddl(&f);
                     if (e > 0)
                         goto end;
                     if (e < 0)

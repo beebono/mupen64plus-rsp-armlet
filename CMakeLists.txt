@@ -164,7 +164,8 @@ if(ARMLET_NATIVE_TOOLS AND ARMLET_NATIVE)
     endif()
     target_compile_options(armlet-native-replay PRIVATE
         "$<$<COMPILE_LANGUAGE:CXX>:-Wall;-Wno-missing-field-initializers;-Wno-empty-body;-ffast-math;-Wno-unused-parameter;-Wno-parentheses>" "$<$<COMPILE_LANGUAGE:C>:-Wall>")
-    target_link_libraries(armlet-native-replay PRIVATE lightning-m64p dl m)
+    find_package(Threads REQUIRED)
+    target_link_libraries(armlet-native-replay PRIVATE lightning-m64p dl m Threads::Threads)
 
     # the probe on dumps of ucode texts, without a game (tools/hle/probe_replay.c): derivation, canned tasks, JIT and front-end in a private world
     add_executable(armlet-probe-replay tools/hle/probe_replay.c src/ustats.c src/gfx_ucode.c src/log.c src/rdp_defer.c ${armlet_hle_src} ${armlet_hle_cpp} ${armlet_native_c} ${armlet_native_cpp} ${prsp_cpp} ${prsp_extra_cpp})
@@ -185,7 +186,7 @@ if(ARMLET_NATIVE_TOOLS AND ARMLET_NATIVE)
     endif()
     target_compile_options(armlet-probe-replay PRIVATE
         "$<$<COMPILE_LANGUAGE:CXX>:-Wall;-Wno-missing-field-initializers;-Wno-empty-body;-ffast-math;-Wno-unused-parameter;-Wno-parentheses>" "$<$<COMPILE_LANGUAGE:C>:-Wall>")
-    target_link_libraries(armlet-probe-replay PRIVATE lightning-m64p dl m)
+    target_link_libraries(armlet-probe-replay PRIVATE lightning-m64p dl m Threads::Threads)
 
     # instruction-level tracer of a snapshot (tools/native/trace.cpp), C++ only
     add_executable(armlet-native-trace tools/native/trace.cpp ${prsp_cpp} ${prsp_extra_cpp})
@@ -199,4 +200,5 @@ endif()
 # Only the six plugin API symbols leave the module; Lightning's _emit_* and everything else stay private.
 target_link_options(mupen64plus-rsp-armlet PRIVATE
     "-Wl,--version-script=${CMAKE_CURRENT_SOURCE_DIR}/src/armlet_api_export.ver" -Wl,-Bsymbolic -Wl,--exclude-libs,ALL)
-target_link_libraries(mupen64plus-rsp-armlet PRIVATE lightning-m64p dl m)
+find_package(Threads REQUIRED)     # the validator thread (src/hle/validate.c)
+target_link_libraries(mupen64plus-rsp-armlet PRIVATE lightning-m64p dl m Threads::Threads)

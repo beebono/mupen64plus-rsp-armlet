@@ -14,6 +14,7 @@
 #include "dispatch.h"
 #include "ustats.h"
 #include "hle/hle.h"
+#include "hle/validate.h"
 #include "prsp_bridge.h"
 #include "rdp_defer.h"
 #include "hle_external.h"
@@ -71,6 +72,7 @@ int HleForwardTask(void *user_defined)
         return 0;
     if (armlet_hle_task_begin(CTX(user_defined)))
         return 0;
+    armlet_valid_jit_begin(CTX(user_defined));       /* (a task the validator samples: captured; src/hle/validate.c) */
     ARMLET_NATIVE_TASK_BEGIN(CTX(user_defined));
     armlet_rdp_defer_task_begin(CTX(user_defined));
     ARMLET_PROF_FWD_BEGIN();
@@ -83,6 +85,7 @@ int HleForwardTask(void *user_defined)
     }
     armlet_rdp_defer_task_end();
     ARMLET_PROF_FWD_END();
+    armlet_valid_jit_end(CTX(user_defined));
     armlet_hle_task_end(CTX(user_defined));
     return 0;
 }

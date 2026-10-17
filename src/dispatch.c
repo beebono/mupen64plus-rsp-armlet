@@ -30,12 +30,13 @@ bool armlet_gfx_try_native(struct armlet_ctx *c)
     u = armlet_gfx_identify(c, &is_new);
     n = armlet_gfx_native_find(u->id);
     if (c->cfg.probe) {
-        /* GfxProbe: a ucode that has no handler is derived and probed (src/hle/probe.c); one that a probe latched runs only for the data image it was probed with */
+        /* GfxProbe: a ucode that has no handler is derived and probed (src/hle/probe.c); a derived build runs once the validator latched it, for the data image it was derived for,
+         * and the tasks the validator samples run on the JIT */
         armlet_probe_offer(c, u);
-        if (!n)
-            n = armlet_gfx_native_find(u->id);
-        else if (!armlet_probe_gate(c, u))
+        if (!armlet_probe_gate(c, u))
             n = NULL;
+        else if (!n)
+            n = armlet_gfx_native_find(u->id);
     }
     if (is_new)
         armlet_log(M64MSG_INFO, "gfx ucode %016" PRIx64 " %s: %s [%s]", u->id, l_family[u->family], u->name[0] ? u->name : "(no banner)",
@@ -47,7 +48,13 @@ bool armlet_gfx_try_native(struct armlet_ctx *c)
         uint64_t t0 = armlet_ustats_now();
         bool ok = n->run(c, u) != 0;
         armlet_ustats_result(ok, armlet_ustats_now() - t0);
+        if (!ok && c->cfg.probe)
+            armlet_probe_declined(c, u);
         return ok;
     }
-    return n->run(c, u) != 0;
+    if (n->run(c, u) != 0)
+        return true;
+    if (c->cfg.probe)
+        armlet_probe_declined(c, u);
+    return false;
 }

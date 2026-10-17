@@ -19,10 +19,12 @@
 extern "C" {
 #endif
 
-#define UCACHE_FORMAT 4           /* 2: the continuation pcs of S2DEX (pc[]) and the dialect command table (ext); 3: F3DEX 1.x records (f1pc, non, dlx, culldl_off; the layout in lay[]); 4: F3D records (f3pc, the masks, f3[]) */
+#define UCACHE_FORMAT 5           /* 2: the continuation pcs of S2DEX (pc[]) and the dialect command table (ext); 3: F3DEX 1.x records (f1pc, non, dlx, culldl_off; the layout in lay[]); 4: F3D records (f3pc, the masks, f3[]);
+                                     5: the latch policy's state (latch, strikes, the evidence summary, the validated command kinds) */
 #define UCACHE_MAX_ENTRIES 512          /* oldest-used entries go first when the cache is full */
 
 enum { UC_PROBE_NONE = 0, UC_PROBE_PASS = 1, UC_PROBE_FAIL = 2, UC_PROBE_PASS_TOL = 3, UC_PROBE_UNSUPPORTED = 4 };
+enum { UC_LATCH_NONE = 0, UC_LATCH_LATCHED = 1, UC_LATCH_DEAD = 2 };      /* NONE: not latched (a candidate, or never validated); DEAD: unlatched for good, never retried */
 
 /* the stored form: fixed-width fields, a checksum last */
 struct ucache_entry {
@@ -47,6 +49,11 @@ struct ucache_entry {
     uint32_t pad8;
     uint32_t clip_mask, culldl_mask;
     uint8_t f3[F3F_N], pad7;
+    uint8_t latch, strikes, near, pad9;     /* format 5: UC_LATCH_*, the EXACT strikes so far, the build is NEAR */
+    uint32_t matches, mismatches;           /* validated real tasks: equal, different (all sessions) */
+    uint32_t evidence_milli, distinct;      /* the evidence (x 1000) and distinct fingerprints when the build latched or was stored */
+    uint32_t pad10;
+    uint64_t kinds[5];                      /* the validated command kinds (latch.h: LATCH_NKINDS bits) */
     uint32_t crc;
     uint32_t pad3;
 };
@@ -61,7 +68,10 @@ void ucache_close(void);
 const char *ucache_path(void);
 
 const struct ucache_entry *ucache_find(uint64_t text_id, uint64_t data_id);
-/* Adds or replaces the entry (key text_id, data_id; crc and tool are set here) and writes the file. Returns 0, or nonzero when the file could not be written (the memory copy is kept). */
+/* the entry copied out (0), or -1: the form to use while another thread may store (the validator does) */
+int ucache_get(uint64_t text_id, uint64_t data_id, struct ucache_entry *out);
+/* Adds or replaces the entry (key text_id, data_id; crc and tool are set here) and writes the file. Returns 0, or nonzero when the file could not be written (the memory copy is kept).
+ * A permanent unlatch is never undone: when the entry in memory or in the file says UC_LATCH_DEAD, the stored one does too, and the strikes are the larger of the two. Thread-safe. */
 int ucache_store(const struct ucache_entry *e);
 
 /* the record of an entry as a derive_rec, and the other way round */

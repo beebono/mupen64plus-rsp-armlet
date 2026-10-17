@@ -33,6 +33,7 @@
 #define CFG_GFX_PROBE "GfxProbe"
 #define CFG_GFX_PROBE_NEAR "GfxProbeNear"
 #define CFG_UCODE_CACHE "GfxUcodeCache"
+#define CFG_LATCH_POLICY "GfxLatchPolicy"
 
 #define SPLIT(x) (((x) >> 16) & 0xffff), (((x) >> 8) & 0xff), ((x) & 0xff)
 
@@ -121,6 +122,8 @@ m64p_error armlet_config_startup(m64p_dynlib_handle core)
         "Probe of a NEAR derivation: strict (the canned tasks must come out identical) or tolerant (shade coefficients and vertex colours may differ by a couple of levels)");
     ConfigSetDefaultString(l_section, CFG_UCODE_CACHE, "",
         "File of what the probe learned (armlet-ucode.cache in the core's config directory when empty; off = none)");
+    ConfigSetDefaultString(l_section, CFG_LATCH_POLICY, "",
+        "GfxProbe: when a derived build runs natively (empty = the defaults): evidence=24,distinct=8,near=1.75,strikes=2,sample=8,sample_last=256,decay=64,queue=4,fingerprints=1024 (see docs/options.md)");
     return M64ERR_SUCCESS;
 }
 
@@ -173,6 +176,7 @@ void armlet_config_load(struct armlet_config *cfg)
     const char *probe = l_section ? ConfigGetParamString(l_section, CFG_GFX_PROBE) : "off";
     const char *pnear = l_section ? ConfigGetParamString(l_section, CFG_GFX_PROBE_NEAR) : "strict";
     const char *ucache = l_section ? ConfigGetParamString(l_section, CFG_UCODE_CACHE) : "";
+    const char *lpol = l_section ? ConfigGetParamString(l_section, CFG_LATCH_POLICY) : "";
     const char *coalesce = l_section ? ConfigGetParamString(l_section, CFG_RDP_COALESCE) : "auto";
     int bytes = l_section ? ConfigGetParamInt(l_section, CFG_RDP_COALESCE_BYTES) : ARMLET_COALESCE_BYTES_DEFAULT;
     const char *env;
@@ -195,6 +199,8 @@ void armlet_config_load(struct armlet_config *cfg)
         pnear = env;
     if ((env = getenv("ARMLET_UCODE_CACHE")))
         ucache = env;
+    if ((env = getenv("ARMLET_LATCH_POLICY")))
+        lpol = env;
 
     memset(cfg, 0, sizeof(*cfg));
     if (mode && !strcasecmp(mode, "hle"))
@@ -226,6 +232,12 @@ void armlet_config_load(struct armlet_config *cfg)
     cfg->probe_seeds = (env = getenv("ARMLET_PROBE_SEEDS")) && *env ? (unsigned)atoi(env) : 0;
     if (cfg->probe_seeds > 40)
         cfg->probe_seeds = 40;
+    latch_cfg_default(&cfg->latch);
+    {
+        const char *bad = NULL;
+        if (lpol && *lpol && latch_cfg_parse(&cfg->latch, lpol, &bad))
+            armlet_log(M64MSG_WARNING, "GfxLatchPolicy: cannot read '%.40s' (keys: evidence, distinct, near, strikes, sample, sample_last, decay, queue, fingerprints)", bad ? bad : lpol);
+    }
     if (ucache && *ucache)
         snprintf(cfg->ucode_cache, sizeof(cfg->ucode_cache), "%s", ucache);
     else if (cfg->probe) {

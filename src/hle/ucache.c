@@ -7,6 +7,7 @@
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
 #include <errno.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -27,6 +28,8 @@ struct hdr {
     char magic[8];
     uint32_t bom, format, tool, count, esize, crc;
 };
+
+static pthread_mutex_t l_mu = PTHREAD_MUTEX_INITIALIZER;    /* the validator thread stores latch states while the emulation thread looks entries up */
 
 static struct {
     char path[1024];
@@ -73,6 +76,18 @@ uint32_t ucache_tool_version(void)
 
 static uint32_t entry_crc(const struct ucache_entry *e) { return ucache_crc32(e, offsetof(struct ucache_entry, crc)); }
 
+/* two versions of one key: the newer (seq) wins, but a permanent unlatch and the strikes are kept from either */
+static void merge(struct ucache_entry *keep, const struct ucache_entry *other)
+{
+    int dead = keep->latch == UC_LATCH_DEAD || other->latch == UC_LATCH_DEAD;
+    uint8_t strikes = keep->strikes > other->strikes ? keep->strikes : other->strikes;
+    if (other->seq > keep->seq)
+        *keep = *other;
+    if (UMUT(442, dead, 0))
+        keep->latch = UC_LATCH_DEAD;
+    keep->strikes = strikes;
+}
+
 const char *ucache_path(void) { return U.open ? U.path : ""; }
 
 /* reads the file at U.path, merging its good entries into the table (the one with the higher seq wins for a key) */
@@ -100,8 +115,7 @@ static void load_file(void)
             if (U.e[q].text_id == e.text_id && U.e[q].data_id == e.data_id)
                 break;
         if (q < U.n) {
-            if (e.seq > U.e[q].seq)
-                U.e[q] = e;
+            merge(&U.e[q], &e);
             continue;
         }
         if (U.n < UMUT(346, UCACHE_MAX_ENTRIES, 100000u)) {
@@ -120,20 +134,42 @@ static void load_file(void)
 
 int ucache_open(const char *path)
 {
+    int n;
     ucache_close();
+    pthread_mutex_lock(&l_mu);
     memset(&U, 0, sizeof(U));
-    if (!path || !*path || strlen(path) >= sizeof(U.path) - 16)
+    if (!path || !*path || strlen(path) >= sizeof(U.path) - 16) {
+        pthread_mutex_unlock(&l_mu);
         return 0;
+    }
     snprintf(U.path, sizeof(U.path), "%s", path);
     U.open = 1;
     load_file();
-    return (int)U.n;
+    n = (int)U.n;
+    pthread_mutex_unlock(&l_mu);
+    return n;
 }
 
 void ucache_close(void)
 {
+    pthread_mutex_lock(&l_mu);
     free(U.e);
     memset(&U, 0, sizeof(U));
+    pthread_mutex_unlock(&l_mu);
+}
+
+int ucache_get(uint64_t text_id, uint64_t data_id, struct ucache_entry *out)
+{
+    const struct ucache_entry *e;
+    int rc = -1;
+    pthread_mutex_lock(&l_mu);
+    e = ucache_find(text_id, data_id);
+    if (e) {
+        *out = *e;
+        rc = 0;
+    }
+    pthread_mutex_unlock(&l_mu);
+    return rc;
 }
 
 const struct ucache_entry *ucache_find(uint64_t text_id, uint64_t data_id)
@@ -178,8 +214,10 @@ static int write_file(void)
     h.esize = sizeof(struct ucache_entry);
     h.crc = ucache_crc32(&h, offsetof(struct hdr, crc));
     ok &= fwrite(&h, sizeof(h), 1, f) == 1;
-    for (i = 0; i < U.n && ok; i++)
+    for (i = 0; i < U.n && ok; i++) {
+        U.e[i].crc = entry_crc(&U.e[i]);              /* (a merge may have changed an entry) */
         ok &= fwrite(&U.e[i], sizeof(U.e[i]), 1, f) == 1;
+    }
     ok &= fflush(f) == 0;
     if (ok)
         (void)fsync(fileno(f));
@@ -193,7 +231,18 @@ static int write_file(void)
     return 0;
 }
 
+static int store_locked(const struct ucache_entry *src);
+
 int ucache_store(const struct ucache_entry *src)
+{
+    int rc;
+    pthread_mutex_lock(&l_mu);
+    rc = store_locked(src);
+    pthread_mutex_unlock(&l_mu);
+    return rc;
+}
+
+static int store_locked(const struct ucache_entry *src)
 {
     struct ucache_entry e = *src;
     unsigned i, q;
@@ -203,12 +252,18 @@ int ucache_store(const struct ucache_entry *src)
     q = U.n;
     e.tool = ucache_tool_version();
     e.seq = ++U.seq;
-    e.crc = entry_crc(&e);
     for (i = 0; i < U.n; i++)
         if (U.e[i].text_id == e.text_id && U.e[i].data_id == e.data_id) {
             q = i;
             break;
         }
+    if (q < U.n) {                                         /* (an unlatch for good stays, whoever stores later) */
+        if (UMUT(442, U.e[q].latch == UC_LATCH_DEAD, 0))
+            e.latch = UC_LATCH_DEAD;
+        if (U.e[q].strikes > e.strikes)
+            e.strikes = U.e[q].strikes;
+    }
+    e.crc = entry_crc(&e);
     if (q == U.n) {
         if (U.n == UMUT(346, UCACHE_MAX_ENTRIES, 100000u)) {                   /* full: the least recently used entry goes */
             unsigned old = 0;
