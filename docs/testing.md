@@ -759,3 +759,22 @@ Desktop x86_64 unless noted, branch `ucode-latch` on devel da1c0e6. `GfxMode=hle
 | rgdsplus Donald Duck | 21.8, 44.3 ms | 48, 1.3 s | 28.8 / 36.9, 25 | 28.3 / 34.2, 18 | 54.0 / 55.3 / 56.4 |
 
 p50 is 16.6-16.9 ms everywhere. On the A53 a replay costs 2.2 ms (DK64) to 5.6 ms (SM64, A55) of validator-thread CPU and a capture 0.1 ms on the emulation thread. The warm cost is the sampling: with sampling off (`ARMLET_LATCH_POLICY=sample=1000000,...`, rgdsplus SM64) the latched build costs what the registered one does (process 35.6 against 35.4 s, RSP time +1.3 %, p99 30.0 against 30.9 ms); with it, about 100 sampled tasks in 40 s run on the JIT (emulation thread +0.45 s, validator 0.54 s, the rest on other threads) and DK64 shows more frames over 36 ms. Raw data: test-output/latch (git-ignored).
+
+### Second round: data-dependent kinds, direct matches, sampling from 1/32, session marker (2026-10-17)
+
+| check | result |
+|---|---|
+| unit tests | `mutcheck_latch.sh` (sampling now 1/32 .. 1/256) and `mutcheck_ucache.sh` pass, mutations caught as before |
+| **direct matches** (`tools/equiv/check_direct.sh`, `GfxProbe=on`, no `ARMLET_PROBE_FORCE`): Kirby 64, DK64, OoT, SM64 | 63 of the first 64 tasks native (the 64th is counted before it runs), no validator or latch line: registered builds run at once; 3700-frame runs of the four identical to `ref` |
+| 3700-frame gates with the validator, verify on (same six games and options as above) | all identical, verify 0 differences |
+| time to latch, before -> after the data kinds (desktop) | DK64 248 -> **39** tasks (8.2 -> 1.3 s), OoT 374 -> 233 (9.3 -> 5.1 s), Banjo-Tooie 148 -> 102 (7.4 -> 5.1 s), SM64 111 -> 104 (5.5 -> 5.2 s), Donald Duck 48 -> 33 (1.2 -> 0.9 s), Kirby 64 (forced) still not; the kinds add fingerprints, the gate then declines 2 to 5 tasks per game on situations first met after the latch |
+| **443 on SM64, without verify** | now **identical to `ref`**: the latched build declines the first task with a vertex behind the eye (`LATCH_K_WNEG`, not validated), the JIT runs it, the replay differs, 2 strikes, unlatched for good |
+| 440 / 441 / 443 on DK64 and Donald Duck, without verify | all identical to `ref`; 440: DK64 latched, caught, unlatched; 443: both caught and unlatched; 440 / 441 on Donald Duck and 441 on DK64 never show |
+| cache second launch (Donald Duck) | the second run starts latched, both identical |
+| unclean end | DK64 with 443 and `strikes=1000000`, killed while suspended: the next launch logs "suspended when the last session ended without closing the ROM; unlatched for good" and runs identical to `ref` (JIT). The same with a clean close (SIGINT, RomClosed): the next launch continues the pair as a candidate |
+| `GfxProbe` off (DK64, SM64 `armlet-hle`, OoT `armlet`) | identical |
+| TSan (DK64, OoT with verify) | no report |
+| builds | native, aarch64, rg35xxsp clean |
+
+**rg35xxsp DK64, sampling from 1/32** (4 off / 4 warm alternating, 1 cold; same method as above): off p95 30.8 / p99 44.0 ms, **35.5** frames > 36 ms, process CPU 51.4 s; warm p95 30.9 / p99 44.2,
+**41.5** frames > 36 ms, 52.7 s; cold 48 frames, 53.1 s, latched after 39 tasks in 1.3 s. With 1/8 it was 53 frames and 54.3 s warm.

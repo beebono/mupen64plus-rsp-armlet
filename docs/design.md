@@ -476,8 +476,13 @@ task). The policy's state is under a mutex of its own, written by the validator 
 PluginShutdown stop the thread first (the replay in progress ends), then the pairs are stored and freed. A ThreadSanitizer build ran Donkey Kong 64 and Ocarina of Time without a report; with the
 replay's lock taken out (test build 444) it reports the race on the F3DEX2 layout pointer.
 
-**Fingerprint and evidence.** A replay counts the command kinds the build under validation ran (`hle_cmd` in each front-end's loop: the opcode byte, 0 .. 255) and the risky paths taken
-(`LATCH_K_CLIP` a triangle went to the clipper, `LATCH_K_LIT` lit vertices, `LATCH_K_LOAD` a G_LOAD_UCODE of another text, `LATCH_K_CULLDL` a G_CULLDL that ended its list). The **fingerprint** is
+**Fingerprint and evidence.** A replay counts the command kinds the build under validation ran (`hle_cmd` in each front-end's loop: the opcode byte, 0 .. 255), the risky paths taken
+(`LATCH_K_CLIP` a triangle went to the clipper, `LATCH_K_LIT` lit vertices, `LATCH_K_LOAD` a G_LOAD_UCODE of another text, `LATCH_K_CULLDL` a G_CULLDL that ended its list) and the
+**data situations** the F3DEX2, F3DEX 1.x and F3D code branches on (`latch.h`; `hle_vtx_kinds` after each G_VTX's transform, the triangle and clip paths): `LATCH_K_WNEG` a vertex with clip
+w <= 0 (at or behind the eye: computed from the clip coordinates, not from the flag word a wrong build computes), `LATCH_K_NEARCLIP` a clipped triangle with such a vertex (the near plane),
+`LATCH_K_TRI_REJECT` a triangle rejected (all vertices beyond one plane), `LATCH_K_TRI_CULL` culled or degenerate, `LATCH_K_BRZ` a G_BRANCH_Z taken, and `LATCH_K_VFLAG` + b for each bit b of
+the vertex clip-flag words a G_VTX produced (the x / y / z / w planes and the guard-band ratio planes: F3DEX2's high halfword is bits 16 .. 31). S2DEX has no geometry: its commands are
+gated by opcode only (its data-dependent paths, scissor clipping of sprites and background wrap, are left as opcodes; an open point). The **fingerprint** is
 the FNV of the kinds with their counts bucketed (1, 2-3, 4-7, ... 128+). A match adds **1 / (1 + earlier matches of its fingerprint)** of evidence: repeats count little, variety counts fully. An
 EXACT build **latches** at evidence >= `evidence` (24) **and** >= `distinct` (8) distinct fingerprints; a NEAR build (a NEAR derivation, or a probe pass that needed the tolerance) needs `near`
 (1.75) times both (42 and 14). Declined, inconclusive and loaded-text-not-loaded replays count neither way.
@@ -490,22 +495,28 @@ goes back as for any decline).
 `strikes` (2) strikes, this session's and the cache's, **unlatches it for good**. NEAR: a single mismatch unlatches it for good. An unlatch for good is stored at once and never retried (the build
 stays registered with its gate shut; a replay never takes it over).
 
-**Sampling.** A latched build's tasks are still validated: one in `sample` (8) runs on the JIT and is captured, the rate halving every `decay` (64) matches down to one in `sample_last` (256). It
-starts at one in 8 again in each session and after a suspension.
+**Sampling.** A latched build's tasks are still validated: one in `sample` (32) runs on the JIT and is captured, the rate halving every `decay` (64) matches down to one in `sample_last` (256). It
+starts at one in 32 again in each session and after a suspension.
 
-**Loaded texts.** A derived build of a text that a G_LOAD_UCODE loads (S2DEX in Ocarina of Time and Kirby 64) is validated in the tasks of the build that loads it: before it latches, a task that
+**Registered builds** (the ucode id is a table entry) are not touched by any of this: with `GfxProbe = on` they run natively from their first task, nothing is derived, probed, validated or
+latched for them (`tools/equiv/check_direct.sh`). Only `ARMLET_PROBE_FORCE` makes them act unknown, for tests.
+
+**Loaded texts.** A derived build of a text that a G_LOAD_UCODE loads (S2DEX in Ocarina of Time and Kirby 64) is validated in the tasks of the build that loads it, and only when that build is
+registered or latched (never while it is itself a candidate): before it latches, a task that
 declines at the G_LOAD_UCODE (it runs on the JIT anyway) is captured with that build as the one under validation, and the replay runs the task's own build (a registered one, or a latched derived one)
 taking the candidate over at the load; in a replay any derived build that is not unlatched for good may be taken over (Ocarina of Time loads S2DEX and its own text back, both derived under
 `ARMLET_PROBE_FORCE`). A replay in which the candidate was not loaded counts as "without the build". Latched, it is sampled in the loading build's tasks at the same decaying rate. In a real run a
 derived text that is not latched is not taken over, and neither is a registered build in its place (`loaded_build`).
 
-**Cache.** Per (text, data): the record, the verdict, the probe's result as before, and the latch state, strikes, evidence summary and validated kinds (`UCACHE_FORMAT` 5). Stored by the validator
-thread at a latch, a suspension and an unlatch, and by the emulation thread at RomClosed (the evidence and kinds of the session). A pair latched in an earlier session starts native at once with
+**Cache.** Per (text, data): the record, the verdict, the probe's result as before, and the latch state, strikes, evidence summary, validated kinds and a session marker (`UCACHE_FORMAT` 5).
+Stored by the validator thread at a latch, a suspension and an unlatch, and by the emulation thread when a pair starts (the marker set) and at a clean close, RomClosed or PluginShutdown (the
+evidence and kinds of the session, the marker cleared). **Unclean end:** a pair whose entry still has the marker and was suspended (strikes, not latched) when the next session starts is unlatched
+for good: the session that used it ended without closing the ROM (a crash it may have caused). A pair latched in an earlier session starts native at once with
 its validated kinds, under the gate and the sampling; an unlatch for good is never retried.
 
-**Limits.** Validation is after the fact: a latched build that is wrong only on tasks whose command kinds were all validated before (a data-dependent difference: the clip-flag word of vertices
-behind the eye in test build 443 on Super Mario 64) runs those tasks natively until a sampled one shows it; the output differs meanwhile (testing.md). The per-command gate and the sampling bound
-how long, not whether. A game whose scenes vary little (Kirby 64's intro: 3 fingerprints in 1800 tasks) does not latch.
+**Limits.** Validation is after the fact: a latched build that is wrong only in a situation that none of the kinds above tells apart from validated ones runs those tasks natively until a sampled
+one shows it, and the output differs meanwhile. Before the data kinds, test build 443 on Super Mario 64 (the clip-flag word of vertices behind the eye) did exactly that; with `LATCH_K_WNEG` the first
+such task declines and is validated (testing.md). A game whose scenes vary little (Kirby 64's intro: 3 fingerprints in 1800 tasks) does not latch.
 
 ## Native handler contract (superseded)
 
