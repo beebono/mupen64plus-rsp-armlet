@@ -14,19 +14,44 @@
 
 #include "f3d_fx.h"
 
+/* The DMEM layout of a build (the record's DMEM part: docs/ucode-f3d.md 5 and 10.3, docs/ucode-derive.md "F3D records that run"). The first F3D_LAY_NKNOB fields are addresses the derivation
+ * reads from the code (tools/derive_f3d.py: operands, also relative to the base register $29 = 0x110), jt0 / jt2 are read from the two dispatchers, the rest are constants of the data segment's first
+ * 0xc0 bytes that it copies from the reference. vret is the halfword where G_VTX and the clipper keep their return address (scratch: a dead range of the build). Fixed structure of the family (not fields): light records of 32 bytes from `light` (the texgen weights at +0, colours +0x10, raw directions +0x18,
+ * model-space directions +0x20; the clamp of the relight at light + 0x68), G_TEXTURE's level byte at texture + 1, its tile byte at + 2 and its scales at + 4, the FIFO end at fifo + 4, the projection
+ * at mv + 0x40, vertex records of 40 bytes from vtx_base up to the command buffer, the command buffer of 320 bytes, the DMA table at 0 (overlay k at 8 + 8k), the OSTask header at 0xfc0. */
+#define F3D_LAY_FIELDS(X) \
+    X(half1) X(persp) X(geom) X(omh) X(oml) X(texture) X(rdp_wp) X(lights) X(mtx_sp) X(mtx_lim) X(depth) X(fifo) X(segs) X(mm_tab) X(mw_tab) X(retstack) \
+    X(viewport) X(fog) X(mv) X(mp) X(vtx_base) X(cmdbuf) X(geombuf) X(outbuf) X(ring_end) X(vret) \
+    X(jt0) X(jt2) \
+    X(light) X(lim) X(vsign) X(clip_k) X(planes) X(tg) X(plane_masks)
+#define F3D_LAY_NKNOB 26
+#define F3D_LAY_NSIG 28
+#define F3D_LAY_N 35
+#define F3D_VSTRIDE 40
 struct f3d_layout {
-    uint16_t mp, mv, viewport, fog, vtx_base, vtx_stride;
-    uint8_t flags_variant;              /* F3D_FLAGS_* */
-    uint8_t nslots;                     /* the vertex slots (the buffer ends where the command buffer starts) */
+#define X(f) uint16_t f;
+    F3D_LAY_FIELDS(X)
+#undef X
+    uint8_t flags_variant;              /* F3D_FLAGS_*: how the vertex code forms the clip flag word (the record's attribute, kept here for the loaders) */
 };
-/* SM64, Pilotwings, Wave Race, Mischief Makers, Tetrisphere */
-static const struct f3d_layout f3d_layout_a = { 0x3e0, 0x360, 0x320, 0x330, 0x420, 40, F3D_FLAGS_SM64, 16 };
-/* Wave Race: the same with 32 slots (its command buffer is 0x280 higher) */
-static const struct f3d_layout f3d_layout_wr = { 0x3e0, 0x360, 0x320, 0x330, 0x420, 40, F3D_FLAGS_SM64, 32 };
-/* Pilotwings: the layout of family A with its own clip flag word */
-static const struct f3d_layout f3d_layout_pw = { 0x3e0, 0x360, 0x320, 0x330, 0x420, 40, F3D_FLAGS_PW, 16 };
-/* the 2.0H re-layout (Glover, SpaceStation, Wipeout) */
-static const struct f3d_layout f3d_layout_b = { 0x460, 0x3e0, 0x380, 0x390, 0x4a0, 40, F3D_FLAGS_SM64, 32 };
+static inline unsigned f3d_nslots(const struct f3d_layout *l) { return (unsigned)(l->cmdbuf - l->vtx_base) / F3D_VSTRIDE; }   /* the vertex buffer ends where the command buffer starts */
+
+/* SM64 and the 2.0D builds of family A (docs/ucode-f3d.md 10.3.2) */
+static const struct f3d_layout f3d_layout_a = {
+    .half1 = 0x10c, .persp = 0x112, .geom = 0x114, .omh = 0x118, .oml = 0x11c, .texture = 0x120, .rdp_wp = 0x128, .lights = 0x12c, .mtx_sp = 0x134, .mtx_lim = 0x15c, .depth = 0x110, .fifo = 0x150, .segs = 0x160, .mm_tab = 0x2f0, .mw_tab = 0x30e, .retstack = 0x336, .viewport = 0x320, .fog = 0x330, .mv = 0x360, .mp = 0x3e0, .vtx_base = 0x420, .cmdbuf = 0x6a0, .geombuf = 0x7e0, .outbuf = 0x9e0, .ring_end = 0xde0, .vret = 0x106, .jt0 = 0x0c4, .jt2 = 0x076, .light = 0x1a0, .lim = 0x028, .vsign = 0x050, .clip_k = 0x076, .planes = 0x098, .tg = 0x0a2, .plane_masks = 0x0b2,
+    .flags_variant = F3D_FLAGS_SM64 };
+/* Pilotwings: family A with its own clip flag word */
+static const struct f3d_layout f3d_layout_pw = {
+    .half1 = 0x10c, .persp = 0x112, .geom = 0x114, .omh = 0x118, .oml = 0x11c, .texture = 0x120, .rdp_wp = 0x128, .lights = 0x12c, .mtx_sp = 0x134, .mtx_lim = 0x15c, .depth = 0x110, .fifo = 0x150, .segs = 0x160, .mm_tab = 0x2f0, .mw_tab = 0x30e, .retstack = 0x336, .viewport = 0x320, .fog = 0x330, .mv = 0x360, .mp = 0x3e0, .vtx_base = 0x420, .cmdbuf = 0x6a0, .geombuf = 0x7e0, .outbuf = 0x9e0, .ring_end = 0xde0, .vret = 0x106, .jt0 = 0x0c4, .jt2 = 0x076, .light = 0x1a0, .lim = 0x028, .vsign = 0x050, .clip_k = 0x076, .planes = 0x098, .tg = 0x0a2, .plane_masks = 0x0b2,
+    .flags_variant = F3D_FLAGS_PW };
+/* the 2.0H builds of family A (Mischief Makers, Tetrisphere): the G_DL depth at 0x15a, the class-2 table 2 lower */
+static const struct f3d_layout f3d_layout_h = {
+    .half1 = 0x10c, .persp = 0x112, .geom = 0x114, .omh = 0x118, .oml = 0x11c, .texture = 0x120, .rdp_wp = 0x128, .lights = 0x12c, .mtx_sp = 0x134, .mtx_lim = 0x15c, .depth = 0x15a, .fifo = 0x150, .segs = 0x160, .mm_tab = 0x2f0, .mw_tab = 0x30e, .retstack = 0x336, .viewport = 0x320, .fog = 0x330, .mv = 0x360, .mp = 0x3e0, .vtx_base = 0x420, .cmdbuf = 0x6a0, .geombuf = 0x7e0, .outbuf = 0x9e0, .ring_end = 0xde0, .vret = 0x104, .jt0 = 0x0c4, .jt2 = 0x074, .light = 0x1a0, .lim = 0x028, .vsign = 0x050, .clip_k = 0x076, .planes = 0x098, .tg = 0x0a2, .plane_masks = 0x0b2,
+    .flags_variant = F3D_FLAGS_SM64 };
+/* Wave Race: the buffers 0x280 higher, so 32 vertex slots */
+static const struct f3d_layout f3d_layout_wr = {
+    .half1 = 0x10c, .persp = 0x112, .geom = 0x114, .omh = 0x118, .oml = 0x11c, .texture = 0x120, .rdp_wp = 0x128, .lights = 0x12c, .mtx_sp = 0x134, .mtx_lim = 0x15c, .depth = 0x110, .fifo = 0x150, .segs = 0x160, .mm_tab = 0x2f0, .mw_tab = 0x30e, .retstack = 0x336, .viewport = 0x320, .fog = 0x330, .mv = 0x360, .mp = 0x3e0, .vtx_base = 0x420, .cmdbuf = 0x920, .geombuf = 0xa60, .outbuf = 0xc60, .ring_end = 0xde0, .vret = 0x106, .jt0 = 0x0c4, .jt2 = 0x076, .light = 0x1a0, .lim = 0x028, .vsign = 0x050, .clip_k = 0x076, .planes = 0x098, .tg = 0x0a2, .plane_masks = 0x0b2,
+    .flags_variant = F3D_FLAGS_SM64 };
 
 static inline uint8_t fd8(const uint32_t *m, unsigned a) { return ((const uint8_t *)m)[(a & 0xfff) ^ 3]; }
 static inline uint16_t fd16(const uint32_t *m, unsigned a) { return ((const uint16_t *)m)[((a & 0xfff) ^ 2) >> 1]; }
@@ -110,43 +135,42 @@ static inline void f3d_store_vtx(const struct f3d_vtx *v, uint32_t *dmem, unsign
  * or more than F3D_MAX_SLOTS slots) and lighting is on; without lighting the light words are not read. */
 static inline int f3d_load_vctx(struct f3d_vctx *c, const uint32_t *dmem, const struct f3d_layout *lay)
 {
-    const unsigned SP = 0x110;
     f3d_load_mtx(&c->mp, dmem, lay->mp, 0);
     for (int k = 0; k < 4; k++) {
         c->vscale[k] = (int16_t)fd16(dmem, lay->viewport + 2 * k);
         c->vtrans[k] = (int16_t)fd16(dmem, lay->viewport + 8 + 2 * k);
-        c->vsign[k] = (int16_t)fd16(dmem, 0x50 + 2 * k);
-        c->lim[k] = (int16_t)fd16(dmem, 0x28 + 2 * k);
+        c->vsign[k] = (int16_t)fd16(dmem, lay->vsign + 2 * k);
+        c->lim[k] = (int16_t)fd16(dmem, lay->lim + 2 * k);
     }
-    c->persp = fd16(dmem, SP + 2);
-    c->clip_k = (int16_t)fd16(dmem, 0x76);
-    c->tscale[0] = fd16(dmem, SP + 20);
-    c->tscale[1] = fd16(dmem, SP + 22);
-    c->geom = fd32(dmem, SP + 4);
+    c->persp = fd16(dmem, lay->persp);
+    c->clip_k = (int16_t)fd16(dmem, lay->clip_k);
+    c->tscale[0] = fd16(dmem, lay->texture + 4);
+    c->tscale[1] = fd16(dmem, lay->texture + 6);
+    c->geom = fd32(dmem, lay->geom);
     for (int k = 0; k < 3; k++)
         c->fog[k] = (int16_t)fd16(dmem, lay->fog + 2 * k);
     for (int p = 0; p < 6; p++) {
         for (int k = 0; k < 4; k++)
-            c->plane[p][k] = (int16_t)fd16(dmem, 0x98 - 8 * p + 2 * k);
-        c->plane_mask[p] = fd16(dmem, 0xb2 - 2 * p);
+            c->plane[p][k] = (int16_t)fd16(dmem, lay->planes - 8 * p + 2 * k);
+        c->plane_mask[p] = fd16(dmem, lay->plane_masks - 2 * p);
     }
     c->flags_variant = lay->flags_variant;
     c->nslot = 0;
     if (c->geom & F3D_G_LIGHTING) {
-        uint32_t l = fd32(dmem, 0x12c);
+        uint32_t l = fd32(dmem, lay->lights);
         if ((int32_t)l < 0 || (l & 31) || (l >> 5) < 1 || (l >> 5) > F3D_MAX_SLOTS)
             return 1;
         c->nslot = l >> 5;
         for (unsigned k = 0; k <= c->nslot + 1; k++)
             for (int i = 0; i < 8; i++)
-                c->lcol[k][i] = fd8(dmem, 0x1b0 + 32 * k + i);
+                c->lcol[k][i] = fd8(dmem, lay->light + 0x10 + 32 * k + i);
         for (unsigned k = 0; k <= c->nslot; k++)
             for (int i = 0; i < 8; i++)
-                c->ldir[k][i] = (int8_t)fd8(dmem, 0x1c0 + 32 * k + i);
+                c->ldir[k][i] = (int8_t)fd8(dmem, lay->light + 0x20 + 32 * k + i);
         for (int i = 0; i < 8; i++)
-            c->lk[i] = (int8_t)fd8(dmem, 0x1a0 + i);
+            c->lk[i] = (int8_t)fd8(dmem, lay->light + i);
         for (int i = 0; i < 3; i++)
-            c->tg[i] = (int16_t)fd16(dmem, 0xa2 + 2 * i);
+            c->tg[i] = (int16_t)fd16(dmem, lay->tg + 2 * i);
     }
     return 0;
 }
