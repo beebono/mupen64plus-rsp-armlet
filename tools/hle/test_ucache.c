@@ -223,6 +223,24 @@ int main(void)
     CHECK(ucache_store(&e) == 0 && !ucache_find(5, 5), "a disabled cache stores nothing");
     ucache_close();
 
+    {                                                   /* the record of an S2DEX build (the dialect command table, the continuation pcs) survives the entry */
+        struct derive_rec r, back;
+        struct ucache_entry x;
+        unsigned k;
+        memset(&r, 0, sizeof(r));
+        memset(&x, 0, sizeof(x));
+        r.pc[PC_LDTX_SPR] = 0x6e0;
+        r.pc[PC_LDTX_RECT] = 0xba0;
+        r.n_ext = 10;
+        for (k = 0; k < 10; k++) {
+            r.ext[k].pc = (int32_t)(0x24 + 8 * k);
+            r.ext[k].kind = (uint8_t)(0x40 + k);
+        }
+        ucache_from_rec(&x, &r);
+        ucache_to_rec(&x, &back);
+        CHECK(back.n_ext == 10 && back.ext[9].pc == 0x24 + 72 && back.ext[9].kind == 0x49 && back.pc[PC_LDTX_RECT] == 0xba0, "an S2DEX record round-trips through an entry");
+    }
+
     snprintf(cmd, sizeof(cmd), "rm -rf '%s'", dir);
     if (system(cmd))
         fails++;
