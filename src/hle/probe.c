@@ -1139,7 +1139,7 @@ static const struct hle_ucode *host_build(const struct armlet_ucode_id *u)
     const struct hle_ucode *h = armlet_hle_find(u->id);
     if (h && h->gate && !atomic_load_explicit(&h->gate->latched, memory_order_acquire))
         h = NULL;                                   /* (a host that is itself only a candidate: its loaded texts are not validated in its tasks) */
-    return h && h->fam == &f3dex2_fam ? h : NULL;
+    return h && (h->fam == &f3dex2_fam || h->fam == &f3dex1_fam) ? h : NULL;
 }
 
 bool armlet_probe_gate(struct armlet_ctx *c, const struct armlet_ucode_id *u)

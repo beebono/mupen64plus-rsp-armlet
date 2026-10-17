@@ -137,6 +137,7 @@ struct f3dex_task {
     unsigned nloads;
     int exact;                          /* issue the DMA reads of the microcode (window, operand buffer): DMEM as the microcode leaves it, the SP register write events */
     const struct f3dex_build *fx;
+    const struct hle_ucode *nu;         /* the hle_ucode of the build a G_LOAD_UCODE switches to (its gate: hle_bind) */
 };
 
 static inline void st32u(struct hle_task *t, unsigned a, uint32_t v)       /* unaligned big-endian word, wrapping at 4 KiB */
@@ -708,20 +709,22 @@ static const struct hle_ucode *loaded_build(const struct hle_task *t, uint32_t s
     }
     key = MUT(467, key, ~key);
     u = armlet_hle_find(key);
+    if (u && !hle_build_usable(t, u))                   /* a derived build that is not latched is not taken over, and neither is a registered one in its place (ARMLET_PROBE_FORCE) */
+        return NULL;
     if (u && u->fam == &f3dex1_fam && ((const struct f3dex1_build *)u->fam_data)->load_key == key) {
         static const struct hle_ucode *logged[8];
         static unsigned nlogged;
         unsigned q;
         for (q = 0; q < nlogged && logged[q] != u; q++)
             ;
-        if (q == nlogged && nlogged < 8 && !strncmp(u->name, "derived", 7)) {
+        if (!t->dx && q == nlogged && nlogged < 8 && !strncmp(u->name, "derived", 7)) {
             logged[nlogged++] = u;
             armlet_log(M64MSG_INFO, "hle: G_LOAD_UCODE of %016llx runs the latched build \"%s\"", (unsigned long long)key, u->name);
         }
         return u;
     }
     for (u = armlet_hle_next(NULL); u; u = armlet_hle_next(u))
-        if (u->fam == &f3dex1_fam && key && ((const struct f3dex1_build *)u->fam_data)->load_key == key)
+        if (u->fam == &f3dex1_fam && key && hle_build_usable(t, u) && ((const struct f3dex1_build *)u->fam_data)->load_key == key)
             return u;
     return NULL;
 }
@@ -766,33 +769,41 @@ static int load_ucode(struct f3dex_task *f, struct hle_cpu *c, uint32_t w0, uint
     if (++f->nloads > 64)
         return hle_decline(t, "too many G_LOAD_UCODE in a task");
     if (src + 0x1000 > 0x800000 || cur + 0x1000 > 0x800000) {
-        load_note(f);
+        if (!t->dx)
+            load_note(f);
         return hle_decline(t, "G_LOAD_UCODE outside RDRAM");
     }
     if (memcmp(t->rdram + src, t->rdram + cur, 0x1000)) {
         const struct hle_ucode *nu = loaded_build(t, src);
-        if (MUT(463, 1, 0))                             /* (the probe derives a loaded text too: the data image is what DMA fills DMEM 0 with, `size` bytes) */
+        if (!t->dx && MUT(463, 1, 0))                             /* (the probe derives a loaded text too: the data image is what DMA fills DMEM 0 with, `size` bytes) */
             armlet_probe_note_load(src, hle_dm32(t, L->half1), (w0 & 0xfff) + 1);
         if (f->trace)
             fprintf(stderr, "F3DEX G_LOAD_UCODE text %08x key %016llx data %08x -> %s\n", src, (unsigned long long)armlet_ucode_hash(t->rdram, src, 0xf48), hle_dm32(t, L->half1), nu ? nu->name : "(not registered)");
         if (!nu || (t->ctx && !armlet_gfx_allowed(&t->ctx->cfg, nu->id))) {
-            load_note(f);
+            if (!t->dx)
+                load_note(f);
             return hle_decline(t, "G_LOAD_UCODE of another ucode");
         }
+        if (hle_cmd(t, LATCH_K_LOAD))                   /* (the latch policy: a ucode load is a risky path of the host build) */
+            return HLE_DECLINE;
+        f->nu = nu;
         if (MUT(464, memcmp(t->rdram + src + 0xf18, t->rdram + cur + 0xf18, 0x1000 - 0xf18), 0)) {
-            load_note(f);
+            if (!t->dx)
+                load_note(f);
             return hle_decline(t, "G_LOAD_UCODE: the part of the text that stays in IMEM differs");
         }
         nb = (const struct f3dex1_build *)nu->fam_data;
         if (MUT(470, size < 0x800, 0)) {                /* the data segments of the builds differ in a few constants (the end of the overlay window ..) that the other build's code reads: only a whole image is a state the front-end knows */
-            load_note(f);
+            if (!t->dx)
+                load_note(f);
             return hle_decline(t, "G_LOAD_UCODE of another build with a partial data image");
         }
     }
     if (f3dex_lay(&nb->fx)->vtab < f3dex_lay(&nb->fx)->mw_tab + 2 || !nb->pc[F1PC_head])
         return hle_decline(t, "the build's G_MOVEWORD table has no room");
     if (f->junk && size > L->vbuf) {                   /* (only a decline: the slots the data overwrites would hold its flags and no longer be junk, which the native code would have to follow) */
-        load_note(f);
+        if (!t->dx)
+            load_note(f);
         return hle_decline(t, "G_LOAD_UCODE data over F3DLX vertices loaded with clipping off");
     }
 
@@ -816,6 +827,10 @@ static int load_ucode(struct f3dex_task *f, struct hle_cpu *c, uint32_t w0, uint
     if (*t->cr[4] & 0x80)
         return hle_decline(t, "yield request pending");
     f->uc = MUT(468, src, f->uc);
+    if (nb != f->b) {
+        t->switched = 1;
+        hle_bind(t, f->nu);                             /* (the loaded build's gate, or its counting in a replay that validates it) */
+    }
     f->b = MUT(461, nb, f->b);
     f->L = f3dex_lay(&f->b->fx);
     f->fx = &f->b->fx;
@@ -855,7 +870,7 @@ static int f3dex_run(struct hle_task *t, const struct hle_ucode *u)
     f.uc = hle_dm32(t, 0xfd0);
     f.p_uc = f.uc;
     f.p_data = hle_dm32(t, 0xfd8);
-    if (load_known(t))
+    if (!t->dx && load_known(t))
         return hle_decline(t, "an earlier task with these pointers loaded another ucode");
 
     /* the boot code and the microcode's initialisation, on the interpreter, up to the command loop head */
