@@ -633,6 +633,11 @@ static unsigned l_nloads;
 static int load_known(const struct hle_task *t)
 {
     unsigned i;
+    static int off = -1;
+    if (off < 0)
+        off = getenv("F3DEX_NO_LOADMEM") != NULL;          /* (a measurement aid: the memory off, tasks that load decline late) */
+    if (off)
+        return 0;
     for (i = 0; i < l_nloads; i++)
         if (l_loads[i].uc == hle_dm32(t, 0xfd0) && l_loads[i].data == hle_dm32(t, 0xfd8)) {
             if (MUT(466, l_loads[i].loads * 2 > l_loads[i].runs, 1) && ++l_loads[i].skip % 64 != 0)

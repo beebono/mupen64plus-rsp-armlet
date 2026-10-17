@@ -109,7 +109,7 @@ at IMEM 0x80 with the DMA wrapping, so text bytes 0xf80 .. 0xfff lie at IMEM 0 .
   `junk` bits. At most 64 loads in a task.
 
 **Tasks that decline at a load** (S2DEX 1.x, an unregistered text, a tail that differs) are remembered as in the F3DEX2 front-end (`load_known` / `load_note`: text and data pointers of the task, tasks run / tasks that declined,
-more than half: the next ones decline at the start, every 64th runs; mutation 466). Without the rule a task that declines at its load has done its native work for nothing.
+more than half: the next ones decline at the start, every 64th runs; mutation 466). Without the rule a task that declines at its load has done its native work for nothing; with it the non-loading tasks of a mostly loading pair are skipped as well (SpaceStation: 1093 instead of 1384 native tasks). The total RSP time with and without the rule was measured on the desktop and the rg35xxsp and is equal within the noise (docs/testing.md, "F3DEX 1.x G_LOAD_UCODE"), so the rule stays; `F3DEX_NO_LOADMEM=1` switches it off (a measurement aid).
 
 **Next step, F3DEX 1.x -> S2DEX 1.x (not implemented).** SpaceStation Silicon Valley (57 of 60 captured tasks) and Pokemon Puzzle League load the S2DEX 1.x text (`af0007ff`, 4096 bytes, key 5c420d85..., data 2048 bytes) in the
 middle of a task and go on in it; they decline at the load (what follows the load in the list was not examined here). What it would need:
