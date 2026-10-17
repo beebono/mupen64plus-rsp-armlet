@@ -302,8 +302,8 @@ class Pairing:
     def _collect(self):
         ir, iu = self.R.img, self.U.img
         self.same_ops = []          # (value, kind) of unchanged operands, for the confirmation of knobs
-        # F3DEX 1.x addresses its state words relative to $29 = 0x110 (derive_f1d.F1_BASE29): such an operand is the DMEM address base + offset
-        b29 = 0x110 if getattr(self.R.rec, "fam", None) == "f3dex1" else None
+        # F3DEX 1.x and F3D address their state words relative to $29 = 0x110 (derive_f1d.F1_BASE29): such an operand is the DMEM address base + offset
+        b29 = 0x110 if getattr(self.R.rec, "fam", None) in ("f3dex1", "f3d") else None
         for i, j in sorted(self.pr.items()):
             x, y = ir.w[i], iu.w[j]
             if x == y:

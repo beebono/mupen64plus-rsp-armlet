@@ -19,6 +19,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import derive_f1d as D1  # noqa: E402
 import derive_f2 as F2  # noqa: E402
+import derive_f3d as F3  # noqa: E402
 import derive_lib as L  # noqa: E402
 import rsp_isa as isa  # noqa: E402
 
@@ -33,7 +34,7 @@ class Registry:
         self.T = L.CTables()
         self.fam = {}       # family -> [Item]  (one per distinct text of every record)
         self.recs = {}      # family -> {record name: record}
-        for fam, loader in (("f3dex2", F2.load_f2_records), ("f3dex1", D1.load_f1_records), ("f3d", D1.load_f3d_records)):
+        for fam, loader in (("f3dex2", F2.load_f2_records), ("f3dex1", D1.load_f1_records), ("f3d", F3.load_f3d_records)):
             recs = {r.name: r for r in loader(self.T, self.C)}
             items = []
             for n, r in recs.items():
@@ -95,7 +96,7 @@ def derive_any(reg, U_uc, family="auto", exclude_recs=()):
             nx = len(res.x) + len(res.near) + len(res.xr_res)
         else:
             U = D1.ItemV(U_uc, None, "unknown")
-            res = D1.derive_variant(U, refs)
+            res = F3.derive_f3d(U, refs)
             nx = len(res.x) + len(res.xr_res)
         aligned = len(res.prim.pu) / float(U.img.n)
         cands.append((fam, res, U, aligned, nx))
@@ -272,8 +273,10 @@ EXPECTED = {
     ("l_b_095", "pc.quad"): "the same for G_QUAD",
     ("l_b_095", "pc.culldl"): "the same for the 0.95 form of G_CULLDL (byte offsets, the last vertex not tested): its code differs from the 1.2x handler",
     ("l_b_095", "flag.culldl_off"): "follows from the handler: without a G_CULLDL pc the attribute is the primary reference's (and the command declines)",
-    ("l_mm", "flag.xbus"): "the XBUS transport is a property of the task transport, not of the text: Mischief Makers' text differs from Tetrisphere's in output-ring code only",
-    ("l_sm64", "culldl_mask"): "reject_mask and culldl_mask have the same value in the references; the aligned code shows 0x7070 and 0xffff, which one is which needs the handler context (the tool notes it)",
+    ("l_wr", "pc.tri1"): "Wave Race's G_TRI1 entry is a call into a routine it shares with its quad command (`jal 0x288`): no other reference's handler maps onto it; the derived build declines G_TRI1. Verdict NONE (80 unexplained words)",
+    ("l_wr", "pc.quad"): "Wave Race's quad command is in no other reference: no handler to map it from (the derived build declines the command)",
+    ("l_ge", "pc.tri4"): "GoldenEye's G_TRI4 (2.0G) is in no other reference: no handler to map it from (the derived build declines the command). Verdict NONE (its 17 words unexplained)",
+    ("l_ge", "lay.tri4_tab"): "follows from the handler: without a G_TRI4 pc there is no table to read",
 }
 
 
@@ -306,7 +309,7 @@ def validate(reg, args):
                 res = D1.derive_f1(D1.ItemV(Uit.uc, None, "unknown"), refs)
                 near = collections.Counter(res.near.values())
             else:
-                res = D1.derive_variant(D1.ItemV(Uit.uc, None, "unknown"), refs)
+                res = F3.derive_f3d(D1.ItemV(Uit.uc, None, "unknown"), refs)
                 near = {}
             res.hand = Uit
             rows.append((fam, n, res, compare(Uit.rec, res.rec), len(res.xr_res), near))
@@ -462,7 +465,41 @@ def mutations(reg, args):
         good = check(r)
         ok_all &= good
         print("  %-78s -> %-5s unexplained %3d %s" % (desc, r.verdict, len(r.x), "caught" if good else "NOT CAUGHT"))
+    for desc, m, check in f3_mutants(reg):
+        r = F3.derive_f3d(D1.ItemV(m, None, "unknown"), reg.refs("f3d", {"l_sm64"}))
+        good = check(r)
+        ok_all &= good
+        print("  %-78s -> %-5s unexplained %3d %s" % (desc, r.verdict, len(r.x), "caught" if good else "NOT CAUGHT"))
     return ok_all
+
+
+def f3_mutants(reg):
+    """deliberate errors in Super Mario 64's F3D text and data (derived against the other F3D builds): -> [(description, Ucode, check of the result)]"""
+    import copy
+    base = next(it for it in reg.fam["f3d"] if it.rec.name == "l_sm64")
+    w = base.uc.w
+    idx = base.img.idx_text
+    out = []
+    i = idx(0x310)          # ori v0, zero, 0xffff (G_CULLDL)
+    out.append(("F3D SM64: the G_CULLDL mask 0xffff -> 0x7070", mutate_text(base.uc, {i: (w[i] & 0xffff0000) | 0x7070}), lambda r: r.rec.num["culldl_mask"][0] == 0x7070))
+    k = next(k for k in range(len(w)) if isa.decode(w[k]).get("name") == "andi" and isa.decode(w[k])["imm"] == 0x707)
+    out.append(("F3D SM64: the near-plane flag mask 0x707 -> 0x703 (Pilotwings' without its code)", mutate_text(base.uc, {k: (w[k] & 0xffff0000) | 0x703}),
+                lambda r: "flag.flags_variant" in r.undecided and r.verdict == "NONE"))
+    k = next(k for k in range(len(w)) if isa.decode(w[k]).get("name") == "lw" and isa.decode(w[k])["rs"] == 29 and isa.decode(w[k])["imm"] == 4)
+    out.append(("F3D SM64: one load of the geometry word 4(sp) -> 8(sp)", mutate_text(base.uc, {k: (w[k] & 0xffff0000) | 8}), lambda r: r.verdict == "NONE" and r.trouble))
+    i = idx(0x220)          # sll at, at, 2 (G_TRI1's vertex pointer)
+    out.append(("F3D SM64: one of G_TRI1's vertex pointer shifts 2 -> 3", mutate_text(base.uc, {i: (w[i] & ~(31 << 6)) | (3 << 6)}), lambda r: "flag.vptr_mul" in r.undecided and r.verdict == "NONE"))
+    k = next(k for k in range(len(w)) if isa.decode(w[k]).get("name") == "andi" and isa.decode(w[k])["imm"] == 0x1000)
+    out.append(("F3D SM64: the front-face cull test removed (half of Wave Race's triangle code)", mutate_text(base.uc, {k: (w[k] & 0xffff0000) | 0x800}),
+                lambda r: "flag.tri_wr" in r.undecided and r.verdict == "NONE"))
+    d = bytearray(base.uc.data)
+    off = 0x76 + 2 * 0x3f   # the class-2 table cell of G_TRI1
+    d[off:off + 2] = struct.pack(">H", 0x1000 | 0x210)
+    m = copy.copy(base.uc)
+    m.data = bytes(d)
+    m.stem = "mutant-data"
+    out.append(("F3D SM64: the handler table cell of G_TRI1 0x20c -> 0x210", m, lambda r: r.rec.num["pc.tri1"][0] != 0x20c))
+    return out
 
 
 def f1_mutants(reg):
@@ -556,6 +593,7 @@ def main():
             sys.exit("no such ucode in the dumps")
         ex = set()
         for k in filter(None, args.exclude.split(",")):
+            ex.add(k)                           # a record name (l_sm64), or a key of its text
             e = reg.lookup(k)
             if e:
                 ex |= {e.hf48, e.h4k}

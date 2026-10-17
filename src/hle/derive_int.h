@@ -16,10 +16,12 @@
 #define DERIVE_NLAY_ADDR 36
 #define DERIVE_MAXSEG 4
 #define DERIVE_MAXEXT 16
-#define DERIVE_MAXKNOB 24
 #define DERIVE_NF1PC 24         /* F1_PC_FIELDS of tools/derive_f1d.py (F3DEX_PC_FIELDS of f3dex_bld.h) */
 #define DERIVE_NF1LAY 36        /* F1_LAY_FIELDS (F3DEX_LAY_FIELDS of f3dex_dmem.h), in lay[] of an F3DEX 1.x record */
 #define DERIVE_NF1KNOB 29       /* the first of them that are addresses the code names (F1_LAY_NKNOB) */
+#define DERIVE_NF3PC 23         /* F3_PC_FIELDS of tools/derive_f3d.py (F3D_PC_FIELDS of f3d_bld.h) */
+#define DERIVE_NF3LAY 36        /* F3_LAY_FIELDS (F3D_LAY_FIELDS of f3d_dmem.h), in lay[] of an F3D record */
+#define DERIVE_NF3KNOB 26       /* the first of them that are addresses the code names (F3_LAY_NKNOB); then jt0, jt2 (read from the dispatchers), tri4_tab (from G_TRI4's handler), then constants */
 
 /* indices into pc[] and f2pcs[] and lay[] (the order of the Python tool's lists) */
 enum { PC_HEAD, PC_COPY, PC_SYNC, PC_SEGCOPY, PC_EF, PC_ED, PC_TRI1, PC_TRI2, PC_VTX, PC_MTX, PC_GEOM, PC_ENDDL, PC_HALF2, PC_MODVTX, PC_CULLDL, PC_BRANCHZ, PC_MVP, PC_TRI4, PC_LDTX_SPR, PC_LDTX_RECT };
@@ -29,19 +31,13 @@ enum { LY_MV, LY_P, LY_MVP, LY_PERSP_NORM, LY_VIEWPORT_SCALE, LY_VIEWPORT_TRANS,
        LY_JUMP_TABLE, LY_MOVEMEM_TAB, LY_MOVEWORD_ADJ, LY_DESC_LIGHT, LY_DESC_CLIP, LY_CLIP_PLANES, LY_CLIP_MASKS, LY_OUT_TOGGLE,
        LY_GEOM_DEF, LY_MW_MAX, LY_OUT_BYTES, LY_PIPE_SYNC, LY_NO_LIT, LY_LIT_VTX };
 
-struct derive_knob {            /* a variant family's knob: value and kind (0 address, 1 mask) */
-    uint32_t val;
-    uint8_t kind;
-};
-
 /* a normalised build record: the F3DEX2 / S2DEX family's (fam 0: pc, f2pcs, lay, flags), the F3DEX 1.x family's (fam 1: lay[0 .. DERIVE_NF1LAY) = F1_LAY_FIELDS, f1pc, non / dlx / culldl_off,
- * reject_mask, load_key), or the F3D family's knobs (fam 2) */
+ * reject_mask, load_key), or the F3D family's (fam 2: lay[0 .. DERIVE_NF3LAY) = F3_LAY_FIELDS, f3pc, reject_mask, clip_mask, culldl_mask, the attributes f3[], load_key) */
 struct derive_rec {
     const char *name;
     uint8_t fam;
     uint8_t gen204, zex, bz_z;
     uint8_t n_ext;
-    uint8_t n_knobs;
     uint32_t reject_mask;
     uint64_t load_key;
     int32_t pc[DERIVE_NPC];
@@ -51,10 +47,13 @@ struct derive_rec {
         int32_t pc;
         uint8_t kind;
     } ext[DERIVE_MAXEXT];
-    struct derive_knob knobs[DERIVE_MAXKNOB];
     int32_t f1pc[DERIVE_NF1PC];
     uint8_t non, dlx, culldl_off;
+    int32_t f3pc[DERIVE_NF3PC];
+    uint32_t clip_mask, culldl_mask;
+    uint8_t f3[7];              /* F3_FLAGS of tools/derive_f3d.py: flags_variant, vtx_wr, gp_end, tri_wr, popmtx_stale, xbus, vptr_mul */
 };
+enum { F3F_FV, F3F_VTX_WR, F3F_GP_END, F3F_TRI_WR, F3F_POPMTX_STALE, F3F_XBUS, F3F_VPTR_MUL, F3F_N };
 
 struct derive_seg {             /* a segment of an image: the text (off 0) or an overlay behind it */
     uint16_t base;              /* IMEM address of its first word */

@@ -65,6 +65,14 @@ Iggy's Reckin' Balls' F3DEX.NoN 1.22 `dff3` (0.24 %) derives NEAR and passes too
 declines. Inside the 64-ROM set that is all the F3DEX 1.x derivation finds (the registered texts were native already); its value is the retail F3DEX 1.x texts outside the set: a build that differs from a
 registered one in relocated handlers, moved DMEM state, the version rewrite of 1.23 or guarded extra code now gets a record that runs.
 
+**F3D records that run, GoldenEye registered (2026-10-17, [ucode-derive.md](ucode-derive.md#f3d-records-that-run-2026-10-17)).** With the F3D front-end data-driven every unregistered F3D text of the
+set still derives NONE: Blast Corps' `2f41` (0.02 %) has an output transport the front-end lacks (the lists are collected in RDRAM, not handed to the RDP: its probe, forced, differs in all 26 canned tasks),
+`1d12` (0.00 %) and the 2.0H texts of Wipeout 64 `968d` (1.22 %) and Glover `9d0d` (0.06 %) are other code (the latter two the Sprite2D microcode). **GoldenEye 007's 2.0G `538f` (row 1, 1.56 %)**
+derives with every handler of Pilotwings' family except its four-triangle command (op 0xb1, nearly every task): forced through the probe it passes the 26 canned tasks (they cannot use a command the
+record has no handler for) and, latched, ran 87 of 1600 tasks natively. Registered by hand with that command added to the front-end (ucode-f3d.md 15) it runs **1663 of 1664 tasks** natively in 3700
+frames with 0 differences (`ARMLET_HLE_VERIFY=1`), identical to the reference: its 1.56 points move from "no handler" to native, the mean JIT share of the 64 games from 23.4 % to about 21.8 %
+(not recounted). A retail 2.0G text that differs from GoldenEye's in the ways the derivation knows now gets a record that runs, G_TRI4 included.
+
 **The first recount (91d3e2e), as it was:**
 
 - 146 944 graphics tasks: **94 039 native (64.0 %)**, 8 951 declined by a handler that exists, 43 906 of a ucode without a handler.

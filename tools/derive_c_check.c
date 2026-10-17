@@ -131,7 +131,7 @@ int main(int argc, char **argv)
                 printf(" ext=");
                 for (k = 0; k < res.rec.n_ext; k++)
                     printf("%s%x:%x", k ? "," : "", (unsigned)ex[k][0] & 0xffffffffu, (unsigned)ex[k][1]);
-            } else if (res.family == DERIVE_F3DEX1)
+            } else
                 derive_rec_fields(&res.rec, field, NULL);
             printf("\n");
             if (timing) {

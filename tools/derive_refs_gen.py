@@ -21,7 +21,7 @@ import derive_f2 as F2  # noqa: E402
 import derive_lib as L  # noqa: E402
 import rsp_isa as isa  # noqa: E402
 
-GEN_VERSION = 2
+GEN_VERSION = 3
 M64 = 0xffffffffffffffff
 
 
@@ -188,8 +188,13 @@ def generate(dumps):
             fs.append(".f1pc = { %s }" % ", ".join("0x%x" % r.num["pc." + k][0] for k in D1.F1_PC_FIELDS))
             P(",\n      ".join(fs) + " },")
         else:
-            kn = r.knobs()
-            P("    { .name = \"%s\", .fam = %d, .n_knobs = %d, .knobs = { %s } }," % (r.name, fi, len(kn), ", ".join("{ %d, %d }" % (k.val, 0 if k.kind == "addr" else 1) for k in kn)))
+            import derive_f3d as F3
+            fs = ["    { .name = \"%s\", .fam = 2" % r.name]
+            fs.append(".reject_mask = 0x%x, .clip_mask = 0x%x, .culldl_mask = 0x%x, .load_key = 0x%016xull" % (r.num["reject_mask"][0], r.num["clip_mask"][0], r.num["culldl_mask"][0], r.load_key or 0))
+            fs.append(".f3 = { %s }" % ", ".join(str(r.flags[k]) for k in F3.F3_FLAGS))
+            fs.append(".lay = { %s }" % ", ".join("0x%x" % r.num["lay." + k][0] for k in F3.F3_LAY_FIELDS))
+            fs.append(".f3pc = { %s }" % ", ".join("0x%x" % r.num["pc." + k][0] for k in F3.F3_PC_FIELDS))
+            P(",\n      ".join(fs) + " },")
     P("};")
     P("const unsigned derive_n_recs = %d;" % len(recs))
     P("const struct derive_ref derive_refs[%d] = {" % len(refs))

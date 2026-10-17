@@ -17,7 +17,8 @@ const struct hle_ucode *dbuild_registered(uint64_t load_key)
     const struct hle_ucode *u = NULL;
     while ((u = armlet_hle_next(u)) != NULL)
         if ((u->fam == &f3dex2_fam && u->fam_data && ((const struct f3dex2_build *)u->fam_data)->load_key == load_key) ||
-            (u->fam == &f3dex1_fam && u->fam_data && ((const struct f3dex1_build *)u->fam_data)->load_key == load_key && load_key))
+            (u->fam == &f3dex1_fam && u->fam_data && ((const struct f3dex1_build *)u->fam_data)->load_key == load_key && load_key) ||
+            (u->fam == &f3d_fam && u->fam_data && ((const struct f3d_build *)u->fam_data)->load_key == load_key && load_key))
             return u;
     return NULL;
 }
@@ -29,6 +30,7 @@ const struct hle_ucode *dbuild_registered(uint64_t load_key)
     X(movemem_tab) X(moveword_adj) X(desc_light) X(desc_clip) X(clip_planes) X(clip_masks) X(out_toggle) X(geom_def) X(mw_max) X(out_bytes) X(pipe_sync) X(no_lit)
 
 #define F1LAY_FIELDS F3DEX_LAY_FIELDS
+#define F3LAY_FIELDS F3D_LAY_FIELDS
 
 void dbuild_rec_of(const struct hle_ucode *u, struct derive_rec *r)
 {
@@ -51,6 +53,27 @@ void dbuild_rec_of(const struct hle_ucode *u, struct derive_rec *r)
         r->dlx = b1->fx.dlx;
         r->culldl_off = b1->culldl_off;
         r->load_key = b1->load_key;
+        return;
+    }
+    if (u->fam == &f3d_fam) {
+        const struct f3d_build *b3 = (const struct f3d_build *)u->fam_data;
+        r->fam = DERIVE_F3D;
+#define X(f) r->lay[k++] = b3->lay->f;
+        F3LAY_FIELDS(X)
+#undef X
+        for (k = 0; k < DERIVE_NF3PC; k++)
+            r->f3pc[k] = b3->pc[k];
+        r->reject_mask = b3->reject_mask;
+        r->clip_mask = b3->clip_mask;
+        r->culldl_mask = b3->culldl_mask;
+        r->f3[F3F_FV] = b3->lay->flags_variant;
+        r->f3[F3F_VTX_WR] = b3->vtx_wr;
+        r->f3[F3F_GP_END] = b3->gp_end;
+        r->f3[F3F_TRI_WR] = b3->tri_wr;
+        r->f3[F3F_POPMTX_STALE] = b3->popmtx_stale;
+        r->f3[F3F_XBUS] = b3->xbus;
+        r->f3[F3F_VPTR_MUL] = b3->vptr_mul;
+        r->load_key = b3->load_key;
         return;
     }
     l = b->lay ? b->lay : f3dex2_std_layout();
@@ -96,6 +119,11 @@ int dbuild_rec_equal(const struct derive_rec *a, const struct derive_rec *b, con
         CMP(lay[k], "lay")
     for (k = 0; k < DERIVE_NF1PC; k++)
         CMP(f1pc[k], "f1pc")
+    for (k = 0; k < DERIVE_NF3PC; k++)
+        CMP(f3pc[k], "f3pc")
+    for (k = 0; k < F3F_N; k++)
+        CMP(f3[k], "f3")
+    CMP(clip_mask, "clip_mask") CMP(culldl_mask, "culldl_mask")
     CMP(fam, "fam") CMP(non, "non") CMP(dlx, "dlx") CMP(culldl_off, "culldl_off")
     CMP(gen204, "gen204") CMP(zex, "zex") CMP(bz_z, "bz_z") CMP(reject_mask, "reject_mask") CMP(load_key, "load_key") CMP(n_ext, "n_ext")
 #undef CMP
@@ -183,6 +211,98 @@ static int make_f1(struct dbuild *d, uint64_t text_id, const struct derive_resul
     return 0;
 }
 
+/* the F3D part of dbuild_make */
+static int make_f3(struct dbuild *d, uint64_t text_id, const struct derive_result *r, const char **why)
+{
+    const struct derive_rec *rec = &r->rec, *prec;
+    const struct derive_ref *pr;
+    const struct hle_ucode *pu;
+    unsigned k = 0;
+    if (r->primary < 0) {
+        *why = "no primary reference";
+        return 1;
+    }
+    pr = &derive_refs[r->primary];
+    prec = &derive_recs[pr->rec];
+    for (k = 0; k < DERIVE_NF3PC; k++) {
+        int v = rec->f3pc[k];
+        if (v == 0 && k != F3PC_head && k != F3PC_nop && k != F3PC_brk)
+            continue;                                   /* (no handler the text's tables lead to: the command declines) */
+        if (v <= 0 || v >= 0x1000 || (v & 3)) {
+            *why = "a handler pc of the record is missing or not an instruction address";
+            return 1;
+        }
+    }
+    for (k = 0; k < DERIVE_NF3LAY; k++)
+        if (rec->lay[k] >= 0x1000 || (k < DERIVE_NF3KNOB && rec->lay[k] == 0)) {
+            *why = "a DMEM address of the record is outside DMEM";
+            return 1;
+        }
+    if (!rec->reject_mask) {
+        *why = "no reject mask";
+        return 1;
+    }
+    if (rec->f3[F3F_VPTR_MUL] != 4 && rec->f3[F3F_VPTR_MUL] != 8) {
+        *why = "the vertex index scale is not 4 or 8";
+        return 1;
+    }
+    pu = dbuild_registered(prec->load_key);
+    if (!pu || pu->fam != &f3d_fam) {
+        *why = "the primary reference is not a registered build";
+        return 1;
+    }
+    d->primary = r->primary;
+    d->verdict = r->verdict;
+    d->rec = *rec;
+    k = 0;
+#define X(f) d->lay3.f = (uint16_t)rec->lay[k++];
+    F3LAY_FIELDS(X)
+#undef X
+    d->lay3.flags_variant = rec->f3[F3F_FV];
+    if (d->lay3.cmdbuf <= d->lay3.vtx_base || f3d_nslots(&d->lay3) < 1 || f3d_nslots(&d->lay3) > 32) {
+        *why = "the vertex buffer of the record is not 1 .. 32 slots";
+        return 1;
+    }
+    for (k = 0; k < DERIVE_NF3PC; k++)
+        d->b3.pc[k] = (uint16_t)rec->f3pc[k];
+    d->b3.lay = &d->lay3;
+    d->b3.reject_mask = (uint16_t)rec->reject_mask;
+    d->b3.clip_mask = (uint16_t)rec->clip_mask;
+    d->b3.culldl_mask = (uint16_t)rec->culldl_mask;
+    d->b3.vptr_mul = rec->f3[F3F_VPTR_MUL];
+    d->b3.vtx_wr = rec->f3[F3F_VTX_WR];
+    d->b3.gp_end = rec->f3[F3F_GP_END];
+    d->b3.tri_wr = rec->f3[F3F_TRI_WR];
+    d->b3.popmtx_stale = rec->f3[F3F_POPMTX_STALE];
+    d->b3.xbus = rec->f3[F3F_XBUS];
+    d->b3.load_key = rec->load_key;
+    snprintf(d->name, sizeof(d->name), "derived %s (%016" PRIx64 ", from %s)", derive_verdict_name(r->verdict), text_id, pr->name);
+    d->uc.id = text_id;
+    d->uc.name = d->name;
+    d->uc.fam = &f3d_fam;
+    d->uc.flags = pu->flags;
+    d->uc.fam_data = &d->b3;
+    d->uc.ring_off = d->b3.xbus ? 0 : 0xfe8;            /* (the XBUS builds' lists are in DMEM: no ring in RDRAM) */
+    d->uc.rdp_cmd_size = d->b3.tri_wr ? f3d_wr_cmd_size : NULL;
+    d->uc.live_sregs = pu->live_sregs;
+    if (pu->n_dead > sizeof(d->dead) / sizeof(d->dead[0])) {
+        *why = "the primary reference has more dead ranges than a derived build can hold";
+        return 1;
+    }
+    memcpy(d->dead, pu->dead, pu->n_dead * sizeof(d->dead[0]));
+    {   /* (the one dead range that moves with the layout: G_VTX's return-address slot, 2 bytes lower in the 2.0H builds) */
+        unsigned pv = ((const struct f3d_build *)pu->fam_data)->lay->vret;
+        for (k = 0; k < pu->n_dead; k++)
+            if (d->dead[k].lo == pv && d->dead[k].hi == pv + 2) {
+                d->dead[k].lo = d->lay3.vret;
+                d->dead[k].hi = (uint16_t)(d->lay3.vret + 2);
+            }
+    }
+    d->uc.dead = d->dead;
+    d->uc.n_dead = pu->n_dead;
+    return 0;
+}
+
 int dbuild_make(struct dbuild *d, uint64_t text_id, const struct derive_result *r, const char **why)
 {
     const struct derive_rec *rec = &r->rec;
@@ -196,8 +316,10 @@ int dbuild_make(struct dbuild *d, uint64_t text_id, const struct derive_result *
     memset(d, 0, sizeof(*d));
     if (r->family == DERIVE_F3DEX1)
         return make_f1(d, text_id, r, why);
+    if (r->family == DERIVE_F3D)
+        return make_f3(d, text_id, r, why);
     if (r->family != DERIVE_F3DEX2) {
-        *why = "not of the F3DEX2 family or F3DEX 1.x";
+        *why = "not of the F3DEX2 family, F3DEX 1.x or F3D";
         return 1;
     }
     if (r->primary < 0) {

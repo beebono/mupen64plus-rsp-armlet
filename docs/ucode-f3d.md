@@ -11,7 +11,8 @@ Conventions: addresses are hex; `DMEM[a]` is the big-endian byte address; `D8/D1
 `s16/u16/s32` are signed / unsigned integers; `op = w0 >> 24`; `seg(x)` is the segment resolution of 2.4. A *16.16 pair* `(hi : lo)` is the value `hi * 65536 + lo` with `hi` an `s16` and `lo` a `u16`.
 
 Contents: 1 arithmetic of the vector unit; 2 task, command loop, dispatch; 3 the commands (all but G_VTX / G_TRI1); 4 RDP output (flush, FIFO); 5 DMEM layout; 6 G_VTX; 7 lighting and texture
-generation, relight; 8 G_TRI1; 9 clipping; 10 per-build differences; 11 DMEM at the end of a task (leftover ranges, live-in ranges, poison results); 12 notes for the shared library and the front-end; 13 evidence and files; 14 the struct-level functions (src/hle/f3d_fx.h): tests and cost.
+generation, relight; 8 G_TRI1; 9 clipping; 10 per-build differences; 11 DMEM at the end of a task (leftover ranges, live-in ranges, poison results); 12 notes for the shared library and the front-end; 13 evidence and files; 14 the struct-level functions (src/hle/f3d_fx.h): tests and cost;
+15 the build record of the front-end (src/hle/f3d_bld.h).
 
 
 ## 1. Notation and the arithmetic of the vector unit
@@ -1997,3 +1998,30 @@ Per call the vertex rows are 12 vertices on average. Three repeats per device, a
 Struct NEON is 2.7x (A55) / 2.8x (A53) faster than the JIT per vertex, 4.5x / 4.6x per drawn triangle and 9x per rejected or culled triangle; the op-for-op vertex routine is about 25% faster than the struct NEON
 form (it loads and stores DMEM with vector instructions and keeps no per-vertex struct), the struct NEON triangle is 3x faster than the op-for-op triangle routine. Not measured: filling the structs from DMEM and writing the
 results back (a hook pays it; a whole-task front-end working on the structs does not), the clipper and relight (scalar, rare).
+
+## 15. The build record of the front-end (src/hle/f3d_bld.h, 2026-10-17)
+
+`f3d.c` runs a task from `struct f3d_build` alone, the way the F3DEX2 and F3DEX 1.x front-ends do: no code tests which build it is, and `dbuild.c` makes the same struct from a derived record
+([ucode-derive.md](ucode-derive.md), "F3D records that run"). What moved into the record (the parameters of 12.3 that the six registered builds need):
+
+| part | fields | values in the registered builds |
+|---|---|---|
+| DMEM layout (`struct f3d_layout`, `F3D_LAY_FIELDS` of `f3d_dmem.h`) | the state words (`half1` 0x10c, `persp` 0x112, `geom` 0x114, `omh` / `oml` 0x118 / 0x11c, `texture` 0x120, `rdp_wp` 0x128, `lights` 0x12c, `mtx_sp` 0x134, `mtx_lim` 0x15c, `fifo` 0x150, `segs` 0x160), the G_DL depth byte (`depth`), the G_MOVEMEM / G_MOVEWORD tables (`mm_tab` 0x2f0, `mw_tab` 0x30e), the G_DL return stack (`retstack` 0x336), `viewport`, `fog`, `mv` (projection at + 0x40), `mp`, the vertex buffer (`vtx_base` 0x420; it ends at the command buffer: 16 or 32 slots), the buffers (`cmdbuf`, `geombuf`, `outbuf`), the XBUS ring end (`ring_end` 0xde0), G_VTX's return slot (`vret`), the dispatch tables (`jt0` 0xc4, `jt2`), G_TRI4's nibble table (`tri4_tab`), the constants of the data segment (`light` 0x1a0, `lim`, `vsign`, `clip_k`, `planes`, `tg`, `plane_masks`) and the clip flag word's variant | 2.0D: `depth` 0x110, `jt2` 0x76, `vret` 0x106; 2.0H (Mischief Makers, Tetrisphere): 0x15a, 0x74, 0x104; Wave Race: buffers 0x920 / 0xa60 / 0xc60; Pilotwings: flag word `F3D_FLAGS_PW`; GoldenEye (2.0G): `depth` 0x15a, `jt2` 0x76, `vret` 0x106, `tri4_tab` 0x2d0, `F3D_FLAGS_PW` |
+| handler pcs (`F3D_PC_FIELDS`) | `head` (the loop head where the interpreter hands over), `nop` (the return point the no-op cells name), `brk` (the BREAK of overlay 3, which ends a task), and `mtx movemem vtx dl tri1 quad halfc half2 half1 persp clrgeom setgeom enddl oml omh texture moveword popmtx culldl tri4`; 0: no such command | read from each text's tables (10.3.1); 2.0H and 2.0G: `persp` 0 (G_MOVEWORD 0x0e), the RDPHALF commands at 0xb2 .. 0xb4; Wave Race: `quad` 0x1fc; GoldenEye: `popmtx` 0, `tri4` 0x20c |
+| masks | `reject_mask`, `clip_mask`, `culldl_mask` | 0x7070 / 0x4343 / 0xffff (SM64), 0x7030 / 0x4343 / 0x7030 (Pilotwings, GoldenEye), 0x7070 / 0x4343 / 0x7070 (the others) |
+| attributes | `vptr_mul` (4 / 8), `vtx_wr`, `gp_end`, `tri_wr` (Wave Race), `popmtx_stale` (Wave Race, 2.0H), `xbus` (Mischief Makers), `load_key` | |
+
+**The opcodes reach their command through the build's tables** (`make_kinds`): class 0 (0x00 .. 0x09) at `jt0 + 2 op`, class 2 (0xb0 .. 0xbf) at `jt2 + 2 (op - 0x80)`, each cell's pc compared with the
+record's pcs; a cell that leads to no pc of the record (or to a pc of the other class) declines the command. The old switches `half_shift` (the 2.0H RDPHALF numbering) and `quad` (Wave Race's op 0xb5) are
+gone: they are cells of the tables now. Two values are no longer record fields: the geometry buffer's operand bound (`geom_end`) is the end of the dead range of the build's table that covers `geombuf`
+(the class-0 DMA may run up to there), and the overlay base, which only served to place the exit BREAK, is `pc.brk`. GoldenEye's 2.0G text shows what the tables buy: its 0xbd cell leads to G_MOVEWORD's
+handler (it has no G_POPMTX) and 0xb1 to a command no other build has.
+
+**G_TRI4 (GoldenEye 007, 2.0G 09-30-96, handler 0x20c) [verified: canned tasks against the JIT, 3700-frame runs].** Up to four triangles in one command: triangle k has the vertex nibbles
+`(w1 >> 8k) & 0xf`, `(w1 >> 8k + 4) & 0xf` and `(w0 >> 4k) & 0xf`, each looked up in a byte table in DMEM (`lay.tri4_tab` 0x2d0: 0, 10, 20 ... 150, G_TRI1's vertex byte of slot i), and is drawn by
+G_TRI1's code with flat-shading vertex 0 (the handler enters it behind G_TRI1's byte loads). The microcode does one triangle per pass: `beq w1, zero, return`, takes the three nibbles, writes the command back into
+its buffer (w1 >> 8 and the low half of w0 >> 4), backs `k0` / `k1` / `gp` up by one command and runs it again; so a byte of w1 that is 0 ends the command only when all higher bytes are 0 too. Everything
+else of GoldenEye's text is Pilotwings' family (its clip flag word and masks, the overlays at 0x790) with the 2.0H RDPHALF numbering and G_DL depth byte and no G_PERSPNORMALIZE: the record `l_ge`.
+
+Bit-exact with the hand-switched front-end on every captured and perturbed F3D snapshot (testing.md, "F3D data-driven").
+

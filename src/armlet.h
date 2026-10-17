@@ -35,7 +35,7 @@ struct armlet_config {
     int probe_latch;                    /* ARMLET_PROBE_LATCH=1: a ucode whose probe passed is run natively at once (testing; the latch policy is the background validator's job) */
     int probe_force;                    /* ARMLET_PROBE_FORCE=1: probe the registered ucodes too, with their own record left out of the references (testing) */
     int probe_tol;                      /* GfxProbeNear = tolerant: the near-match tolerance of the probe (docs/design.md); default strict */
-    unsigned probe_none_x;              /* ARMLET_PROBE_NONE_X=n (experiment): also probe a NONE derivation of the F3DEX2 family with at most n unexplained plus missing words; its result is not cached */
+    unsigned probe_none_x;              /* ARMLET_PROBE_NONE_X=n (experiment): also probe a NONE derivation (any family) with at most n unexplained plus missing words; its result is not cached */
     unsigned probe_seeds;               /* ARMLET_PROBE_SEEDS: canned tasks per random case (default 3) */
     char ucode_cache[512];              /* GfxUcodeCache: path of the cache file; empty = armlet-ucode.cache in the core's config directory; "off" = none */
 };

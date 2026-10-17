@@ -26,7 +26,7 @@ enum { EV_PC, EV_CF, EV_IMM, EV_MEM };
 enum { K_ADDR, K_SIZE, K_MASK };
 enum { NEAR_INIT, NEAR_POS, NEAR_SMALL, NEAR_GEOM };
 enum { XR_INIT, XR_EXTRA, XR_DELETED };
-enum { KN_REJECT = 100 };       /* knob name ids: LY_* for the layout, this for the reject mask */
+enum { KN_REJECT = 100, KN_CLIP = 101 };   /* knob name ids: LY_* for the layout, these for the reject and clip-request masks */
 
 static uint64_t mix64(uint64_t x)
 {
@@ -689,8 +689,15 @@ static int knobs_of(const struct derive_rec *r, struct knob *ks)
             ks[n].name = KN_REJECT; ks[n].val = r->reject_mask; ks[n].kind = K_MASK; n++;
         }
     } else {
-        for (k = 0; k < r->n_knobs; k++) {
-            ks[n].name = k; ks[n].val = r->knobs[k].val; ks[n].kind = r->knobs[k].kind == 0 ? K_ADDR : K_MASK; n++;
+        for (k = 0; k < DERIVE_NF3KNOB; k++)
+            if (r->lay[k] >= 0x10) {
+                ks[n].name = k; ks[n].val = r->lay[k]; ks[n].kind = K_ADDR; n++;
+            }
+        if (r->reject_mask >= 0x10) {
+            ks[n].name = KN_REJECT; ks[n].val = r->reject_mask; ks[n].kind = K_MASK; n++;
+        }
+        if (r->clip_mask >= 0x10) {
+            ks[n].name = KN_CLIP; ks[n].val = r->clip_mask; ks[n].kind = K_MASK; n++;
         }
     }
     return n;
@@ -845,7 +852,7 @@ static int pairing_make(struct pairing *P, int ref, const struct dimg *U, int nk
             P->n_pr++;
         }
     }
-    /* _collect (F3DEX 1.x: an operand relative to $29 = 0x110 is the DMEM address 0x110 + offset) */
+    /* _collect (F3DEX 1.x and F3D: an operand relative to $29 = 0x110 is the DMEM address 0x110 + offset) */
     for (i = 0; i < R->n; i++) {
         uint32_t vr, vu, add;
         int c;
@@ -853,7 +860,7 @@ static int pairing_make(struct pairing *P, int ref, const struct dimg *U, int nk
         if (j < 0)
             continue;
         c = R->cls[i];
-        add = P->rec->fam == DERIVE_F3DEX1 && (c == C_MEM || c == C_VMEM) && (R->flg[i] & 4) ? 0x110u : 0u;
+        add = (P->rec->fam == DERIVE_F3DEX1 || P->rec->fam == DERIVE_F3D) && (c == C_MEM || c == C_VMEM) && (R->flg[i] & 4) ? 0x110u : 0u;
         if (R->opd[i] == U->opd[j]) {
             if (c == C_MEM || c == C_VMEM) {
                 same_ops[nsame].v = (R->opd[i] + add) & 0xffff;
@@ -2327,14 +2334,79 @@ done:
     return rc;
 }
 
-static int derive_variant(const struct derive_in *in, struct dimg *U, const struct dctx *X, const int *refs, int nrefs, struct f2work *out)
+/* ---- the F3D derivation (derive_f3d.derive_f3d) ---------------------------------------------------------------------------------------------------------------------------- */
+#define F3_BASE29 0x110u
+
+/* the decoded fields the signatures look at */
+static int w_op(uint32_t w) { return (int)(w >> 26); }
+static int w_simm(uint32_t w) { return sx16(w & 0xffff); }
+static int is_andi(uint32_t w, unsigned imm) { return w_op(w) == 0x0c && (w & 0xffff) == imm; }
+static int is_addi(uint32_t w) { return w_op(w) == 0x08; }
+static int is_srl(uint32_t w) { return w != 0 && is_special(w, 2); }
+static int is_sll(uint32_t w) { return w != 0 && is_special(w, 0); }
+static unsigned w_sa(uint32_t w) { return (w >> 6) & 31; }
+static int is_mtc0(uint32_t w) { return w_op(w) == 0x10 && w_rs(w) == 4; }
+
+/* text_words_at: n words of the text image from IMEM pc; returns the count */
+static int f3_text_at(const struct dimg *U, unsigned pc, int n, uint32_t *out)
+{
+    int i0 = (int)(((pc - 0x80) & 0xfff) / 4), k = 0;
+    for (; k < n && i0 + k < 1024; k++)
+        out[k] = U->w[i0 + k];
+    return k;
+}
+
+/* overlay(U, k): the words of overlay k of the DMA table (descriptor at 8 + 8 k) from the RDRAM that starts at the text; returns the count, -1 when there is none */
+static int f3_overlay(const struct derive_in *in, int k, unsigned *imem, uint32_t *out, int max)
+{
+    size_t a = 8 + 8 * (size_t)k;
+    uint32_t off, b;
+    unsigned ln, i, n;
+    if (a + 8 > in->data_len)
+        return -1;
+    off = be32(in->data + a);
+    b = be32(in->data + a + 4);
+    ln = ((b >> 16) & 0xfff) + 1;
+    *imem = b & 0xfff;
+    if ((size_t)off + ln > 0x1000 + in->ext_len)
+        return -1;
+    n = ln / 4;
+    for (i = 0; i < n && (int)i < max; i++) {
+        uint32_t ad = off + 4 * i;
+        out[i] = ad + 4 <= 0x1000 ? in->text[ad / 4] : be32(in->ext + (ad - 0x1000));
+    }
+    return (int)i;
+}
+
+/* sig_tables: the dispatchers' table bases (-1: not exactly one) */
+static int f3_sig_table(const struct dimg *U, unsigned m)
+{
+    int i, val = -1, n = 0;
+    for (i = 0; i + 1 < 1024 && i + 1 < U->n; i++) {
+        uint32_t a = U->w[i], b = U->w[i + 1];
+        if (is_andi(a, m) && w_rs(a) == w_rt(a) && w_op(b) == 0x21 && w_rs(b) == w_rt(a) && w_rt(b) == w_rt(a)) {
+            int v = (int)(b & 0xffff);
+            if (n == 0 || v != val) {
+                if (n && v != val)
+                    return -1;
+                val = v;
+                n = 1;
+            }
+        }
+    }
+    return n ? val : -1;
+}
+
+static int f3_derive(const struct derive_in *in, struct dimg *U, const struct dctx *X, const int *refs, int nrefs, struct f2work *out)
 {
     struct pairing *prs = (struct pairing *)calloc((size_t)nrefs, sizeof(struct pairing));
-    struct pairing *order[DERIVE_MAXREFS];
-    uint8_t *cur = NULL, *expl[DERIVE_MAXREFS];
-    int i, j, ndone = 0, rc = -1;
-    struct pairing *prim;
-    (void)in;
+    struct pairing *order[DERIVE_MAXREFS], *order1[DERIVE_MAXREFS], *prim;
+    uint8_t *cur = NULL, *expl[DERIVE_MAXREFS], *cat = NULL;
+    int i, j, ndone = 0, rc = -1, q, undecided = 0;
+    struct derive_rec *rec = &out->rec;
+    struct merged *mg = NULL;
+    uint32_t ws[64], ov[512];
+    unsigned imem;
     memset(expl, 0, sizeof(expl));
     if (!prs)
         return -1;
@@ -2345,10 +2417,6 @@ static int derive_variant(const struct derive_in *in, struct dimg *U, const stru
         order[i] = &prs[i];
     }
     sort_pairings(order, nrefs);
-    prim = order[0];
-    out->primary = prim->ref;
-    out->aligned_num = (unsigned)prim->n_pr;
-    DBG_PAIRING(prim, U);
     for (i = 0; i < nrefs; i++) {
         expl[i] = (uint8_t *)malloc((size_t)U->n);
         if (!expl[i])
@@ -2356,97 +2424,285 @@ static int derive_variant(const struct derive_in *in, struct dimg *U, const stru
         for (j = 0; j < U->n; j++)
             expl[i][j] = order[i]->st[j] != ST_X;
     }
-    cur = (uint8_t *)malloc((size_t)U->n);
-    if (!cur)
+    cur = (uint8_t *)malloc((size_t)U->n + 1);
+    mg = (struct merged *)malloc(sizeof(*mg));
+    if (!cur || !mg)
         goto done;
-    for (j = 0; j < U->n; j++)
-        cur[j] = prim->st[j] == ST_X;
+    /* the primary: the fewest words left unexplained after the composite, counting its own words the unknown lacks */
     {
-        int pool[DERIVE_MAXREFS], npool = 0;
-        for (i = 1; i < nrefs; i++)
-            pool[npool++] = i;
-        for (;;) {
-            int ncur = 0, bestq = -1, bestn = -1, q;
-            for (j = 0; j < U->n; j++)
-                ncur += cur[j];
-            if (!ncur || !npool)
-                break;
-            for (q = 0; q < npool; q++) {
-                int n = 0;
-                for (j = 0; j < U->n; j++)
-                    n += cur[j] & expl[pool[q]][j];
-                if (n > bestn) {
-                    bestn = n;
-                    bestq = q;
+        int best = -1, bestc = 0;
+        for (q = 0; q < nrefs; q++) {
+            int c = f1_composite(order, nrefs, expl, q, U, cur, NULL), x;
+            for (x = 0; x < order[q]->R.n; x++)
+                if (order[q]->xr[x] && f1_xr_kept(order[q], U, cur, x))
+                    c++;
+            if (best < 0 || c < bestc) {
+                best = q;
+                bestc = c;
+            }
+        }
+        prim = order[best];
+        order1[0] = prim;
+        for (i = 0, j = 1; i < nrefs; i++)
+            if (order[i] != prim)
+                order1[j++] = order[i];
+        (void)f1_composite(order, nrefs, expl, best, U, cur, out);
+    }
+    out->primary = prim->ref;
+    out->aligned_num = (unsigned)prim->n_pr;
+    /* the record: knobs (layout, masks), the rest from the primary, then the signatures */
+    memset(rec, 0, sizeof(*rec));
+    rec->name = "(derived)";
+    rec->fam = DERIVE_F3D;
+    merge_knobs(order1, nrefs, mg);
+    for (i = 0; i < DERIVE_NF3LAY; i++)
+        rec->lay[i] = i < DERIVE_NF3KNOB && mg->has[i] ? mg->val[i] : prim->rec->lay[i];
+    rec->reject_mask = mg->has[KN_REJECT] ? mg->val[KN_REJECT] : prim->rec->reject_mask;
+    rec->clip_mask = mg->has[KN_CLIP] ? mg->val[KN_CLIP] : prim->rec->clip_mask;
+    rec->culldl_mask = prim->rec->culldl_mask;
+    for (i = 0; i < DERIVE_NF3PC; i++)
+        rec->f3pc[i] = prim->rec->f3pc[i];
+    for (i = 0; i < F3F_N; i++)
+        rec->f3[i] = prim->rec->f3[i];
+    {
+        int jt0 = f3_sig_table(U, 0x1fe), jt2 = f3_sig_table(U, 0xfe);
+        if (jt0 < 0) undecided = 1; else rec->lay[DERIVE_NF3KNOB] = (uint32_t)jt0;
+        if (jt2 < 0) undecided = 1; else rec->lay[DERIVE_NF3KNOB + 1] = (uint32_t)jt2;
+    }
+    {
+        uint8_t tg[0x1000], taken[0x1000];
+        unsigned op;
+        memset(tg, 0, sizeof(tg));
+        memset(taken, 0, sizeof(taken));
+        for (op = 0; op < 0xc0; op++) {
+            long a;
+            if (op > 0x09 && op < 0xb0)
+                continue;
+            a = op < 0x40 ? (long)rec->lay[DERIVE_NF3KNOB] + 2L * op : (long)rec->lay[DERIVE_NF3KNOB + 1] + 2L * (op - 0x80);
+            if (a >= 0 && (size_t)a + 2 <= in->data_len)
+                tg[u16d(in->data, in->data_len, a) & 0xfff] = 1;
+        }
+        for (i = 0; i < DERIVE_NF3PC; i++) {
+            int v = 0, a;
+            if (i == 0 || i == 2)                               /* head, brk: read from the text below */
+                continue;
+            for (a = 0; a < nrefs; a++) {
+                int pr = order1[a]->rec->f3pc[i], m;
+                if (!pr)
+                    continue;
+                m = map_pc(order1[a], U, pr);
+                if (m > 0 && m < 0x1000 && tg[m] && !taken[m]) {
+                    v = m;
+                    break;
                 }
             }
-            if (bestn == 0)
-                break;
-            out->contrib[out->n_contrib] = order[pool[bestq]]->ref;
-            out->contrib_n[out->n_contrib++] = (unsigned)bestn;
-            for (j = 0; j < U->n; j++)
-                if (expl[pool[bestq]][j])
-                    cur[j] = 0;
-            for (q = bestq; q + 1 < npool; q++)
-                pool[q] = pool[q + 1];
-            npool--;
+            rec->f3pc[i] = v;
+            if (v)
+                taken[v] = 1;
         }
     }
+    {   /* geombuf: `addi s6, zero, X` in the loop head code (overlay 0) */
+        int n0 = f3_overlay(in, 0, &imem, ov, 512), k, gb = -1, ngb = 0;
+        for (k = 0; k < n0; k++)
+            if (is_addi(ov[k]) && w_rs(ov[k]) == 0 && w_rt(ov[k]) == 22) {
+                int v = (int)(ov[k] & 0xffff);
+                if (!ngb || v != gb) {
+                    gb = v;
+                    ngb++;
+                }
+            }
+        if (ngb == 1)
+            rec->lay[23 - 1] = (uint32_t)gb;                    /* F3_LAY_FIELDS index 22: geombuf */
+    }
+    {   /* the loop head and its form */
+        int nop = rec->f3pc[1], head = -1, gp_end = -1;
+        if (nop && f3_text_at(U, (unsigned)nop + 16, 1, ws) == 1) {
+            uint32_t w = ws[0];
+            int tgt = -1, form = -1, count = 0, n0, k;
+            if (cls_of(w) == C_BR)
+                tgt = (nop + 16 + 4 + 4 * w_simm(w)) & 0xfff;
+            if (w_op(w) == 7 && w_rs(w) == 28)
+                form = 0;
+            else if (w_op(w) == 5 && ((w_rs(w) == 28 && w_rt(w) == 27) || (w_rs(w) == 27 && w_rt(w) == 28)))
+                form = 1;
+            n0 = f3_overlay(in, 0, &imem, ov, 512);
+            for (k = 0; k < n0; k++)
+                if (is_addi(ov[k]) && w_rs(ov[k]) == 28 && w_rt(ov[k]) == 28 && (ov[k] & 0xffff) == 0xfff8)
+                    count = 1;
+            if (form >= 0 && tgt >= 0) {
+                head = tgt;
+                if (form == 0 && count)
+                    gp_end = 0;
+                else if (form == 1 && !count)
+                    gp_end = 1;
+            }
+        }
+        if (head < 0) undecided = 1; else rec->f3pc[0] = head;
+        if (gp_end < 0) undecided = 1; else rec->f3[F3F_GP_END] = (uint8_t)gp_end;
+    }
+    {   /* the BREAK of overlay 3 */
+        int n3 = f3_overlay(in, 3, &imem, ov, 512), k, brk = -1;
+        for (k = 0; k < n3; k++)
+            if (is_break(ov[k])) {
+                brk = (int)(imem + 4 * (unsigned)k);
+                break;
+            }
+        if (brk < 0) undecided = 1; else rec->f3pc[2] = brk;
+    }
+    {   /* G_TRI4's table: `lbu rX, TAB(rX)` among its first words */
+        int tpc = rec->f3pc[22];
+        if (tpc) {
+            int n = f3_text_at(U, (unsigned)tpc, 20, ov), k, tab = -1, nt = 0;
+            for (k = 0; k < n; k++)
+                if (w_op(ov[k]) == 0x24 && w_rs(ov[k]) == w_rt(ov[k]) && w_rs(ov[k]) != 0) {
+                    int v = (int)(ov[k] & 0xffff);
+                    if (!nt || v != tab) {
+                        tab = v;
+                        nt++;
+                    }
+                }
+            if (nt != 1) undecided = 1; else rec->lay[DERIVE_NF3KNOB + 2] = (uint32_t)tab;
+        } else
+            rec->lay[DERIVE_NF3KNOB + 2] = 0;
+    }
+    {   /* G_CULLDL's mask */
+        int cpc = rec->f3pc[21];
+        if (cpc) {
+            int n = f3_text_at(U, (unsigned)cpc, 4, ws), k, cm = -1;
+            for (k = 0; k < n; k++)
+                if (w_op(ws[k]) == 0x0d && w_rs(ws[k]) == 0) {
+                    cm = (int)(ws[k] & 0xffff);
+                    break;
+                }
+            if (cm < 0) undecided = 1; else rec->culldl_mask = (uint32_t)cm;
+        }
+    }
+    {   /* vtx_wr */
+        int vpc = rec->f3pc[5], v = -1;
+        if (vpc) {
+            int n = f3_text_at(U, (unsigned)vpc, 8, ws), k, a = 0, b = 0, sh = 0;
+            for (k = 0; k < n; k++) {
+                uint32_t w = ws[k];
+                if (w_op(w) == 0x24 && w_rs(w) == 27 && w_simm(w) == -6) a = 1;
+                if (is_srl(w) && w_sa(w) == 1 && w_rd(w) == w_rt(w)) b = 1;
+                if (is_srl(w) && w_sa(w) == 4 && w_rd(w) == 1 && w_rt(w) == 1) sh = 1;
+            }
+            if (a && b && !sh) v = 1;
+            else if (sh && !a && !b) v = 0;
+        }
+        if (v < 0) undecided = 1; else rec->f3[F3F_VTX_WR] = (uint8_t)v;
+    }
+    {   /* vptr_mul */
+        int tpc = rec->f3pc[7], v = -1;
+        if (tpc) {
+            uint32_t all[32];
+            int n = f3_text_at(U, (unsigned)tpc, 16, all), k, nsh = 0, nadd = 0, sh[32];
+            for (k = 0; k < 3 && k < n; k++)
+                if (w_op(all[k]) == 3) {
+                    n += f3_text_at(U, (unsigned)((all[k] & 0x3ffffff) << 2 & 0xfff), 16, all + n);
+                    break;
+                }
+            for (k = 0; k < n; k++) {
+                uint32_t w = all[k];
+                if (is_sll(w) && w_rd(w) == w_rt(w) && w_rd(w) >= 1 && w_rd(w) <= 3)
+                    sh[nsh++] = (int)w_sa(w);
+                if (is_addi(w) && w_rs(w) == w_rt(w) && w_rt(w) >= 1 && w_rt(w) <= 3 && (w & 0xffff) == rec->lay[20])
+                    nadd++;
+            }
+            if (nsh >= 3 && sh[nsh - 1] == sh[nsh - 2] && sh[nsh - 2] == sh[nsh - 3] && (sh[nsh - 1] == 2 || sh[nsh - 1] == 3) && nadd >= 3)
+                v = 1 << sh[nsh - 1];
+        }
+        if (v < 0) undecided = 1; else rec->f3[F3F_VPTR_MUL] = (uint8_t)v;
+    }
+    {   /* tri_wr, flags_variant, xbus: over the text */
+        int c1000 = 0, c200 = 0, n703 = 0, n707 = 0, nsign = 0, nu = U->n < 1024 ? U->n : 1024, st = 0, clr = 0, dm = 0, k, e;
+        for (j = 0; j < nu; j++) {
+            uint32_t w = U->w[j];
+            if (is_andi(w, 0x1000)) c1000 = 1;
+            if (is_andi(w, 0x200)) c200 = 1;
+            if (is_andi(w, 0x703)) n703++;
+            if (is_andi(w, 0x707)) n707++;
+            if (j > 0 && is_srl(w) && (w_sa(w) == 9 || w_sa(w) == 13) && w_rd(w) == w_rt(w) && is_andi(U->w[j - 1], 0x8000) && w_rt(U->w[j - 1]) == w_rt(w))
+                nsign++;
+            if (is_addi(w) && w_rs(w) == 0) {
+                unsigned imm = w & 0xffff;
+                for (e = j + 1; e < j + 5 && e < nu; e++) {
+                    uint32_t x = U->w[e];
+                    if (is_mtc0(x) && w_rt(x) == w_rt(w)) {
+                        if (imm == 2 && w_rd(x) == 11) st = 1;
+                        if (imm == 1 && w_rd(x) == 11) clr = 1;
+                        if (imm == rec->lay[23] && w_rd(x) == 8) dm = 1;
+                    }
+                }
+            }
+        }
+        (void)k;
+        if (c1000 && c200) rec->f3[F3F_TRI_WR] = 0;
+        else if (!c1000 && !c200) rec->f3[F3F_TRI_WR] = 1;
+        else undecided = 1;
+        if (n703 && nsign >= 2) rec->f3[F3F_FV] = 1;
+        else if (!n703 && !nsign && n707) rec->f3[F3F_FV] = 0;
+        else undecided = 1;
+        if (st && dm && !clr) rec->f3[F3F_XBUS] = 1;
+        else if (clr && !st && !dm) rec->f3[F3F_XBUS] = 0;
+        else undecided = 1;
+    }
+    {   /* popmtx_stale: a byte store to the light count word among the handler's first words */
+        int ppc = rec->f3pc[20], v = 0;
+        if (ppc) {
+            int n = f3_text_at(U, (unsigned)ppc, 3, ws), k;
+            for (k = 0; k < n; k++) {
+                uint32_t w = ws[k];
+                int off = -1000000;
+                if (w_op(w) == 0x3a && w_rd(w) == 0)            /* sbv */
+                    off = (int)((w & 0x40) ? (int)(w & 0x7f) - 128 : (int)(w & 0x7f));
+                else if (w_op(w) == 0x28)                       /* sb */
+                    off = w_simm(w);
+                if (off != -1000000 && (((unsigned)off + (w_rs(w) == 29 ? F3_BASE29 : 0u)) & 0xffff) == rec->lay[7]) {
+                    v = 1;
+                    break;
+                }
+            }
+        }
+        rec->f3[F3F_POPMTX_STALE] = (uint8_t)v;
+    }
+    rec->load_key = derive_fnv_words(in->text, 0xf48 / 4);
     for (j = 0; j < U->n; j++)
         out->n_x += cur[j];
+    cat = (uint8_t *)calloc((size_t)prim->R.n + 1, 1);
+    if (!cat)
+        goto done;
     {
-        /* xr = {i: extra for i in prim.xr if i not in hunk_of_r or any(j in res.x for j in hunk_of_r[i])}; runs under 16 words are deleted */
-        const struct dimg *R = &prim->R;
-        uint8_t *cat = (uint8_t *)calloc((size_t)R->n, 1);
-        int i0, nxr = 0;
-        if (!cat)
-            goto done;
-        for (i0 = 0; i0 < R->n; i0++) {
-            int run;
-            if (!prim->xr[i0])
-                continue;
-            run = prim->hunk[i0];
-            if (run >= 0) {
-                int e = run, bad = 0;
-                while (e < U->n && prim->pu[e] < 0 && U->seg[e] == U->seg[run]) {
-                    if (cur[e])
-                        bad = 1;
+        int nxr = 0, s0 = 0, i0;
+        for (i0 = 0; i0 < prim->R.n; i0++)
+            if (prim->xr[i0] && f1_xr_kept(prim, U, cur, i0))
+                cat[i0] = 2;
+        while (s0 < prim->R.n) {
+            if (cat[s0] == 2) {
+                int e = s0;
+                while (e < prim->R.n && cat[e] == 2)
                     e++;
-                }
-                if (!bad)
-                    continue;
-            }
-            cat[i0] = 2;
+                if (e - s0 < 16)
+                    for (i0 = s0; i0 < e; i0++)
+                        cat[i0] = 3;
+                s0 = e;
+            } else
+                s0++;
         }
-        {
-            int s0 = 0;
-            while (s0 < R->n) {
-                if (cat[s0] == 2) {
-                    int e = s0;
-                    while (e < R->n && cat[e] == 2)
-                        e++;
-                    if (e - s0 < 16)
-                        for (i0 = s0; i0 < e; i0++)
-                            cat[i0] = 3;
-                    s0 = e;
-                } else
-                    s0++;
-            }
-        }
-        for (i0 = 0; i0 < R->n; i0++)
+        for (i0 = 0; i0 < prim->R.n; i0++)
             if (cat[i0]) {
                 out->n_xr[cat[i0] - 1]++;
                 nxr++;
             }
-        free(cat);
+        out->trouble = prim->any_trouble;
         out->nx_total = (int)(out->n_x + (unsigned)nxr);
-        out->verdict = (out->n_x || out->n_xr[XR_DELETED]) ? DERIVE_NONE : nxr ? DERIVE_NEAR : DERIVE_EXACT;
+        out->verdict = (out->n_x || out->n_xr[XR_DELETED] || undecided || out->trouble) ? DERIVE_NONE : nxr ? DERIVE_NEAR : DERIVE_EXACT;
     }
     rc = 0;
 done:
     for (i = 0; i < DERIVE_MAXREFS; i++)
         free(expl[i]);
-    free(cur);
+    free(cur); free(cat); free(mg);
     for (i = 0; i < ndone; i++)
         pairing_free(&prs[i]);
     free(prs);
@@ -2538,7 +2794,7 @@ int derive_run(const struct derive_in *in, struct derive_result *out)
         else if (fam == DERIVE_F3DEX1)
             rc = derive_f1(in, &U, &X, refs, nrefs, w[fam]);
         else
-            rc = derive_variant(in, &U, &X, refs, nrefs, w[fam]);
+            rc = f3_derive(in, &U, &X, refs, nrefs, w[fam]);
         if (rc)
             break;
         udone[fam] = 1;
@@ -2585,8 +2841,7 @@ int derive_run(const struct derive_in *in, struct derive_result *out)
             out->contrib[i].n = b->contrib_n[i];
         }
         out->knob_trouble = b->trouble;
-        if (best == DERIVE_F3DEX2 || best == DERIVE_F3DEX1)
-            out->rec = b->rec;
+        out->rec = b->rec;
     }
     for (fam = 0; fam < 3; fam++)
         free(w[fam]);
@@ -2611,10 +2866,37 @@ static const char *const f1_lay_names[DERIVE_NF1LAY] = { "jt0", "jt2", "half1", 
 static const char *const f1_pc_names[DERIVE_NF1PC] = { "head", "nop", "mtx", "movemem", "vtx", "dl", "loaduc", "branchz", "tri2", "modvtx", "half2", "half1", "persp", "quad", "clrgeom", "setgeom",
     "enddl", "oml", "omh", "texture", "moveword", "popmtx", "culldl", "tri1" };
 
+static const char *const f3_lay_names[DERIVE_NF3LAY] = { "half1", "persp", "geom", "omh", "oml", "texture", "rdp_wp", "lights", "mtx_sp", "mtx_lim", "depth", "fifo", "segs", "mm_tab",
+    "mw_tab", "retstack", "viewport", "fog", "mv", "mp", "vtx_base", "cmdbuf", "geombuf", "outbuf", "ring_end", "vret", "jt0", "jt2", "tri4_tab", "light", "lim", "vsign", "clip_k", "planes", "tg", "plane_masks" };
+static const char *const f3_pc_names[DERIVE_NF3PC] = { "head", "nop", "brk", "mtx", "movemem", "vtx", "dl", "tri1", "quad", "halfc", "half2", "half1", "persp", "clrgeom", "setgeom", "enddl", "oml",
+    "omh", "texture", "moveword", "popmtx", "culldl", "tri4" };
+static const char *const f3_flag_names[F3F_N] = { "flag.flags_variant", "flag.vtx_wr", "flag.gp_end", "flag.tri_wr", "flag.popmtx_stale", "flag.xbus", "flag.vptr_mul" };
+
 void derive_rec_fields(const struct derive_rec *r, void (*f)(const char *name, unsigned long long v, void *arg), void *arg)
 {
     char nm[64];
     int k;
+    if (r->fam == DERIVE_F3D) {                                 /* (the order of derive_f3d's record: the knobs, the masks, the table bases, the constants, the G_CULLDL mask, the pcs, the flags) */
+        for (k = 0; k < DERIVE_NF3KNOB; k++) {
+            snprintf(nm, sizeof(nm), "lay.%s", f3_lay_names[k]);
+            f(nm, r->lay[k], arg);
+        }
+        f("reject_mask", r->reject_mask, arg);
+        f("clip_mask", r->clip_mask, arg);
+        for (k = DERIVE_NF3KNOB; k < DERIVE_NF3LAY; k++) {
+            snprintf(nm, sizeof(nm), "lay.%s", f3_lay_names[k]);
+            f(nm, r->lay[k], arg);
+        }
+        f("culldl_mask", r->culldl_mask, arg);
+        for (k = 0; k < DERIVE_NF3PC; k++) {
+            snprintf(nm, sizeof(nm), "pc.%s", f3_pc_names[k]);
+            f(nm, (unsigned long long)(long long)r->f3pc[k] & 0xffffffffull, arg);
+        }
+        for (k = 0; k < F3F_N; k++)
+            f(f3_flag_names[k], r->f3[k], arg);
+        f("load_key", r->load_key, arg);
+        return;
+    }
     if (r->fam == DERIVE_F3DEX1) {
         for (k = 0; k < DERIVE_NF1LAY; k++) {
             snprintf(nm, sizeof(nm), "lay.%s", f1_lay_names[k]);
