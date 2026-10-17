@@ -49,7 +49,7 @@ struct ucache_entry {
     uint32_t pad8;
     uint32_t clip_mask, culldl_mask;
     uint8_t f3[F3F_N], pad7;
-    uint8_t latch, strikes, near, pad9;     /* format 5: UC_LATCH_*, the EXACT strikes so far, the build is NEAR */
+    uint8_t latch, strikes, near, open;     /* format 5: UC_LATCH_*, the EXACT strikes so far, the build is NEAR, a session using it has not closed cleanly yet */
     uint32_t matches, mismatches;           /* validated real tasks: equal, different (all sessions) */
     uint32_t evidence_milli, distinct;      /* the evidence (x 1000) and distinct fingerprints when the build latched or was stored */
     uint32_t pad10;

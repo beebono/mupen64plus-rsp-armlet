@@ -357,6 +357,16 @@ static int cmd_vtx(struct f3d_task *f, uint32_t w0, uint32_t w1)
         f3d_load_vin(&in[i], s.img, s.base + 16 * i, s.ram);
     if (f3d_vtx_xform(ctxp, in, n, out))
         return hle_decline(t, "G_VTX: state outside what the native code supports");
+    if (t->gate || t->cmds) {                           /* (the latch policy's data situations) */
+        uint32_t fo = 0;
+        int wn = 0;
+        for (i = 0; i < n; i++) {
+            fo |= out[i].flags;
+            wn |= hle_wneg(out[i].cx[3], out[i].cf[3]);
+        }
+        if (hle_vtx_kinds(t, fo, wn))
+            return HLE_DECLINE;
+    }
     f->phantom &= ~(((n < 32 ? (1u << n) : 0u) - 1u) << a2);
     if ((n & 1) && a2 + n < nslots && lay->flags_variant == F3D_FLAGS_SM64)    /* (Pilotwings' flag word is the second vertex's alone) */
         f->phantom |= 1u << (a2 + n);
@@ -418,7 +428,7 @@ static int cmd_tri3(struct f3d_task *f, const unsigned idx[3], unsigned flag)
         fprintf(stderr, "\n");
     }
     if (rc == F3D_TRI_REJECT || rc == F3D_TRI_CULL)
-        return HLE_OK;
+        return hle_cmd(t, rc == F3D_TRI_REJECT ? LATCH_K_TRI_REJECT : LATCH_K_TRI_CULL) ? HLE_DECLINE : HLE_OK;
     if (rc == F3D_TRI_OK) {
         int r_ = emit_bytes(f, cmd, len);
         return r_;
@@ -426,6 +436,8 @@ static int cmd_tri3(struct f3d_task *f, const unsigned idx[3], unsigned flag)
     {   /* clipping */
         struct f3d_clip_out co;
         if (hle_cmd(t, LATCH_K_CLIP))
+            return HLE_DECLINE;
+        if ((hle_wneg(v[0].cx[3], v[0].cf[3]) || hle_wneg(v[1].cx[3], v[1].cf[3]) || hle_wneg(v[2].cx[3], v[2].cf[3])) && hle_cmd(t, LATCH_K_NEARCLIP))
             return HLE_DECLINE;
         const struct f3d_vtx *vp[3] = { &v[0], &v[1], &v[2] };
         unsigned i;

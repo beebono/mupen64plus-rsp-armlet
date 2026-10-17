@@ -123,7 +123,7 @@ m64p_error armlet_config_startup(m64p_dynlib_handle core)
     ConfigSetDefaultString(l_section, CFG_UCODE_CACHE, "",
         "File of what the probe learned (armlet-ucode.cache in the core's config directory when empty; off = none)");
     ConfigSetDefaultString(l_section, CFG_LATCH_POLICY, "",
-        "GfxProbe: when a derived build runs natively (empty = the defaults): evidence=24,distinct=8,near=1.75,strikes=2,sample=8,sample_last=256,decay=64,queue=4,fingerprints=1024 (see docs/options.md)");
+        "GfxProbe: when a derived build runs natively (empty = the defaults): evidence=24,distinct=8,near=1.75,strikes=2,sample=32,sample_last=256,decay=64,queue=4,fingerprints=1024 (see docs/options.md)");
     return M64ERR_SUCCESS;
 }
 

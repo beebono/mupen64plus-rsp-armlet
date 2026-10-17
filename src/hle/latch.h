@@ -18,8 +18,12 @@
 extern "C" {
 #endif
 
-/* Command kinds: the opcode byte of a display list command (0 .. 255), then the risky paths a task can take (counted once per occurrence) */
-enum { LATCH_K_CLIP = 256, LATCH_K_LIT, LATCH_K_LOAD, LATCH_K_CULLDL, LATCH_NKINDS = 260 };
+/* Command kinds: the opcode byte of a display list command (0 .. 255), then the risky paths and data situations a task can meet (counted once per occurrence):
+ * a triangle sent to the clipper, lit vertices, a G_LOAD_UCODE of another text, a G_CULLDL that ended its list, a G_VTX with a vertex at or behind the eye (clip w <= 0), a clipped
+ * triangle with such a vertex (the near plane), a triangle rejected (all vertices beyond one plane), a triangle culled or degenerate, a G_BRANCH_Z taken, and each bit of the vertex
+ * clip-flag word (the planes and the guard band: low halfword LATCH_K_VFLAG + 0 .. 15, the high halfword of F3DEX2's + 16 .. 31) that a G_VTX produced */
+enum { LATCH_K_CLIP = 256, LATCH_K_LIT, LATCH_K_LOAD, LATCH_K_CULLDL, LATCH_K_WNEG, LATCH_K_NEARCLIP, LATCH_K_TRI_REJECT, LATCH_K_TRI_CULL, LATCH_K_BRZ,
+       LATCH_K_VFLAG = 272, LATCH_NKINDS = LATCH_K_VFLAG + 32 };
 #define LATCH_KWORDS ((LATCH_NKINDS + 63) / 64)
 
 struct latch_cfg {
@@ -27,7 +31,7 @@ struct latch_cfg {
     unsigned distinct;          /* distinct task fingerprints an EXACT build needs (default 8) */
     double near_mul;            /* a NEAR build needs near_mul times both (default 1.75) */
     unsigned strikes;           /* EXACT: the mismatch that makes this many strikes (this session and earlier ones) unlatches for good (default 2; the first suspends) */
-    unsigned sample_first;      /* a latched build's tasks: one in sample_first is still validated at first (default 8) ... */
+    unsigned sample_first;      /* a latched build's tasks: one in sample_first is still validated at first (default 32) ... */
     unsigned sample_last;       /* ... halving the rate every sample_decay matches down to one in sample_last (default 256) */
     unsigned sample_decay;      /* (default 64) */
     unsigned queue;             /* samples waiting for the validator at most (default 4; more are not captured) */

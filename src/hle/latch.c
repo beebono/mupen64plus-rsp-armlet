@@ -22,7 +22,7 @@ void latch_cfg_default(struct latch_cfg *c)
     c->distinct = 8;
     c->near_mul = 1.75;
     c->strikes = 2;
-    c->sample_first = 8;
+    c->sample_first = 32;
     c->sample_last = 256;
     c->sample_decay = 64;
     c->queue = 4;

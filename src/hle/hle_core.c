@@ -1491,6 +1491,17 @@ int hle_cmd_slow(struct hle_task *t, unsigned kind)
     return 0;
 }
 
+int hle_vtx_kinds_slow(struct hle_task *t, uint32_t flags_or, int wneg)
+{
+    unsigned b;
+    if (wneg && hle_cmd_slow(t, LATCH_K_WNEG))
+        return 1;
+    for (b = 0; b < 32; b++)
+        if ((flags_or >> b & 1) && hle_cmd_slow(t, LATCH_K_VFLAG + b))
+            return 1;
+    return 0;
+}
+
 void hle_bind(struct hle_task *t, const struct hle_ucode *u)
 {
     if (t->dx) {

@@ -167,6 +167,10 @@ void hle_break(struct hle_task *t, unsigned end_pc);
  * derived build that has not run this kind in a validated task. Costs one test when neither applies. */
 int hle_cmd_slow(struct hle_task *t, unsigned kind);
 static inline int hle_cmd(struct hle_task *t, unsigned kind) { return (t->gate || t->cmds) ? hle_cmd_slow(t, kind) : 0; }
+/* The data situations of a G_VTX (latch.h): the OR of the vertices' clip-flag words, and whether one has clip w <= 0. Nonzero: declined (as hle_cmd). */
+int hle_vtx_kinds_slow(struct hle_task *t, uint32_t flags_or, int wneg);
+static inline int hle_vtx_kinds(struct hle_task *t, uint32_t flags_or, int wneg) { return (t->gate || t->cmds) ? hle_vtx_kinds_slow(t, flags_or, wneg) : 0; }
+static inline int hle_wneg(int16_t wi, uint16_t wf) { return wi < 0 || (wi == 0 && wf == 0); }
 /* The loop works with build `u` from now on (the task's own at the start, a G_LOAD_UCODE's afterwards): its gate, and the counting of a replay under validation */
 void hle_bind(struct hle_task *t, const struct hle_ucode *u);
 /* Whether a derived build may be taken over by a G_LOAD_UCODE: latched (in a replay under validation: any that is not unlatched for good). Registered builds: always. */

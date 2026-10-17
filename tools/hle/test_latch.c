@@ -41,7 +41,7 @@ int main(void)
 
     /* settings */
     latch_cfg_default(&c);
-    CHECK(c.evidence == 24 && c.distinct == 8 && c.near_mul == 1.75 && c.strikes == 2 && c.sample_first == 8 && c.sample_last == 256 && c.sample_decay == 64 && c.queue == 4, "the documented defaults");
+    CHECK(c.evidence == 24 && c.distinct == 8 && c.near_mul == 1.75 && c.strikes == 2 && c.sample_first == 32 && c.sample_last == 256 && c.sample_decay == 64 && c.queue == 4, "the documented defaults");
     CHECK(latch_cfg_parse(&c, "evidence=30,distinct=10,near=2,strikes=3,sample=4,sample_last=128,decay=32,queue=6,fingerprints=512", &bad) == 0 && c.evidence == 30 && c.distinct == 10 &&
           c.near_mul == 2 && c.strikes == 3 && c.sample_first == 4 && c.sample_last == 128 && c.sample_decay == 32 && c.queue == 6 && c.fp_max == 512, "every key is read");
     CHECK(latch_cfg_parse(&c, "evidence=12,bogus=3,distinct=4", &bad) != 0 && bad && !strncmp(bad, "bogus", 5) && c.evidence == 12 && c.distinct == 4, "an unknown key is reported, the others read");
@@ -155,14 +155,14 @@ int main(void)
         hist_of(h, 0x04, 1u << (i % 8), 0x10 + i / 8);
         latch_match(&s, &c, latch_fingerprint(h), h);
     }
-    CHECK(latch_sample_interval(&s, &c) == 8, "one in 8 at first");
+    CHECK(latch_sample_interval(&s, &c) == 32, "one in 32 at first");
     hist_of(h, 0x04, 1, 0x10);
     for (i = 0; i < 64; i++)
         latch_match(&s, &c, latch_fingerprint(h), h);
-    CHECK(s.post == 64 && latch_sample_interval(&s, &c) == 16, "one in 16 after 64 matches");
-    for (i = 0; i < 64 * 3; i++)
+    CHECK(s.post == 64 && latch_sample_interval(&s, &c) == 64, "one in 64 after 64 matches");
+    for (i = 0; i < 64 * 2; i++)
         latch_match(&s, &c, latch_fingerprint(h), h);
-    CHECK(latch_sample_interval(&s, &c) == 128, "one in 128 after 256");
+    CHECK(latch_sample_interval(&s, &c) == 256, "one in 256 after 192");
     for (i = 0; i < 64 * 10; i++)
         latch_match(&s, &c, latch_fingerprint(h), h);
     CHECK(latch_sample_interval(&s, &c) == 256, "never below one in 256");
@@ -170,7 +170,7 @@ int main(void)
     latch_match(&s, &c, latch_fingerprint(h), h);
     CHECK(latch_kind_ok(s.kinds, 0x7e), "a latched build's matches still add kinds");
     latch_mismatch(&s, &c);
-    CHECK(latch_sample_interval(&s, &c) == 8, "suspended and relatched: the sampling starts again at one in 8");
+    CHECK(latch_sample_interval(&s, &c) == 32, "suspended and relatched: the sampling starts again at one in 32");
     latch_free(&s);
 
     /* the bound on remembered fingerprints */

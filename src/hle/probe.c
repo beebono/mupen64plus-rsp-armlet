@@ -71,7 +71,7 @@ struct pair {
     struct latch_state ls;              /* under P.pl, on the validator thread */
     uint64_t t_cand;                    /* when it became a candidate (ns) */
     unsigned stored_strikes, prior_matches, prior_mismatches;
-    int near;
+    int near, open;
 };
 
 static struct {
@@ -161,6 +161,7 @@ void armlet_probe_reset(void)
     for (i = 0; i < PAIR_MAX; i++) {
         struct pair *p = &P.pairs[i];
         if (p->pol) {
+            p->open = 0;                            /* (a clean end) */
             if (atomic_load(&p->lstate) != LATCH_DEAD && !P.latch_now && (!p->force || P.force_cache))
                 store_pol(p);                       /* (the evidence and the kinds validated this session) */
             armlet_log(M64MSG_INFO, "latch: ucode %016" PRIx64 " data %016" PRIx64 ": %s, %u tasks equal, %u different, evidence %.2f, %u distinct, %u strikes", p->tid, p->did,
@@ -584,6 +585,7 @@ static void store_pol(struct pair *p)
     e.latch = (uint8_t)(p->ls.state == LATCH_LATCHED ? UC_LATCH_LATCHED : p->ls.state == LATCH_DEAD ? UC_LATCH_DEAD : UC_LATCH_NONE);
     e.strikes = (uint8_t)(p->ls.strikes > 255 ? 255 : p->ls.strikes);
     e.near = (uint8_t)p->near;
+    e.open = (uint8_t)p->open;
     e.matches = p->prior_matches + p->ls.matches;
     e.mismatches = p->prior_mismatches + p->ls.mismatches;
     e.evidence_milli = (uint32_t)(p->ls.evidence * 1000.0);
@@ -613,6 +615,17 @@ static void pol_start(struct pair *p, const struct ucache_entry *ce)
     if (!p->b || p->pol)
         return;
     p->near = p->dr.verdict == DERIVE_NEAR || p->outcome == PROBE_OUT_PASS_TOL || (ce && ce->near);
+    if (ce && ce->open && ce->strikes && ce->latch == UC_LATCH_NONE && !P.latch_now) {
+        /* the last session that used it ended without RomClosed / PluginShutdown while it was suspended: it may have caused that (a crash); unlatched for good */
+        struct ucache_entry d = *ce;
+        d.latch = UC_LATCH_DEAD;
+        d.open = 0;
+        if (!p->force || P.force_cache)
+            (void)ucache_store(&d);
+        snprintf(p->note, sizeof(p->note), "unlatched for good: suspended when an earlier session ended uncleanly");
+        armlet_log(M64MSG_WARNING, "latch: ucode %016" PRIx64 " data %016" PRIx64 ": suspended when the last session ended without closing the ROM; unlatched for good", p->tid, p->did);
+        return;
+    }
     if (ce && ce->latch == UC_LATCH_DEAD) {
         snprintf(p->note, sizeof(p->note), "cached: unlatched for good after %u different tasks", ce->mismatches);
         armlet_log(M64MSG_INFO, "latch: ucode %016" PRIx64 " data %016" PRIx64 ": unlatched for good in an earlier session (%u strikes); not tried again", p->tid, p->did, ce->strikes);
@@ -636,6 +649,9 @@ static void pol_start(struct pair *p, const struct ucache_entry *ce)
         for (k = 0; k < LATCH_KWORDS && k < 5; k++)
             p->ls.kinds[k] = ce->kinds[k];
     }
+    p->open = 1;                                    /* the session marker: cleared by the store at RomClosed */
+    if (!P.latch_now)
+        store_pol(p);
     if (armlet_hle_register_dynamic(&p->b->uc)) {
         latch_free(&p->ls);
         p->b->uc.gate = NULL;
@@ -1122,7 +1138,7 @@ static const struct hle_ucode *host_build(const struct armlet_ucode_id *u)
 {
     const struct hle_ucode *h = armlet_hle_find(u->id);
     if (h && h->gate && !atomic_load_explicit(&h->gate->latched, memory_order_acquire))
-        h = armlet_hle_find_registered(u->id);
+        h = NULL;                                   /* (a host that is itself only a candidate: its loaded texts are not validated in its tasks) */
     return h && h->fam == &f3dex2_fam ? h : NULL;
 }
 

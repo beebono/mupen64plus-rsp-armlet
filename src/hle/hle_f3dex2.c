@@ -272,6 +272,16 @@ static int cmd_vtx(struct f3 *f)
         for (i = 0; i < n + (n & 1); i++)
             f2_ld_vin(t, s4 + 16 * i, &in[i]);
     fx2_vtx_xform(&c, in, n, out);
+    if (t->gate || t->cmds) {                           /* (the latch policy's data situations) */
+        uint32_t fo = 0;
+        int wn = 0;
+        for (i = 0; i < n; i++) {
+            fo |= out[i].flags;
+            wn |= hle_wneg(out[i].cx[3], out[i].cf[3]);
+        }
+        if (hle_vtx_kinds(t, fo, wn))
+            return HLE_DECLINE;
+    }
     if (f->trace)
         for (i = 0; i < n; i++)
             fprintf(stderr, "    v%u in=(%d %d %d) clip=(%d.%04x %d.%04x %d.%04x %d.%04x) flags=%08x\n", first_slot(first, i), in[i].x, in[i].y, in[i].z, out[i].cx[0], out[i].cf[0], out[i].cx[1], out[i].cf[1], out[i].cx[2], out[i].cf[2], out[i].cx[3], out[i].cf[3], out[i].flags);
@@ -414,7 +424,7 @@ static int tri_setup(struct f3 *f, const struct fx2_vtx *const v[3], const struc
         return HLE_OK;
     }
     if (r != FX2_TRI_DRAW)
-        return HLE_OK;
+        return hle_cmd(t, LATCH_K_TRI_CULL) ? HLE_DECLINE : HLE_OK;
     memcpy(&t->dmem[f->s7 >> 2], cmd, len);
     f->s7 += len;
     return after_emit(f);
@@ -431,6 +441,8 @@ static int do_clip(struct f3 *f, const struct fx2_vtx *const v[3])
     int dummy = 0, rc;
 
     if (hle_cmd(t, LATCH_K_CLIP))
+        return HLE_DECLINE;
+    if ((hle_wneg(v[0]->cx[3], v[0]->cf[3]) || hle_wneg(v[1]->cx[3], v[1]->cf[3]) || hle_wneg(v[2]->cx[3], v[2]->cf[3])) && hle_cmd(t, LATCH_K_NEARCLIP))
         return HLE_DECLINE;
     if (f->ov == OV_UNKNOWN)
         return hle_decline(t, "unknown overlay");
@@ -472,7 +484,7 @@ static int do_tri(struct f3 *f, uint32_t word)
     for (k = 0; k < 3; k++)
         fl[k] = hle_dm32(t, sv[k] + 0x24);
     if (fl[0] & fl[1] & fl[2] & f->b->reject_mask)
-        return HLE_OK;
+        return hle_cmd(t, LATCH_K_TRI_REJECT) ? HLE_DECLINE : HLE_OK;
     for (k = 0; k < 3; k++)
         f2_ld_vtx_lite(t, sv[k], &v[k]);
     if (f->trace) {
@@ -823,6 +835,8 @@ static int run_loop(struct f3 *f, int *handover)
             unsigned vs = hle_dm16(t, F2_VTAB + (w0 & 0xfff));
             uint32_t z = b->zex && MUT(259, !b->gen204, 1) && MUT(246, 1, 0) && MUT(317, !b->bz_z, 1) ? (uint32_t)(int32_t)(int16_t)hle_dm16(t, vs + 6) : hle_dm32(t, vs + 0x1c);   /* F3DZEX compares the integer part of the clip w (`lh 6(vertex)`), the others (F3DEX2 2.04 / 2.04H, which have the `zex` triangle constants, too) the screen z */
             if ((int32_t)(z - w1) < 0) {                /* a branch (no stack) to the address G_RDPHALF_1 left at 0xd8 */
+                if (hle_cmd(t, LATCH_K_BRZ))
+                    return HLE_DECLINE;
                 f->k0 = seg_addr(t, hle_dm32(t, 0xd8));
                 if (MUT(240, f->k0 & 7, 0))
                     f->bad = "unaligned display list address";
