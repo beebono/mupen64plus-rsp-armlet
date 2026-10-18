@@ -48,7 +48,7 @@ subtracts and 32-bit subtracts with only the integer half saturating; 32-bit min
   until A parses across lists). The wrap decision is made per chunk exactly as the microcode does. F3DLX's lagging DPC_END (publishes before and after commands, once per triangle) is reproduced as the value the
   microcode would have written last;
 * G_LOAD_UCODE: a re-initialisation, or the text of another F3DEX 1.x build, is followed (section 3, "G_LOAD_UCODE");
-* declines (the JIT then runs the whole task): G_LOAD_UCODE of a text that is no F3DEX 1.x build (SpaceStation Silicon Valley and Pokemon Puzzle League load S2DEX 1.x), undefined opcodes, light state outside what the functions model, F3DLX with `G_CLIPPING` off and
+* declines (the JIT then runs the whole task): G_LOAD_UCODE of a text that is no F3DEX 1.x build (SpaceStation Silicon Valley and Pokemon Puzzle League load S2DEX 1.x), undefined opcodes, a `G_MODIFYVTX` with a slot offset past the 32 slots or odd or a field past the 0x28-byte record (mutation 471), light state outside what the functions model, F3DLX with `G_CLIPPING` off and
   G_CULLDL (the flags are junk there), a vertex or display-list address outside the supported range, more than 30000 commands.
 
 Builds (ids as gfx_ucode.c logs them) and the games they were run with:
