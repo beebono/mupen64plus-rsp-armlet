@@ -84,6 +84,7 @@ static struct {
     /* the validator thread's (read after it stopped) */
     uint64_t replayed, matched, mismatched, declined, inconclusive, irrelevant;
     uint64_t replay_cpu_ns, thread_cpu_ns, thread_c0;
+    const char *why_seen[8];                    /* the reasons of declined replays logged so far (static strings, once each) */
     _Atomic uint64_t slot_bytes;
     struct hle_dx dx;
 } V;
@@ -441,7 +442,18 @@ static void replay(struct vslot *s)
     switch (r.outcome) {
     case VAL_MATCH: V.matched++; break;
     case VAL_MISMATCH: V.mismatched++; break;
-    case VAL_DECLINED: V.declined++; break;
+    case VAL_DECLINED: {
+        const char *w = r.why ? r.why : "(no reason given)";
+        unsigned k;
+        V.declined++;
+        for (k = 0; k < 8 && V.why_seen[k] && V.why_seen[k] != w; k++)
+            ;
+        if (k < 8 && !V.why_seen[k]) {
+            V.why_seen[k] = w;
+            armlet_log(M64MSG_INFO, "validator: a replayed task was declined: %s", V.why_seen[k]);
+        }
+        break;
+    }
     case VAL_INCONCLUSIVE: V.inconclusive++; break;
     default: V.irrelevant++; break;
     }

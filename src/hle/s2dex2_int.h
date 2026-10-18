@@ -26,7 +26,19 @@ static inline void w32(uint32_t *dm, unsigned a, uint32_t v) { w16(dm, a, v >> 1
 
 static inline int32_t sat16(int32_t v) { return v > 32767 ? 32767 : v < -32768 ? -32768 : v; }
 
-/* The microcode's vector constants v31 .. v28 (DMEM 0x180 .. 0x1bf, the data segment of every S2DEX 2.08 task). The closed forms have them folded in and decline any other. */
+/* The DMEM layout the kernels work on. S2DEX 2.x is the default; a translation unit that defines S2_L1 before it includes a kernel file (s2dex1_rect.c, s2dex1_bg.c) gets S2DEX 1.06 / 1.07's: the same arithmetic
+ * (the code of the rectangle and of G_BG_1CYC is word for word the same but for these addresses), the object block 0x170 higher, the rest elsewhere (docs/ucode-s2dex1.md, section 2). */
+#ifdef S2_L1
+#define S2FN(n) s2dex1_##n
+enum { L_CONSTS = 0x170, L_D = 0x170, L_SCRATCH = 0x1b0, L_SCISSOR = 0xc0, L_TILE_STATE = 0xd2, L_TILE_TOGGLE = 0xd3, L_RM_WORDS = 0x1e8, L_RM_PTR_A = 0x252, L_RM_PTR_B = 0x254, L_RM_BYTE = 0x250,
+       L_TILE_W1 = 0x24c, L_TILE_BY_SIZ = 0x280, L_TILE_BY_FMT = 0x290 };
+#else
+#define S2FN(n) s2dex2_##n
+enum { L_CONSTS = 0x180, L_D = 0, L_SCRATCH = 0x1c0, L_SCISSOR = 0x204, L_TILE_STATE = 0x2ae, L_TILE_TOGGLE = 0x2af, L_RM_WORDS = 0x1f8, L_RM_PTR_A = 0x244, L_RM_PTR_B = 0x246, L_RM_BYTE = 0x268,
+       L_TILE_W1 = 0x264, L_TILE_BY_SIZ = 0x294, L_TILE_BY_FMT = 0x2a4 };
+#endif
+
+/* The microcode's vector constants v31 .. v28 (DMEM 0x180 .. 0x1bf in S2DEX 2.x, 0x170 .. 0x1af in 1.x: the data segment of every task). The closed forms have them folded in and decline any other. */
 static const uint32_t k_consts[16] = {
     0x08000040, 0x0002ffff, 0x40000003, 0x0008fff8,         /* v31 */
     0x01008000, 0xfe000000, 0x10000400, 0x20000200,         /* v30 */

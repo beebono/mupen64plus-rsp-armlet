@@ -786,6 +786,7 @@ static void pol_start(struct pair *p, const struct ucache_entry *ce)
         p->ls.state = LATCH_LATCHED;                /* (latched in an earlier session: native at once, under the gate and the sampling, which starts again at its first rate) */
         p->ls.evidence = ce->evidence_milli / 1000.0;
         p->ls.distinct = ce->distinct;
+        p->ls.post = ce->matches < P.lc.resume ? ce->matches : P.lc.resume;     /* (the matches of the earlier sessions count towards the sampling decay, up to `resume`) */
         for (k = 0; k < LATCH_KWORDS && k < 5; k++)
             p->ls.kinds[k] = ce->kinds[k];
     }

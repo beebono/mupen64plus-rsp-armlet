@@ -187,3 +187,11 @@ ones). The builds carry `HLE_F_XBUS_OK` (the `U(...)` macro) so that `armlet_hle
 has the flag too, and the probe's canned tasks run with `DPC_STATUS.XBUS` set for them: a derived text that does not clear it ends the canned task differently (or `enter` declines) and fails the probe.
 
 Mutation 490 (`--hmut=490`): `enter` leaves XBUS set after the start; verify reports the `DPC_STATUS` difference on Glover (testing.md, "XBUS-start tasks").
+
+## 8. S2DEX 1.06 / 1.07 as a mode of the front-end (2026-10-18; ucode-s2dex1.md)
+
+S2DEX 1.x is F3DEX 1.x's skeleton (a single-level jump table, 320-byte windows, a flush by threshold) with 2D commands, so a build with `f3dex1_build.s2` set (`struct s2d1_build`: the jump table, the handler pcs by command) runs the same task start, the same `G_LOAD_UCODE` (both directions: Yoshi's Story loads F3DEX.NoN 1.22 and back in every task, Pokemon Puzzle League's F3DEX 1.23 tasks load S2DEX 1.07) and the same staged RDP
+output, with another loop (`s2_cmd`, `hle_s2dex1.h`, included by `f3dex.c`). Differences to the F3DEX 1.x loop that matter: the commands are assembled in DMEM at `s7` and handed to the FIFO as one chunk when `s7 > 0x8a8` (the wrap of the FIFO is decided per chunk: `out_reserve`), the window is read with the DMA (S2DEX's DMEM state is its own: the DMA registers
+must end where the microcode's do), the end of the task is the microcode's own code on the interpreter, G_SETOTHERMODE_L / _H look at the next command of the window (the microcode peeks), and a store into the flags words can change the jump table's first cell (`s2_cells_changed`). The dead ranges of an S2DEX 1.x build are its own plus F3DEX 1.x's (the lean F3DEX path leaves its window and output buffer stale). `tail_differs`: the IMEM
+tail a `G_LOAD_UCODE` leaves must be the same in both texts, but for the two words of the DMA wait.
+

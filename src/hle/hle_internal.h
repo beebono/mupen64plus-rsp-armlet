@@ -151,6 +151,7 @@ struct hle_dx {
     struct hle_dx_wr { uint32_t a, n; } *wr;    /* the RDRAM rows the run wrote (DMA, hle_rdram_write) */
     size_t n_wr, cap_wr;
     const struct hle_ucode *cand;               /* the build under validation (its commands are counted in hist) */
+    const struct hle_ucode *bound;              /* the build the loop ran last (hle_bind): after a G_LOAD_UCODE switch the build the task ended in, whose dead DMEM the end-state compare accepts too */
     uint32_t hist[LATCH_NKINDS];
 };
 void *hle_dx_cpu_new(void);                     /* hle_rsp.cpp */
@@ -175,6 +176,7 @@ unsigned armlet_hle_dx_compare(const struct hle_dx *dx, const struct hle_ucode *
 /* the front-end lock: the validator takes it around a replay; the emulation thread only tries it (the JIT runs the task when it is taken) */
 void armlet_hle_fe_enable(int on);              /* off: no locking at all (no validator) */
 int armlet_hle_fe_trylock(void);                /* 0: taken (or locking is off) */
+int armlet_hle_fe_wait(unsigned ns);            /* the emulation thread's wait for a replay in progress, at most ns: 0 taken, -1 still busy */
 void armlet_hle_fe_lock(void);
 void armlet_hle_fe_unlock(void);
 uint64_t armlet_hle_fe_busy(void);

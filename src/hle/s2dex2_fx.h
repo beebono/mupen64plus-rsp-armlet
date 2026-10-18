@@ -38,6 +38,16 @@ int s2dex2_obj_bg1cyc(uint32_t *dmem, uint32_t *s7, uint32_t *s6, const struct s
  * or the object is outside what the closed form covers (s2dex2_bg.c). */
 int s2dex2_obj_bgcopy(uint32_t *dmem, uint32_t *s7, uint32_t *s6, const struct s2_ctx *c);
 
+/* The S2DEX 1.06 / 1.07 forms (s2dex1_rect.c, s2dex1_bg.c, s2dex1_bgcopy.c; docs/ucode-s2dex1.md): the same arithmetic on the 1.x DMEM layout. The constants are those of 2.x at DMEM 0x170. */
+int s2dex1_obj_rect(uint32_t *dmem, unsigned *s7);
+int s2dex1_obj_rect_r(uint32_t *dmem, unsigned *s7);                  /* the rotated form: G_OBJ_RECTANGLE_R, LDTX_RECT_R (position and scale through the sub-matrix at 0x1e0) */
+int s2dex1_obj_bg1cyc(uint32_t *dmem, uint32_t *s7, uint32_t *s6, const struct s2_ctx *c);
+/* G_OBJ_SPRITE (s2dex1_sprite.c): the 24-byte uObjSprite is at DMEM 0x530, the object matrix at 0x1d0 / 0x1e0. SET_TILE, SET_TILE_SIZE, a SYNC_PIPE and two textured triangles (96 bytes each) are written at *s7 and *s7 is advanced
+ * past them: S2_DONE; S2_CLIPPED: no corner of the sprite is inside the scissor (nothing drawn; the scratch word at 0x1b0 is written as the microcode writes it); S2_UNSUPPORTED (nothing written). */
+int s2dex1_obj_sprite(uint32_t *dmem, unsigned *s7);
+int s2dex1_obj_bgcopy106(uint32_t *dmem, uint32_t *s7, uint32_t *s6, const struct s2_ctx *c);   /* S2DEX 1.06's own routine (s2dex1_bgcopy.c) */
+int s2dex1_obj_bgcopy(uint32_t *dmem, uint32_t *s7, uint32_t *s6, const struct s2_ctx *c);      /* 1.07's: the routine of 2.x on the 1.x layout (s2dex1_bg.c) */
+
 #ifdef __cplusplus
 }
 #endif

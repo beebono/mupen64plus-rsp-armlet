@@ -563,3 +563,16 @@ Games per row:
 - cd32d8e5 L3DEX fifo 2.08: WinBack - Covert Operations
 - 2f411927 F3D 2.0D: Blast Corps
 - 1d12f4b3 F3D 2.0D: Blast Corps
+
+## S2DEX 1.x registered: `190d` and `5b32` (2026-10-18; docs/ucode-s2dex1.md)
+
+57 s desktop runs as above, `devel` 9859bd7 plus the working tree. Before = this file's 2026-10-18 recount (no build registered, every task on the JIT); after = tasks native / tasks, JIT share of the graphics RSP time.
+
+| game | ucodes | before (native) | after (native) | JIT share after |
+|---|---|---|---|---|
+| Bakuretsu Muteki Bangaioh | S2DEX 1.07 `190d` | 0% | 2943 / 2944 (100%) | 0% |
+| Magical Tetris Challenge | `190d` | 0% | 2687 / 2688 (100%) | 0% |
+| Pokemon Puzzle League | `190d` + F3DEX 1.23 `0472` | 0% on `190d` (86% of the tasks) | 1651 + 268 / 1920 (100%) | 0% |
+| Yoshi's Story | S2DEX 1.06 + F3DEX.NoN `5b32` | 0% | 2815 / 2816 (100%) | 0% |
+
+Dr. Mario 64 (`d2d1`, F3DEX fifo 2.08 loading S2DEX 1.07) was already native and stays so; SpaceStation (F3DEX 1.23, 828 declines "G_LOAD_UCODE of another ucode") is unchanged and does not load an S2DEX 1.x text. The two builds leave the hot list; the loose tier's refusal of `190d` is explained in ucode-s2dex1.md section 8.

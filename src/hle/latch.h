@@ -39,11 +39,12 @@ struct latch_cfg {
     double loose_mul;           /* a loose build (GfxProbe = loose: a NONE derivation admitted by the word bound) needs loose_mul times both (default 2.5) */
     double default_mul;         /* a default-record build (loose tier, a NONE derivation outside the word bound: the family's record as derived) needs default_mul times both (default 3) */
     double repeat_min;          /* the least evidence a repeat of a known fingerprint adds (default 0.05: 1 / (1 + n) alone decays to nothing, and a build whose tasks all look alike never moves) */
+    unsigned resume;            /* a build latched in an earlier session starts its sampling as if it had this many matches since latching (capped by what the cache holds; default 128 = two halvings of the rate; 0: from the first rate again) */
     double override_mul;        /* evidence of override_mul times `evidence` (the base bar, whatever the tier) latches with 2 distinct fingerprints or more, whatever the distinct bar (default 4; 0:
                                    never): a build whose tasks are inherently uniform (a loaded text, a HUD) is validated hundreds of times without variety */
 };
 void latch_cfg_default(struct latch_cfg *c);
-/* "key=value,key=value": evidence, distinct, near, strikes, sample, sample_last, decay, queue, fingerprints, loose, default, repeat, override. Returns 0, or -1 with the first bad key in *bad (the rest still parsed). */
+/* "key=value,key=value": evidence, distinct, near, strikes, sample, sample_last, decay, queue, fingerprints, loose, default, repeat, override, resume. Returns 0, or -1 with the first bad key in *bad (the rest still parsed). */
 int latch_cfg_parse(struct latch_cfg *c, const char *s, const char **bad);
 
 enum { LATCH_CAND = 0, LATCH_LATCHED = 1, LATCH_DEAD = 2 };

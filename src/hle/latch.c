@@ -31,11 +31,12 @@ void latch_cfg_default(struct latch_cfg *c)
     c->default_mul = 3.0;
     c->repeat_min = 0.05;
     c->override_mul = 4.0;
+    c->resume = 128;
 }
 
 int latch_cfg_parse(struct latch_cfg *c, const char *s, const char **bad)
 {
-    static const char *const keys[] = { "evidence", "distinct", "near", "strikes", "sample", "sample_last", "decay", "queue", "fingerprints", "loose", "default", "repeat", "override" };
+    static const char *const keys[] = { "evidence", "distinct", "near", "strikes", "sample", "sample_last", "decay", "queue", "fingerprints", "loose", "default", "repeat", "override", "resume" };
     int rc = 0;
     while (s && *s) {
         size_t n = strcspn(s, "=,"), k;
@@ -71,6 +72,7 @@ int latch_cfg_parse(struct latch_cfg *c, const char *s, const char **bad)
             case 10: c->default_mul = v < 1 ? 1 : v; break;
             case 11: c->repeat_min = v > 1 ? 1 : v; break;
             case 12: c->override_mul = v > 0 && v < 1 ? 1 : v; break;
+            case 13: c->resume = (unsigned)v; break;
             }
         }
         s = end + strcspn(end, ",");

@@ -45,6 +45,8 @@ int main(void)
     CHECK(c.default_mul == 3 && c.repeat_min == 0.05 && c.override_mul == 4 && latch_cfg_parse(&c, "loose=3,default=5,repeat=0.1,override=6", &bad) == 0 && c.loose_mul == 3 && c.default_mul == 5 &&
           c.repeat_min == 0.1 && c.override_mul == 6, "the loose, default and override multipliers and the repeat floor are keys");
     latch_cfg_default(&c);
+    CHECK(c.resume == 128 && latch_cfg_parse(&c, "resume=0", &bad) == 0 && c.resume == 0 && latch_cfg_parse(&c, "resume=300", &bad) == 0 && c.resume == 300, "resume is a key (default 128)");
+    latch_cfg_default(&c);
     CHECK(latch_cfg_parse(&c, "evidence=30,distinct=10,near=2,strikes=3,sample=4,sample_last=128,decay=32,queue=6,fingerprints=512", &bad) == 0 && c.evidence == 30 && c.distinct == 10 &&
           c.near_mul == 2 && c.strikes == 3 && c.sample_first == 4 && c.sample_last == 128 && c.sample_decay == 32 && c.queue == 6 && c.fp_max == 512, "every key is read");
     CHECK(latch_cfg_parse(&c, "evidence=12,bogus=3,distinct=4", &bad) != 0 && bad && !strncmp(bad, "bogus", 5) && c.evidence == 12 && c.distinct == 4, "an unknown key is reported, the others read");

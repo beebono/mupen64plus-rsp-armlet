@@ -27,21 +27,22 @@
 static inline int32_t max0(int32_t v) { return v < 0 ? 0 : v; }
 
 enum {
-    OBJ = 0x3b0,                            /* the uObjBg: imageX imageW frameX frameW imageY imageH frameY frameH */
-    IMAGE_PTR = 0x3c0,                      /* segmented address, replaced by the resolved one */
-    IMG_FMT = 0x3c6, IMG_SIZ = 0x3c7,       /* format and texel size of the image, as the RDP numbers them (bytes) */
-    FLIP = 0x3cb,                           /* bit 0: mirrored horizontally */
-    SCALE = 0x3cc,                          /* scaleW, scaleH */
-    YORIG = 0x3d0,                          /* imageYorig, s20.5 */
+    OBJ = 0x3b0 + L_D,                      /* the uObjBg: imageX imageW frameX frameW imageY imageH frameY frameH */
+    IMAGE_PTR = 0x3c0 + L_D,                /* segmented address, replaced by the resolved one */
+    IMG_FMT = 0x3c6 + L_D, IMG_SIZ = 0x3c7 + L_D,   /* format and texel size of the image, as the RDP numbers them (bytes) */
+    IMG_PAL = 0x3c9 + L_D,
+    FLIP = 0x3cb + L_D,                     /* bit 0: mirrored horizontally */
+    SCALE = 0x3cc + L_D,                    /* scaleW, scaleH */
+    YORIG = 0x3d0 + L_D,                    /* imageYorig, s20.5 */
     /* the results area */
-    R_FRAME_X0 = 0x3d8, R_FRAME_X1 = 0x3da, R_FRAME_Y0 = 0x3dc, R_FRAME_H = 0x3de,
-    R_RENDER_BIT = 0x3e0, R_ROWFIT = 0x3e1, R_LINE = 0x3e2, R_ROWSPAN = 0x3e4, R_GSTEP = 0x3e8, R_MSTEP = 0x3ec, R_YORIG = 0x3f0, R_ROFF_X = 0x3f4, R_ROFF_Y = 0x3f6,
-    R_CMD_IMAGE = 0x3f8, R_CMD_TILE = 0x3fc, R_Q = 0x400, R_QR = 0x402, R_STEP0 = 0x404, R_STEP1 = 0x408, R_IH4 = 0x40c, R_YSTART = 0x40e,
-    SCRATCH = 0x1c0,                        /* the 32-bit scratch word the microcode moves vector lanes through */
-    SCISSOR = 0x204,                        /* ulx lrx uly lry (halfwords: 0x204, 0x206, 0x208, 0x20a) */
-    TILE_BY_SIZ = 0x294, TILE_BY_FMT = 0x2a4, /* per texel size (4): (mask, scale) halfword pairs; per format (5): a halfword */
-    RENDERMODE = 0x268,
-    TILE_W1 = 0x264,
+    R_FRAME_X0 = 0x3d8 + L_D, R_FRAME_X1 = 0x3da + L_D, R_FRAME_Y0 = 0x3dc + L_D, R_FRAME_H = 0x3de + L_D,
+    R_RENDER_BIT = 0x3e0 + L_D, R_ROWFIT = 0x3e1 + L_D, R_LINE = 0x3e2 + L_D, R_ROWSPAN = 0x3e4 + L_D, R_GSTEP = 0x3e8 + L_D, R_MSTEP = 0x3ec + L_D, R_YORIG = 0x3f0 + L_D, R_ROFF_X = 0x3f4 + L_D, R_ROFF_Y = 0x3f6 + L_D,
+    R_CMD_IMAGE = 0x3f8 + L_D, R_CMD_TILE = 0x3fc + L_D, R_Q = 0x400 + L_D, R_QR = 0x402 + L_D, R_STEP0 = 0x404 + L_D, R_STEP1 = 0x408 + L_D, R_IH4 = 0x40c + L_D, R_YSTART = 0x40e + L_D,
+    SCRATCH = L_SCRATCH,                    /* the 32-bit scratch word the microcode moves vector lanes through */
+    SCISSOR = L_SCISSOR,                    /* ulx lrx uly lry (halfwords: 0x204, 0x206, 0x208, 0x20a) */
+    TILE_BY_SIZ = L_TILE_BY_SIZ, TILE_BY_FMT = L_TILE_BY_FMT, /* per texel size (4): (mask, scale) halfword pairs; per format (5): a halfword */
+    RENDERMODE = L_RM_BYTE,
+    TILE_W1 = L_TILE_W1,
 };
 
 /* RDP commands written below (the command id is the low six bits of the first byte) */
@@ -60,7 +61,7 @@ static inline uint32_t scratch_pair(uint32_t *dm, hle_acc acc)
     return v;
 }
 
-int s2dex2_obj_bg1cyc(uint32_t *dm, uint32_t *s7p, uint32_t *s6p, const struct s2_ctx *c)
+int S2FN(obj_bg1cyc)(uint32_t *dm, uint32_t *s7p, uint32_t *s6p, const struct s2_ctx *c)
 {
     unsigned L[8], k, a;                    /* the uObjBg halfwords: [4 * axis + {position, size, frame position, frame size}] */
     uint32_t scale[2];                      /* unsigned scales */
@@ -74,7 +75,7 @@ int s2dex2_obj_bg1cyc(uint32_t *dm, uint32_t *s7p, uint32_t *s6p, const struct s
     const int16_t clip_lo[2] = { (int16_t)ulx, (int16_t)uly }, clip_hi[2] = { (int16_t)lrx, (int16_t)lry };
     uint32_t s7 = *s7p, s6 = *s6p;
 
-    if (memcmp(dm + 0x180 / 4, k_consts, sizeof k_consts))
+    if (memcmp(dm + L_CONSTS / 4, k_consts, sizeof k_consts))
         return S2_UNSUPPORTED;
 
     for (k = 0; k < 8; k++)
@@ -254,7 +255,7 @@ int s2dex2_obj_bg1cyc(uint32_t *dm, uint32_t *s7p, uint32_t *s6p, const struct s
                 w32(dm, s7 + 4, SET_TILE_W1);
                 w32(dm, s7 + 8, a3);
                 w8(dm, s7 + 9, (fmt << 5) | (siz << 3));
-                t3 = m8(dm, 0x3c9);
+                t3 = m8(dm, IMG_PAL);
                 w32(dm, s7 + 12, (t3 << 20) | m32(dm, TILE_W1));
                 w32(dm, s7 + 16, SET_TILE_SIZE_W0);
                 w32(dm, s7 + 20, 0);
@@ -404,11 +405,12 @@ int s2dex2_obj_bg1cyc(uint32_t *dm, uint32_t *s7p, uint32_t *s6p, const struct s
  *   vis   = W - cut - ex             the visible size; nothing is drawn when either is <= 0 (v7)
  * Checked against the microcode (tools/hle/test_s2dex2.c with S2BGC_ORACLE, docs/testing.md). */
 enum {
-    B_B4 = 0x3c4, B_B5 = 0x3c5, B_PAL = 0x3c9, B_V = 0x3d4, B_TAB = 0x274,
+    B_B4 = 0x3c4 + L_D, B_B5 = 0x3c5 + L_D, B_PAL = 0x3c9 + L_D, B_V = 0x3d4 + L_D, B_TAB = 0x274 + (L_TILE_BY_SIZ - 0x294),
+    BC_H = 0x3ba + L_D, BC_O0 = 0x3d0 + L_D, BC_O2 = 0x3d2 + L_D, BC_V2 = 0x3d6 + L_D, BC_S5 = 0x3ce + L_D,
 };
 #define BG_DOMAIN(v) ((v) < -0x2000 || (v) >= 0x2000)
 
-int s2dex2_obj_bgcopy(uint32_t *dm, uint32_t *s7p, uint32_t *s6p, const struct s2_ctx *c)
+int S2FN(obj_bgcopy)(uint32_t *dm, uint32_t *s7p, uint32_t *s6p, const struct s2_ctx *c)
 {
     int32_t L[8], lo[2], hi[2], cut[2], ex[2], vis[2], F[2], W[2], tpos[2], yp, zx;
     uint32_t s7 = *s7p, s6 = *s6p;
@@ -417,7 +419,7 @@ int s2dex2_obj_bgcopy(uint32_t *dm, uint32_t *s7p, uint32_t *s6p, const struct s
     uint32_t v10_0, v8_0;
     int64_t acc1;
 
-    if (memcmp(dm + 0x180 / 4, k_consts, sizeof k_consts))
+    if (memcmp(dm + L_CONSTS / 4, k_consts, sizeof k_consts))
         return S2_UNSUPPORTED;
     for (k = 0; k < 8; k++) {
         L[k] = (int16_t)m16(dm, OBJ + 2 * k);
@@ -465,17 +467,17 @@ int s2dex2_obj_bgcopy(uint32_t *dm, uint32_t *s7p, uint32_t *s6p, const struct s
     w32(dm, s7 + 8, 0x32000000u);
     w32(dm, s7 + 12, 0);
     w32(dm, s7 + 16, (((m8(dm, IMG_FMT) << 2 | m8(dm, IMG_SIZ)) << MUT(269, 19, 18) | (Q << 9)) & 0xffffff) | 0x35000000u);
-    w32(dm, s7 + 20, m32(dm, 0x264) | m8(dm, B_PAL) << 20);
+    w32(dm, s7 + 20, m32(dm, TILE_W1) | m8(dm, B_PAL) << 20);
     s7 += 24;
 
     /* ---- the image address and the visible rectangle ---- */
     v8_0 = T[0] & Zu;
     v10_0 = (v8_0 + (unsigned)vis[0]) & 0xffff;
     acc1 = (int64_t)((T[1] * Zu) >> MUT(270, 16, 15)) + (int64_t)V * yp;
-    w16(dm, 0x1c2, hle_uclamp(acc1));
-    w16(dm, 0x1c0, (uint16_t)hle_sclamp(acc1));
-    t8 = c->seg(c->ctx, m32(dm, 0x3c0));
-    v0 = ((m32(dm, 0x1c0) >> 1) << MUT(271, 3, 2)) + t8;
+    w16(dm, SCRATCH + 2, hle_uclamp(acc1));
+    w16(dm, SCRATCH, (uint16_t)hle_sclamp(acc1));
+    t8 = c->seg(c->ctx, m32(dm, IMAGE_PTR));
+    v0 = ((m32(dm, SCRATCH) >> 1) << MUT(271, 3, 2)) + t8;
     v1 = t8;
     a3 = MUT(272, (uint32_t)(int32_t)(int16_t)((T[1] * Zu) >> 16), (uint16_t)((T[1] * Zu) >> 16));
     {
@@ -485,7 +487,7 @@ int s2dex2_obj_bgcopy(uint32_t *dm, uint32_t *s7p, uint32_t *s6p, const struct s
         t2 = (uint32_t)(int32_t)(int16_t)(v3x + vis[0] - MUT(273, 1, 0));
         at = (uint32_t)vis[1];
     }
-    a1 = m16(dm, 0x3ba) & 0xfffc;
+    a1 = m16(dm, BC_H) & 0xfffc;
     a2 = (uint32_t)yp << 2;
     a0 = a1 - a2;
     t0 <<= MUT(297, 12, 11);
@@ -500,8 +502,8 @@ int s2dex2_obj_bgcopy(uint32_t *dm, uint32_t *s7p, uint32_t *s6p, const struct s
     t2 |= t4;
     t7 = (uint32_t)(int32_t)(int8_t)m8(dm, B_B5);
     t5 = m16(dm, B_V);
-    a2 = m16(dm, 0x3d2);
-    a1 = m16(dm, 0x3d0);
+    a2 = m16(dm, BC_O2);
+    a1 = m16(dm, BC_O0);
     if ((int32_t)t7 < 0)
         a1 = (((uint32_t)(int32_t)(int16_t)((T[2] * v10_0) >> 16)) << 2) - MUT(277, 1, 0);
     t6 = ((t5 << 1) - MUT(276, 1, 0)) | 0x3d100000u;
@@ -517,18 +519,18 @@ int s2dex2_obj_bgcopy(uint32_t *dm, uint32_t *s7p, uint32_t *s6p, const struct s
         }
         for (;;) {
             if (do_loop) {
-                sp = m16(dm, 0x3d6);
-                s5 = m16(dm, 0x3ce);
+                sp = m16(dm, BC_V2);
+                s5 = m16(dm, BC_S5);
                 if (MUT(296, (int32_t)t7 < 0, 0))
-                    sp = (sp << 16) | m16(dm, 0x3d0);
+                    sp = (sp << 16) | m16(dm, BC_O0);
                 s0 = a1 | a2;
                 do {
                     a0 -= s5;
                     if ((int32_t)a0 < 0) {
                         int64_t P = (int64_t)V * (int16_t)a0 * MUT(280, 1, -1);
-                        w16(dm, 0x1c2, (uint16_t)P);
-                        w16(dm, 0x1c0, (uint16_t)hle_sclamp(P));
-                        t3 = m32(dm, 0x1c0);
+                        w16(dm, SCRATCH + 2, (uint16_t)P);
+                        w16(dm, SCRATCH, (uint16_t)hle_sclamp(P));
+                        t3 = m32(dm, SCRATCH);
                         s5 += MUT(281, a0, 0);
                         sp += MUT(282, t3, 0);
                         if ((int32_t)t7 >= 0) {

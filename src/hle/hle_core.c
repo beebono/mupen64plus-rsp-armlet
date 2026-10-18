@@ -1075,6 +1075,8 @@ static int native_run(struct armlet_ctx *c, const struct hle_ucode *uc, int reco
 }
 
 static int hle_run_locked(struct armlet_ctx *c, const struct hle_ucode *uc);
+/* FIXME: Look into making the front-end state thread-local instead. */
+#define FE_WAIT_NS 1000000u
 
 int armlet_hle_run(struct armlet_ctx *c, const struct armlet_ucode_id *u)
 {
@@ -1082,14 +1084,19 @@ int armlet_hle_run(struct armlet_ctx *c, const struct armlet_ucode_id *u)
     int rc;
     if (!uc || !uc->fam || !uc->fam->run)
         return 0;
-    if (armlet_hle_fe_trylock()) {                  /* the validator is replaying a task through the front-ends: this one goes to the JIT (never waits) */
+    if (armlet_hle_fe_trylock()) {                  /* the validator is replaying a task through the front-ends (they share their statics): a task of a build that runs natively already waits for the replay to end, up to FE_WAIT_NS (a replay is a few hundred us; the JIT takes about a ms for a task), then goes to the JIT */
         init_once();
         if (*c->rsp.SP_PC_REG & 0xfff)                  /* (a call that continues a task: not counted as a task) */
             return 0;
-        K.tasks++;
-        K.declined++;
-        count_reason("the validator held the front-end lock");
-        return 0;
+        if (MUT(491, 0, 1))                             /* (test builds: runs without the lock; the TSan run must report the race) */
+            return hle_run_locked(c, uc);
+        if (MUT(490, armlet_hle_fe_wait(FE_WAIT_NS), -1)) {
+            K.tasks++;
+            K.declined++;
+            K.why = "the validator held the front-end lock";
+            count_reason(K.why);
+            return 0;
+        }
     }
     rc = hle_run_locked(c, uc);
     armlet_hle_fe_unlock();
@@ -1669,6 +1676,7 @@ int hle_vtx_kinds_slow(struct hle_task *t, uint32_t flags_or, int wneg)
 void hle_bind(struct hle_task *t, const struct hle_ucode *u)
 {
     if (t->dx) {
+        t->dx->bound = u;
         t->gate = NULL;
         t->cmds = u && u == t->dx->cand ? t->dx->hist : NULL;
     } else {
@@ -1701,6 +1709,17 @@ int armlet_hle_fe_trylock(void)
     return -1;
 }
 void armlet_hle_fe_lock(void) { pthread_mutex_lock(&g_fe); }
+int armlet_hle_fe_wait(unsigned ns)
+{
+    struct timespec ts;
+    if (!g_fe_on)
+        return 0;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    ts.tv_nsec += ns;
+    ts.tv_sec += ts.tv_nsec / 1000000000L;
+    ts.tv_nsec %= 1000000000L;
+    return pthread_mutex_timedlock(&g_fe, &ts) == 0 ? 0 : -1;
+}
 void armlet_hle_fe_unlock(void)
 {
     if (g_fe_on)
@@ -1898,7 +1917,7 @@ unsigned armlet_hle_dx_compare(const struct hle_dx *x, const struct hle_ucode *u
     }
     for (i = 0; i < 4096; i++) {
         unsigned addr = i ^ 3;
-        if (da[i] != db[i] && !dead_dmem(u, addr)) {
+        if (da[i] != db[i] && !dead_dmem(u, addr) && !(MUT(492, x->switched, 0) && x->bound && x->bound != u && dead_dmem(x->bound, addr))) {   /* (a task that switched builds ended in the loaded one's layout: what it declares dead is dead) */
             if (opts && opts->tol && opts->dmem_ok && opts->dmem_ok(u, x->dmem, addr, da[i], db[i], TOL_LEVELS)) {
                 tol = 1;
                 continue;

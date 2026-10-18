@@ -8,7 +8,7 @@ S2DEX is the 2D microcode: sprites (`uObjSprite`), backgrounds (`uObjBg`) and te
 | fifo 2.06 | Kirby 64 (loaded by `G_LOAD_UCODE` in the middle of its F3DEX2 2.04H tasks, id `c9655420d2f5f8cf`); Resident Evil 2 (task start, id `5f33af89e713878b`, 75 % of its graphics tasks) | `9748556461d85ab3` | one text: the handlers from 0x184 on are 8 bytes lower than Worms' ([ucode-f3dex2-dialects.md](ucode-f3dex2-dialects.md) sections 5.6 and 5.7) |
 | fifo 2.05 [Safe] | Ocarina of Time (loaded by `G_LOAD_UCODE` in the middle of its F3DZEX tasks) | `af535d1683a57fcb` | the 2.06 text with a pipe sync in front of every flush check, 792-byte output buffers, the handlers behind 0x650 0xc..0x10 higher ([section 7](#7-the-safe-build-s2dex-205-ocarina-of-time)) |
 
-The 1.06 / 1.07 builds of Yoshi's Story and Pokemon Puzzle League are not claimed ([section 6](#6-s2dex-1x)).
+The 1.06 / 1.07 builds of Yoshi's Story, Bangaioh, Magical Tetris Challenge and Pokemon Puzzle League are another front-end's ([section 6](#6-s2dex-1x)).
 The front-end is a dialect of the F3DEX2 one (`src/hle/hle_s2dex2.c`, built on the shared header `hle_f3dex2_int.h`): S2DEX 2.x is built on the F3DEX2 skeleton, so the display list refill, the DL stack, the segment table, the other-mode
 commands, the RDP command copies and the flush of the output buffer are the F3DEX2 ones at other pcs and DMEM addresses; the sprite and background commands are its own. Addresses are DMEM byte addresses.
 
@@ -125,15 +125,10 @@ Checked against the microcode itself (the rsp2c translation of Kirby 64's 0x224 
 
 See [testing.md](testing.md), "F3DEX2 dialects and S2DEX 2.x".
 
-## 6. S2DEX 1.x (not claimed)
+## 6. S2DEX 1.x
 
-The 1.06 (Yoshi's Story, `5b327e0de25d12b9`) and 1.07 (Pokemon Puzzle League, `190d04dfa000cd4b`) builds are of the F3DEX 1.x generation, and the F3DEX2 skeleton above does not carry over: a single-level jump table by signed opcode at
-0x3aa (`lb t9, 0x500(k1)`), 320-byte display list chunks into 0x3c0 (the input buffer ends at 0x500), one output buffer at 0x588 (threshold 0x8a8) flushed by a routine at 0xdb0 that waits for the DMA and writes DPC_END *after* it,
-DL stack depth at 0xd0 and stack at 0x128, and three code overlays at IMEM 0x740 (descriptors at DMEM 0x3d0, 0x3d8, 0x3e0: text + 0x1008 / 0x1228 / 0x13c0), loaded by stubs in the resident part (e.g. opcode 0x01, `G_BG_1CYC`, at 0x6e8
-loads the overlay of descriptor 0x3d0). Yoshi's Story executes nearly every command (`G_BG_1CYC` / `G_BG_COPY` / `G_OBJ_RECTANGLE` / `_SPRITE` with its matrix / `G_OBJ_LOADTXTR` / `G_SELECT_DL` / `G_OBJ_RENDERMODE` ...), Pokemon Puzzle League
-the same set at lower rates. The commands are the same ones as in 2.x but other code, so the 2.08 kernels do not apply. The interpreter reproduces all 58 captured Yoshi tasks (so the task-level framework would carry a
-front-end), but a front-end needs its own loop, flush and a kernel per command, and these tasks are small (a few microseconds on the JIT, see the Worms measurement), so it was not written. To start one: the dumps of `tools/ucode_dump_run.sh`,
-the overlay images from the DMA rows of captured task starts (`ARMLET_HLE_CAPTURE`), and `tools/rsp2c/rsp2c.py` to regenerate a reference of a handler (docs/testing.md, "Regenerating the microcode oracles").
+The 1.06 (Yoshi's Story, `5b327e0de25d12b9`) and 1.07 (Bangaioh, Magical Tetris Challenge, Pokemon Puzzle League, `190d04dfa000cd4b`) builds are of the F3DEX 1.x generation, and the F3DEX2 skeleton above does not carry over (a single-level jump table at 0x3aa, 320-byte windows, one output buffer at 0x588, the DL stack at 0x128, three code overlays). They run in the F3DEX 1.x
+front-end (`f3dex.c`, `hle_s2dex1.h`) and share this page's sprite rectangle and background kernels (the code is word for word the same at other addresses: `S2_L1` in `s2dex2_int.h`); see [ucode-s2dex1.md](ucode-s2dex1.md).
 
 ## 7. The Safe build (S2DEX 2.05, Ocarina of Time)
 

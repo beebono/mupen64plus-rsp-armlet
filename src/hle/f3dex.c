@@ -138,6 +138,9 @@ struct f3dex_task {
     int exact;                          /* issue the DMA reads of the microcode (window, operand buffer): DMEM as the microcode leaves it, the SP register write events */
     const struct f3dex_build *fx;
     const struct hle_ucode *nu;         /* the hle_ucode of the build a G_LOAD_UCODE switches to (its gate: hle_bind) */
+    const struct s2d1_build *s2;        /* S2DEX 1.x: the loop runs the 2D commands (hle_s2dex1.h); NULL for F3DEX 1.x */
+    unsigned s7;                        /* S2DEX 1.x: the microcode's output pointer, DMEM 0x588 .. (the commands are assembled in DMEM and staged when it is above the threshold) */
+    int s2ov;                           /* S2DEX 1.x: the overlay in IMEM 0x238 .. (1: sprites and rectangles, 2: backgrounds) */
 };
 
 static inline int f1_vidx_bad(uint32_t w) { return ((w & 0xfff) > 0x3e) | (w & 1); }       /* (the vertex pointer table has 32 entries of 2 bytes) */
@@ -642,6 +645,10 @@ static void make_kinds(struct f3dex_task *f)
 }
 
 
+static int load_ucode(struct f3dex_task *f, struct hle_cpu *c, uint32_t w0, uint32_t w1);
+#include "hle_s2dex1.h"
+
+
 /* ---- G_LOAD_UCODE (docs/native-f3dex.md section 5) ------------------------------------------------------------------------------------------------------------------------------- */
 /* Tasks that load another text in the middle and decline at the command (SpaceStation Silicon Valley and Pokemon Puzzle League load S2DEX 1.x) have done native work for nothing: the text and data pointers of
  * a task are remembered with the number of tasks that ran with them and the number that declined at a load. When more than half did, the next tasks with the same pair decline at once, every 64th runs again
@@ -748,6 +755,9 @@ static int enter(struct f3dex_task *f, const struct hle_cpu *c)
 {
     struct hle_task *t = f->t;
     const struct f3dex_layout *L = f->L;
+    f->s2 = f->b->s2;
+    if (f->s2)
+        return s2_enter(f, c);
     f->k0 = c->r[HLE_REG_K0] - 320;                     /* $26 = the address after the first window */
     f->gp = 320;
     f->ov = OV_TEXT;
@@ -774,6 +784,14 @@ static int enter(struct f3dex_task *f, const struct hle_cpu *c)
  * ...), IMEM outside the text copied (0 .. 0x7f and 0xf98 .. 0xfff: the loop head and the DMA routines, equal in the 1.2x builds: tails that differ decline), the SP / DPC registers and RDRAM. The loop's own
  * state is made anew from the interpreter's (enter), and the staged output goes to the FIFO first, so that RDRAM, DPC_END and DMEM have what the microcode has at the command. The same text is a re-initialisation
  * (the display list goes on where it was); the text of another registered (or latched) F3DEX 1.x build changes the record the loop works with. Anything else declines. Returns HLE_STOP to go on, or what f3dex_run returns. */
+/* The part of a text that a G_LOAD_UCODE leaves in IMEM (0xf18 .. 0xf7f of the text, IMEM 0xf98 .. 0xfff; what lies behind 0xf80 is the overlay code the text is followed by) must be the same in the text that loads and the one that is loaded: the loop head and the DMA routines. The one place the F3DEX 1.2x
+ * texts and S2DEX 1.x differ in is the wait for the DMA (text 0xf48 .. 0xf4f, IMEM 0xfc8 / 0xfcc): S2DEX spins on its own pc and reads the status once more in the delay slot, F3DEX branches back to the read. A wait ends at the
+ * first read when the DMA is done, which it always is in the emulation, so the one routine is as good as the other (docs/ucode-s2dex1.md, section 6). */
+static int tail_differs(const uint8_t *a, const uint8_t *b)
+{
+    return memcmp(a + 0xf18, b + 0xf18, 0xf48 - 0xf18) || memcmp(a + 0xf50, b + 0xf50, 0xf80 - 0xf50);
+}
+
 static int load_ucode(struct f3dex_task *f, struct hle_cpu *c, uint32_t w0, uint32_t w1)
 {
     struct hle_task *t = f->t;
@@ -805,7 +823,7 @@ static int load_ucode(struct f3dex_task *f, struct hle_cpu *c, uint32_t w0, uint
         if (!t->dx)
             load_took(f);
         f->nu = nu;
-        if (MUT(464, memcmp(t->rdram + src + 0xf18, t->rdram + cur + 0xf18, 0x1000 - 0xf18), 0)) {
+        if (MUT(464, tail_differs(t->rdram + src, t->rdram + cur), 0)) {
             if (!t->dx)
                 load_note(f);
             return hle_decline(t, "G_LOAD_UCODE: the part of the text that stays in IMEM differs");
@@ -817,7 +835,7 @@ static int load_ucode(struct f3dex_task *f, struct hle_cpu *c, uint32_t w0, uint
             return hle_decline(t, "G_LOAD_UCODE of another build with a partial data image");
         }
     }
-    if (f3dex_lay(&nb->fx)->vtab < f3dex_lay(&nb->fx)->mw_tab + 2 || !nb->pc[F1PC_head])
+    if (!nb->s2 && (f3dex_lay(&nb->fx)->vtab < f3dex_lay(&nb->fx)->mw_tab + 2 || !nb->pc[F1PC_head]))
         return hle_decline(t, "the build's G_MOVEWORD table has no room");
     if (f->junk && size > L->vbuf) {                   /* (only a decline: the slots the data overwrites would hold its flags and no longer be junk, which the native code would have to follow) */
         if (!t->dx)
@@ -833,6 +851,11 @@ static int load_ucode(struct f3dex_task *f, struct hle_cpu *c, uint32_t w0, uint
     c->r[HLE_REG_K0] = f->k0 + f->gp;
     c->r[HLE_REG_K1] = L->operand - f->gp;
     c->r[28] = L->operand;
+    if (f->s2) {                                        /* S2DEX 1.x's loop: k1 counts the bytes left in the window up to 0 (negative), the output pointer is live, the handler clears $28 itself */
+        c->r[HLE_REG_K1] = (uint32_t)-f->gp;
+        c->r[28] = 0;
+        c->r[HLE_REG_S7] = f->s7;
+    }
     if (MUT(460, 0, 1))
         c->r[HLE_REG_K0] = f->k0 + f->gp + 8;
     c->pc = f->b->pc[F1PC_loaduc];
@@ -883,7 +906,7 @@ static int f3dex_run(struct hle_task *t, const struct hle_ucode *u)
         return hle_decline(t, "yielded task");
     if (*t->cr[4] & 0x80)
         return hle_decline(t, "yield request pending");
-    if (L->vtab < L->mw_tab + 2)
+    if (!b->s2 && L->vtab < L->mw_tab + 2)
         return hle_decline(t, "the build's G_MOVEWORD table has no room");
     f.uc = hle_dm32(t, 0xfd0);
     f.p_uc = f.uc;
@@ -919,7 +942,17 @@ static int f3dex_run(struct hle_task *t, const struct hle_ucode *u)
         if (hle_cmd(t, op))                             /* (the latch policy's command-kind gate; the count of a replay under validation) */
             return HLE_DECLINE;
         if (f.trace) fprintf(stderr, "F3DEX cmd %u: %08x %08x\n", f.ncmds, w0, w1);
-        if (op >= 0xc0) {                               /* the RDP commands: copied, the segment address of the image commands resolved */
+        if (f.s2) {                                     /* S2DEX 1.x (hle_s2dex1.h) */
+            rc = s2_cmd(&f, &c, op, w0, w1);
+            if (rc == S2R_END)
+                return s2_end(&f, &c);
+            if (rc == S2R_FINISH)
+                return HLE_OK;
+            if (rc != HLE_OK)
+                return rc;
+            b = f.b;                                    /* (a G_LOAD_UCODE may have switched the build) */
+            L = f.L;
+        } else if (op >= 0xc0) {                        /* the RDP commands: copied, the segment address of the image commands resolved */
             if (op >= 0xfd)
                 w1 = seg(&f, w1);
             if (emit8(&f, w0, w1) != HLE_OK)
@@ -1081,7 +1114,7 @@ static int f3dex_run(struct hle_task *t, const struct hle_ucode *u)
         if (f.gp <= 0) {                                /* the window is used up (or a list change): the next 40 commands */
             if (f.k0 & 7)
                 return hle_decline(t, "display list address not 8-byte aligned");
-            if (f.exact)
+            if (f.exact || f.s2)                        /* (S2DEX's DMEM state is its own: the window is read as the microcode reads it, which also leaves the DMA registers where the microcode does) */
                 hle_dma_read(t, L->window, f.k0, 319);
             f.gp = 320;
             if (MUT(243, ring_hit(&f, f.k0, 320), 0))
@@ -1151,54 +1184,56 @@ static const struct f3dex1_build l_b_non100 = { .fx = { 0x7030, 1, 0, &l_lay_c4 
 
 /* DMEM dead at the end of a task: scratch and leftovers (docs/ucode-f3dex.md section 8). CANDIDATES until the poison probe has established them for this family (ARMLET_DMEM_POISON); each
  * entry says what writes it. The window / operand / output buffer are only dead because the native code does not issue the microcode's DMA reads (F3DEX_EXACT=1 does). */
-static const struct hle_dead_range l_dead[] = {
-    { 0x0b4, 0x0b6 },       /* the clipper's fan pivot */
-    { 0x106, 0x108 },       /* the return address G_VTX and the clipper keep, the fan pointer */
-    { 0x158, 0x15a },       /* the clipper's stale return address */
-    { 0x9a0, 0xce0 },       /* the command window and the operand buffer */
-    { 0xbe0, 0xc40 },       /* the triangle scratch (sorted vertex addresses, perspective-scaled s/t/w, texture scale inputs) */
-    { 0xc40, 0xc70 },       /* the clipper's polygon lists */
-    { 0xce0, 0xd90 },       /* the RDP output buffer and the triangle code's coefficient scratch beyond the command */
-    { 0xde0, 0xfc0 },       /* (the vertex clip flags of every slot follow: junk after an F3DLX G_VTX with clipping off, internal to a task otherwise) */       /* the clipper's new vertices, the matrix product scratch (0xde0..0xe1f), the light-recompute scratch (0xdf0..0xe2f) */
-    /* the clip flags (+0x24, +0x26) of the 32 vertex slots */
-    { 0x4c4, 0x4c8 },
-    { 0x4ec, 0x4f0 },
-    { 0x514, 0x518 },
-    { 0x53c, 0x540 },
-    { 0x564, 0x568 },
-    { 0x58c, 0x590 },
-    { 0x5b4, 0x5b8 },
-    { 0x5dc, 0x5e0 },
-    { 0x604, 0x608 },
-    { 0x62c, 0x630 },
-    { 0x654, 0x658 },
-    { 0x67c, 0x680 },
-    { 0x6a4, 0x6a8 },
-    { 0x6cc, 0x6d0 },
-    { 0x6f4, 0x6f8 },
-    { 0x71c, 0x720 },
-    { 0x744, 0x748 },
-    { 0x76c, 0x770 },
-    { 0x794, 0x798 },
-    { 0x7bc, 0x7c0 },
-    { 0x7e4, 0x7e8 },
-    { 0x80c, 0x810 },
-    { 0x834, 0x838 },
-    { 0x85c, 0x860 },
-    { 0x884, 0x888 },
-    { 0x8ac, 0x8b0 },
-    { 0x8d4, 0x8d8 },
-    { 0x8fc, 0x900 },
-    { 0x924, 0x928 },
-    { 0x94c, 0x950 },
-    { 0x974, 0x978 },
+#define F1_DEAD_PADS_1 { 0x1c3, 0x1c4 }, { 0x1c7, 0x1c8 }, { 0x1e3, 0x1e4 }, { 0x1e7, 0x1e8 }, { 0x203, 0x204 }, { 0x207, 0x208 }, { 0x223, 0x224 }, { 0x227, 0x228 }, { 0x243, 0x244 }, { 0x247, 0x248 }, \
+    { 0x263, 0x264 }, { 0x267, 0x268 }, { 0x283, 0x284 }, { 0x287, 0x288 },
+#define F1_DEAD_PADS_2 { 0x2a3, 0x2a4 }, { 0x2a7, 0x2a8 },          /* (S2DEX 1.x's flags words: its list leaves these two out) */
+#define F1_DEAD_PADS_3 { 0x2c3, 0x2c4 }, { 0x2c7, 0x2c8 }, { 0x2e3, 0x2e4 }, { 0x2e7, 0x2e8 },
+#define F1_DEAD_MAIN \
+    { 0x0b4, 0x0b6 },       /* the clipper's fan pivot */ \
+    { 0x106, 0x108 },       /* the return address G_VTX and the clipper keep, the fan pointer */ \
+    { 0x158, 0x15a },       /* the clipper's stale return address */ \
+    { 0x9a0, 0xce0 },       /* the command window and the operand buffer */ \
+    { 0xbe0, 0xc40 },       /* the triangle scratch (sorted vertex addresses, perspective-scaled s/t/w, texture scale inputs) */ \
+    { 0xc40, 0xc70 },       /* the clipper's polygon lists */ \
+    { 0xce0, 0xd90 },       /* the RDP output buffer and the triangle code's coefficient scratch beyond the command */ \
+    { 0xde0, 0xfc0 },       /* (the vertex clip flags of every slot follow: junk after an F3DLX G_VTX with clipping off, internal to a task otherwise) */       /* the clipper's new vertices, the matrix product scratch (0xde0..0xe1f), the light-recompute scratch (0xdf0..0xe2f) */ \
+    /* the clip flags (+0x24, +0x26) of the 32 vertex slots */ \
+    { 0x4c4, 0x4c8 }, \
+    { 0x4ec, 0x4f0 }, \
+    { 0x514, 0x518 }, \
+    { 0x53c, 0x540 }, \
+    { 0x564, 0x568 }, \
+    { 0x58c, 0x590 }, \
+    { 0x5b4, 0x5b8 }, \
+    { 0x5dc, 0x5e0 }, \
+    { 0x604, 0x608 }, \
+    { 0x62c, 0x630 }, \
+    { 0x654, 0x658 }, \
+    { 0x67c, 0x680 }, \
+    { 0x6a4, 0x6a8 }, \
+    { 0x6cc, 0x6d0 }, \
+    { 0x6f4, 0x6f8 }, \
+    { 0x71c, 0x720 }, \
+    { 0x744, 0x748 }, \
+    { 0x76c, 0x770 }, \
+    { 0x794, 0x798 }, \
+    { 0x7bc, 0x7c0 }, \
+    { 0x7e4, 0x7e8 }, \
+    { 0x80c, 0x810 }, \
+    { 0x834, 0x838 }, \
+    { 0x85c, 0x860 }, \
+    { 0x884, 0x888 }, \
+    { 0x8ac, 0x8b0 }, \
+    { 0x8d4, 0x8d8 }, \
+    { 0x8fc, 0x900 }, \
+    { 0x924, 0x928 }, \
+    { 0x94c, 0x950 }, \
+    { 0x974, 0x978 }, \
     { 0x99c, 0x9a0 },
-    /* the fourth byte of each transformed light direction (and its copy), records 0..9 (the shim of tools/equiv takes 64 ranges per ucode): a leftover of the vector registers the relight reads (mtx.md 4.2), never read */
-    { 0x1c3, 0x1c4 }, { 0x1c7, 0x1c8 }, { 0x1e3, 0x1e4 }, { 0x1e7, 0x1e8 }, { 0x203, 0x204 }, { 0x207, 0x208 },
-    { 0x223, 0x224 }, { 0x227, 0x228 }, { 0x243, 0x244 }, { 0x247, 0x248 }, { 0x263, 0x264 }, { 0x267, 0x268 },
-    { 0x283, 0x284 }, { 0x287, 0x288 }, { 0x2a3, 0x2a4 }, { 0x2a7, 0x2a8 }, { 0x2c3, 0x2c4 }, { 0x2c7, 0x2c8 },
-    { 0x2e3, 0x2e4 }, { 0x2e7, 0x2e8 },
-};
+/* the fourth byte of each transformed light direction (and its copy), records 0..9 (the shim of tools/equiv takes 64 ranges per ucode): a leftover of the vector registers the relight reads (mtx.md 4.2), never read */
+#define F1_DEAD_RANGES F1_DEAD_MAIN F1_DEAD_PADS_1 F1_DEAD_PADS_2 F1_DEAD_PADS_3
+static const struct hle_dead_range l_dead[] = { F1_DEAD_RANGES };
+
 
 #define U(var, uid, nm, bld) HLE_UCODE(var) = { .id = (uid), .name = (nm), .fam = &f3dex1_fam, .fam_data = &(bld), .dead = l_dead, .n_dead = sizeof(l_dead) / sizeof(l_dead[0]), .ring_off = 0xfe8, .flags = HLE_F_XBUS_OK }
 U(l_bk, 0x208a567e9aead5eaull, "F3DEX 1.21 (Banjo-Kazooie, Glover, Bomberman Hero, Quest 64)", l_b_121);
@@ -1211,5 +1246,21 @@ U(l_wo, 0x76c763bc18ad3ab3ull, "F3DLX 1.21 (Wipeout 64)", l_b_lx121);
 U(l_cf, 0x0a7cc6c93363c663ull, "F3DLX.NoN 1.21 (Clay Fighter SC)", l_b_lxn121);
 U(l_ig, 0xcc09096cb6a48e7bull, "F3DLX.NoN 1.23 (Iggy's Reckin' Balls, Penny Racers)", l_b_lxn123);
 U(l_tu, 0x5063f108118bf62aull, "F3DEX.NoN 1.00 (Turok)", l_b_non100);
+
+/* ---- S2DEX 1.06 / 1.07 (hle_s2dex1.h; docs/ucode-s2dex1.md) ------------------------------------------------------------------------------------------------------------------------------------------ */
+static const struct f3dex_layout l_lay_s2d1 = { .half1 = 0xe0, .omh = 0xc8, .oml = 0xcc, .rdp_wp = 0xd4, .depth = 0xd0, .fifo = 0xfe8, .segs = 0xe8, .retstack = 0x128, .window = 0x3c0, .outbuf = 0x588 };
+/* the pcs by S2D1_PC_FIELDS: nop half0 half1 half2 enddl omh oml moveword rendermode setom segcopy scissor sync copy seldl dl movemem bg1cyc rect sprite bgcopy loadtxtr loaduc ldtx_spr ldtx_rect (read from the jump tables in the data images) */
+static const struct s2d1_build l_s2_106 = { .jt = 0x3aa, .bgc107 = 0,
+    .pc = { 0x158, 0x000, 0x00c, 0x014, 0x038, 0x050, 0x054, 0x0b0, 0x0c8, 0x108, 0x114, 0x1f4, 0x220, 0x224, 0x184, 0x1b4, 0x1dc, 0x6e8, 0x6f4, 0x238, 0x968, 0xc84, 0xf6c, 0x258, 0x714 } };
+static const struct s2d1_build l_s2_107 = { .jt = 0x3aa, .bgc107 = 1,
+    .pc = { 0x158, 0x000, 0x00c, 0x014, 0x038, 0x050, 0x054, 0x0b0, 0x0c8, 0x108, 0x114, 0x1f4, 0x220, 0x224, 0x184, 0x1b4, 0x1dc, 0x6e8, 0x6f4, 0x238, 0x968, 0xcb0, 0xf6c, 0x258, 0x714 } };
+static const struct f3dex1_build l_b_s2_106 = { .fx = { 0, 1, 0, &l_lay_s2d1 }, .pc = { [F1PC_head] = 0x158, [F1PC_loaduc] = 0xf6c }, .load_key = 0x3a88b2c21c8ec254ull, .s2 = &l_s2_106 };
+static const struct f3dex1_build l_b_s2_107 = { .fx = { 0, 1, 0, &l_lay_s2d1 }, .pc = { [F1PC_head] = 0x158, [F1PC_loaduc] = 0xf6c }, .load_key = 0x9f01e13abd30c872ull, .s2 = &l_s2_107 };
+/* dead at the end of a task: the display list window (the lean mode reads the list from RDRAM) and the RDP output buffer with its slack (the commands are assembled there; the flush DMAs them to the FIFO), and the F3DEX 1.x ranges: the tasks of
+ * these builds load an F3DEX 1.x text (Yoshi's Story: F3DEX.NoN 1.22, Pokemon Puzzle League: F3DEX 1.23) and back, and what it leaves in its window, output buffer and scratch is not kept (the lean F3DEX 1.x path) */
+static const struct hle_dead_range l_dead_s2d1[] = { { 0x3c0, 0x500 }, { 0x588, 0x960 }, F1_DEAD_MAIN F1_DEAD_PADS_1 F1_DEAD_PADS_3 };
+#define S2U(var, uid, nm, bld) HLE_UCODE(var) = { .id = (uid), .name = (nm), .fam = &f3dex1_fam, .fam_data = &(bld), .dead = l_dead_s2d1, .n_dead = sizeof(l_dead_s2d1) / sizeof(l_dead_s2d1[0]), .ring_off = 0xfe8 }
+S2U(l_s2_y, 0x5b327e0de25d12b9ull, "S2DEX 1.06 (Yoshi's Story)", l_b_s2_106);
+S2U(l_s2_p, 0x190d04dfa000cd4bull, "S2DEX 1.07 / S2DEXD 1.07 (Bangaioh, Magical Tetris Challenge, Pokemon Puzzle League)", l_b_s2_107);
 
 #endif

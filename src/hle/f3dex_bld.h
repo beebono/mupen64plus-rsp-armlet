@@ -25,11 +25,30 @@ enum {
     F1_NPC
 };
 
+/* S2DEX 1.06 / 1.07 (docs/ucode-s2dex1.md): the 2D microcode on the skeleton of F3DEX 1.x, run by the same front-end (f3dex.c, hle_s2dex1.h) in its own mode. The handler pcs of a build, in the order of s2d1_build.pc[]: the commands
+ * are told apart by the pc the build's jump table (DMEM s2d1_build.jt, by signed opcode) holds for the opcode. nop: the command loop's head, where the no-ops and the load / rectangle continuation of G_OBJ_LOADTXTR (the
+ * first cell of its table) lead to; ldtx_spr / ldtx_rect: where the table sends LDTX_SPRITE and LDTX_RECT. */
+#define S2D1_PC_FIELDS(X) \
+    X(nop) X(half0) X(half1) X(half2) X(enddl) X(omh) X(oml) X(moveword) X(rendermode) X(setom) X(segcopy) X(scissor) X(sync) X(copy) X(seldl) X(dl) X(movemem) X(bg1cyc) X(rect) X(sprite) X(bgcopy) X(loadtxtr) X(loaduc) \
+    X(ldtx_spr) X(ldtx_rect)
+enum {
+#define X(f) S2P_##f,
+    S2D1_PC_FIELDS(X)
+#undef X
+    S2P_N
+};
+struct s2d1_build {
+    uint16_t jt;                        /* the jump table: the pc of opcode op is the halfword at jt + 2 * (int8_t)op */
+    uint16_t pc[S2P_N];                 /* by S2P_* */
+    uint8_t bgc107;                     /* G_BG_COPY is the routine of S2DEX 2.x (1.07), not 1.06's own */
+};
+
 struct f3dex1_build {
     struct f3dex_build fx;              /* reject mask, NoN, LX, the DMEM layout */
     uint16_t pc[F1_NPC];                /* by F1PC_*; 0: the build has no such command */
     uint8_t culldl_off;                 /* G_CULLDL's operands are byte offsets into the vertex buffer and the last vertex is not tested (the 0.95 builds), not vertex numbers */
     uint64_t load_key;                  /* FNV-1a-64 of the text's first 0xf48 bytes (the derivation's record key; 0: no dump of the text) */
+    const struct s2d1_build *s2;        /* S2DEX 1.x: the commands are the 2D ones (hle_s2dex1.h); NULL for the F3DEX 1.x / F3DLX builds */
 };
 
 #ifdef ARMLET_NATIVE

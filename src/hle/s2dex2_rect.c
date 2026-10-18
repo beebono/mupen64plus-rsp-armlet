@@ -33,15 +33,15 @@
 #include "s2dex2_int.h"
 
 enum {
-    OBJ = 0x3c0,                            /* the uObjSprite: objX scaleW imageW paddingX  objY scaleH imageH paddingY (halfwords; the x and y groups of four), then ... */
-    O_STRIDE = 0x3d0, O_ADRS = 0x3d2,       /* ... imageStride imageAdrs (TMEM words), imageFmt imageSiz imagePal imageFlags (bytes) */
-    O_FMT = 0x3d4, O_SIZ = 0x3d5, O_PAL = 0x3d6, O_FLAGS = 0x3d7,
-    RM_WORDS = 0x1f8,                       /* the render-mode words: bias_s trim | bias_p (unused) */
-    RM_PTR_A = 0x244, RM_PTR_B = 0x246,     /* pointers to the two 8-byte render-mode tables (0x248 / 0x250 and 0x258 / 0x260) */
-    SCISSOR = 0x204,                        /* ulx lrx uly lry */
+    OBJ = 0x3c0 + L_D,                          /* the uObjSprite: objX scaleW imageW paddingX  objY scaleH imageH paddingY (halfwords; the x and y groups of four), then ... */
+    O_STRIDE = 0x3d0 + L_D, O_ADRS = 0x3d2 + L_D,       /* ... imageStride imageAdrs (TMEM words), imageFmt imageSiz imagePal imageFlags (bytes) */
+    O_FMT = 0x3d4 + L_D, O_SIZ = 0x3d5 + L_D, O_PAL = 0x3d6 + L_D, O_FLAGS = 0x3d7 + L_D,
+    RM_WORDS = L_RM_WORDS,                       /* the render-mode words: bias_s trim | bias_p (unused) */
+    RM_PTR_A = L_RM_PTR_A, RM_PTR_B = L_RM_PTR_B,     /* pointers to the two 8-byte render-mode tables (0x248 / 0x250 and 0x258 / 0x260) */
+    SCISSOR = L_SCISSOR,                      /* ulx lrx uly lry */
     CYCLE_BYTE = 0xc9,                      /* bit 5: the cycle type is COPY */
-    TILE_STATE = 0x2ae, TILE_TOGGLE = 0x2af,/* the tile the last load / rectangle used (bytes) and the 0 / 2 toggle */
-    SCRATCH = 0x1c0,                        /* the word the microcode moves two table halfwords through */
+    TILE_STATE = L_TILE_STATE, TILE_TOGGLE = L_TILE_TOGGLE,/* the tile the last load / rectangle used (bytes) and the 0 / 2 toggle */
+    SCRATCH = L_SCRATCH,                      /* the word the microcode moves two table halfwords through */
 };
 
 enum { FLIP_S = 0x01, FLIP_T = 0x10 };      /* imageFlags */
@@ -56,7 +56,19 @@ static inline int32_t refined_recip(int16_t scale)
     return (int32_t)((uint32_t)h << 16 | (l & 0xffff));
 }
 
-int s2dex2_obj_rect(uint32_t *dm, unsigned *s7p)
+/* the same refinement as a multiply chain (the rotated form's front: VMUDN VMADN VMADH on the signed high half), which differs from the VADDC / VADD one for a negative reciprocal */
+static inline int32_t refined_recip_mac(int16_t scale)
+{
+    uint32_t r = hle_rcp32(scale);
+    const int16_t hi = (int16_t)(r >> 16);
+    const hle_acc a1 = (hle_acc)hi + (r & 0xffff);
+    return (int32_t)((uint32_t)(uint16_t)hle_sclamp(a1 + ((hle_acc)hi << 16)) << 16 | hle_uclamp(a1));
+}
+
+/* rot: the rotated form (G_OBJ_RECTANGLE_R, LDTX_RECT_R of S2DEX 1.x, the front of the code at 0x8f4 that joins the rectangle code at 0x728): the position and the scale come through the
+ * sub-matrix (DMEM 0x1e0: X Y BaseScaleX BaseScaleY): position x 2048 times the reciprocal of the base scale, a 16.16 number whose integer half plus the translation (masked) is the top left
+ * and whose fraction carries into the bottom right; the scale is the base scale times the sprite's, / 1024 */
+static int rect_impl(uint32_t *dm, unsigned *s7p, int rot)
 {
     unsigned s7 = *s7p, a;
     unsigned ptr_a = m16(dm, RM_PTR_A), ptr_b = m16(dm, RM_PTR_B);
@@ -67,7 +79,7 @@ int s2dex2_obj_rect(uint32_t *dm, unsigned *s7p)
     int tl[2], br[2], tl2[2], br2[2], cut[2], first[2], step[2];
     unsigned flags = m8(dm, O_FLAGS);
 
-    if (memcmp(dm + 0x180 / 4, k_consts, sizeof k_consts) || ((ptr_a | ptr_b) & 7))
+    if (memcmp(dm + L_CONSTS / 4, k_consts, sizeof k_consts) || ((ptr_a | ptr_b) & 7))
         return S2_UNSUPPORTED;
     mask = (int16_t)m16(dm, ptr_a);                         /* position mask: 0xfffc whole pixels, 0xffff the quarter pixels */
     y_frac = (int16_t)m16(dm, ptr_a + 2);                   /* the bits of the cut edge's y that move t (the sub-pixel position) */
@@ -78,21 +90,38 @@ int s2dex2_obj_rect(uint32_t *dm, unsigned *s7p)
 
     for (a = 0; a < 2; a++) {
         const unsigned o = OBJ + 8 * a;
-        const int pos = (int16_t)m16(dm, o), scale = (int16_t)m16(dm, o + 2), size = (int16_t)m16(dm, o + 4);
+        const int pos = (int16_t)m16(dm, o), size = (int16_t)m16(dm, o + 4);
+        int scale = (int16_t)m16(dm, o + 2);
+        unsigned fr = 0;                                    /* the fraction of the top left (rot) */
+        int tlv;
         const int ul = (int16_t)m16(dm, SCISSOR + 4 * a), lr = (int16_t)m16(dm, SCISSOR + 2 + 4 * a);
         const int flip = (flags & (a ? MUT(158, FLIP_T, FLIP_T << 1) : FLIP_S)) != 0;
-        const int32_t recip = MUT(150, refined_recip(scale), (int32_t)hle_rcp32(scale));
+        int32_t recip;
         const unsigned sz = (uint16_t)sat16(size - MUT(166, trim, 0));              /* the size less the trim, as the unsigned lane value */
-        int64_t scaled = ((int64_t)sz * recip) >> 8;                   /* size / scale: 16 fractional bits of 10.2 pixels */
+        int64_t scaled;
         int32_t width, start;
         int ds;
 
         /* 1. */
-        tl[a] = (int16_t)(sat16(pos + MUT(151, bias_p, -bias_p)) & MUT(163, mask & 0xffff, 0xffff));
+        if (rot) {
+            const int16_t bs = (int16_t)m16(dm, 0x1e4 + 2 * a);
+            const int32_t P = pos * MUT(513, 2048, 1024), RR = MUT(515, refined_recip_mac(bs), refined_recip(bs));
+            const hle_acc full = hle_mac_32x32(P, RR);
+            /* the accumulator's low half is not the product's by then: the VADD and VAND of the translation (sat(X + bias_p) & mask) store their result there */
+            const uint16_t xm = MUT(514, (uint16_t)(sat16((int16_t)m16(dm, 0x1e0 + 2 * a) + bias_p) & mask), 0);
+            tlv = (int16_t)hle_uclamp(hle_wrap48((full & ~(hle_acc)0xffff) + xm + (uint16_t)hle_sclamp(full)));
+            fr = hle_uclamp(hle_mac_32x32_before_h(P, RR));
+            scale = hle_sclamp(hle_wrap48((hle_acc)bs * MUT(517, 64, 32) * scale));
+        } else {
+            tlv = (int16_t)(sat16(pos + MUT(151, bias_p, -bias_p)) & MUT(163, mask & 0xffff, 0xffff));
+        }
+        recip = MUT(150, refined_recip(scale), (int32_t)hle_rcp32(scale));
+        scaled = ((int64_t)sz * recip) >> 8;                           /* size / scale: 16 fractional bits of 10.2 pixels */
+        tl[a] = tlv;
         if (scaled < 0 || scaled >= 0x80000000ll)
             return S2_UNSUPPORTED;
         width = (int32_t)(scaled >> MUT(161, 16, 17));
-        br[a] = sat16(tl[a] + width);
+        br[a] = sat16(tl[a] + width + MUT(516, fr + (unsigned)(scaled & 0xffff) > 0xffff, 0));
         /* 2. the cut at the scissor: tl2, br2 and what was cut off the top left (<= 0) */
         tl2[a] = MUT(164, tl[a] >= ul ? tl[a] : ul, tl[a]);
         br2[a] = MUT(162, br[a] < lr ? br[a] : lr, br[a]);
@@ -166,3 +195,8 @@ int s2dex2_obj_rect(uint32_t *dm, unsigned *s7p)
     *s7p = s7;
     return S2_DONE;
 }
+
+int S2FN(obj_rect)(uint32_t *dm, unsigned *s7p) { return rect_impl(dm, s7p, 0); }
+#ifdef S2_L1
+int s2dex1_obj_rect_r(uint32_t *dm, unsigned *s7p) { return rect_impl(dm, s7p, 1); }
+#endif

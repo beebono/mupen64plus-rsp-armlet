@@ -13,7 +13,7 @@ module, with a place to put native replacements for the slow parts of the graphi
   triangle setup, to C / NEON code that must leave the RSP exactly as the microcode would. In `verify` mode the JIT runs the same stretch from the same state and everything is compared;
   `armlet-native-replay` does the same offline from captured snapshots.
 - **Native graphics** ([design](docs/design.md#task-level-native-path)): a graphics task whose ucode has a task-level front-end runs as C / NEON instead of on the JIT.
-  Data-driven front-ends cover F3D, F3DEX 1.x, F3DEX2 (with its dialects, incl. the Rej / LX2 builds) and S2DEX 2.x, plus hand-written ones for
+  Data-driven front-ends cover F3D, F3DEX 1.x (and S2DEX 1.x, as a mode of it), F3DEX2 (with its dialects, incl. the Rej / LX2 builds) and S2DEX 2.x, plus hand-written ones for
   Diddy Kong Racing / Jet Force Gemini and Indiana Jones. Anything a front-end cannot prove exact declines to the JIT, task by task.
 - **Probe and latch** ([design](docs/design.md#the-probe-and-the-ucode-cache)): a ucode with no table entry is derived from its own text, probed against the JIT
   with canned display lists, then validated on real tasks by a background thread; it runs natively only once it has latched, and a mismatch takes it back to the JIT.
