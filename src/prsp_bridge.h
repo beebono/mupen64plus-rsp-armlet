@@ -10,5 +10,8 @@
 unsigned int parallelRSPDoRspCycles(unsigned int cycles);
 void parallelRSPRomClosed(void);
 void parallelRSPInitiateRSP(RSP_INFO info, unsigned int *cycle_count);
+#ifdef ARMLET_NATIVE
+int prsp_poll_idle_limit(void);         /* PRSP_POLL_IDLE=N of the fork (parallel.cpp): N polls in a row with unchanged registers cut a task; 0: off */
+#endif
 
 #endif

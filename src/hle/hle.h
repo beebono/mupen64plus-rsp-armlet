@@ -82,6 +82,11 @@ struct hle_family {
     /* Runs a whole fresh task: the boot code's effects, the display list, the end of the task. HLE_OK, or HLE_DECLINE with anything it changed undoable (the framework
      * restores DMEM, IMEM, the SP registers and RDRAM from its own snapshot and undo log; nothing reached the RDP). */
     int (*run)(struct hle_task *t, const struct hle_ucode *u);
+    /* PRSP_POLL_IDLE (docs/design.md, "Waits for the CPU"): a family that can take a task up again after the JIT's idle-poll cut, and can end a call there itself, gives the pc the
+     * cut leaves (the wait pc of the build, or 0: none); dispatch then offers a call that starts there to run(), with t->start_pc != 0. NULL: not resumable. */
+    unsigned (*wait_pc)(const struct hle_ucode *u, const uint32_t *imem);
+    /* the call at the wait pc when nothing changed since the cut, without the framework's snapshot and commit: 1 = done (the state is what the JIT's idle slice leaves), 0 = run() */
+    int (*idle)(struct hle_task *t, const struct hle_ucode *u);
 };
 
 struct hle_ucode {
@@ -128,6 +133,7 @@ struct hle_task {
     int switched;                   /* set by a family that took another build over in the middle of the task (G_LOAD_UCODE): the verify compare of the RDP stream ignores the scratch bytes behind one-byte commands */
     struct hle_dx *dx;              /* a detached replay (validate.c): the SP registers, the DMA, the RDP lists and the interpreter's registers are its own; NULL for the real run */
     const struct hle_gate *gate;    /* the gate of the build the loop runs now (hle_bind), or NULL */
+    int cut_ok;                     /* the interpreter may end the call at an idle-poll cut (the JIT's PRSP_POLL_IDLE halt of a wait for the CPU) instead of declining it: hle_cut */
     uint32_t *cmds;                 /* the command kinds the loop ran, counted (a detached replay of the build under validation), or NULL */
 };
 
@@ -161,6 +167,12 @@ int hle_mtc0(struct hle_task *t, unsigned rd, uint32_t value);
 int hle_poll_status(struct hle_task *t, unsigned rt, uint32_t *value);
 /* The end of the task as the BREAK instruction makes it (SP_STATUS BROKE | HALT, MI_INTR when INTR_BREAK is set); end_pc is the pc the RSP is left at. */
 void hle_break(struct hle_task *t, unsigned end_pc);
+/* The end of a call at an idle-poll cut (PRSP_POLL_IDLE): the task goes on in a later call at end_pc. SP_STATUS is left as the JIT leaves it (HALT cleared again). */
+void hle_cut(struct hle_task *t, unsigned end_pc);
+/* What a cut leaves that the next call reads, and that the verify compare takes as the JIT leaves it though a task's end would not need it: the DMEM ranges [lo, hi) x 2 that the family declares dead at the end
+ * of a task (the display list input buffer; the RDP output not flushed yet, which is a list of RDP commands: the words the RDP ignores are not compared), and the scalar registers (bit k = register k) the
+ * microcode's loop carries from one command to the next. The others hold the temporaries of the commands the JIT ran and the front-end did not (the loop writes them before it reads them: docs/design.md). */
+void hle_cut_live(struct hle_task *t, unsigned lo0, unsigned hi0, unsigned lo1, unsigned hi1, uint32_t sregs);
 
 /* The command-kind hook of a front-end's loop (docs/design.md, "The background validator and the latch policy"): `kind` is the command's opcode byte, or a risky path (LATCH_K_CLIP,
  * LATCH_K_LIT, LATCH_K_LOAD, LATCH_K_CULLDL in latch.h). Counts it for a replay under validation; declines the task (nonzero: the caller returns HLE_DECLINE) when the build is a latched

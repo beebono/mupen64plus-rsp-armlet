@@ -4,8 +4,9 @@
 #     BUILD ref (rsp-hle + parallel-rsp as RspFallback) | armlet | armlet-hle (armlet with ARMLET_GFX=hle) | armlet-off (armlet with ARMLET_RDP_COALESCE=off;
 #           the other armlet builds use the config default, or ARMLET_RDP_COALESCE when the caller's environment has it (desk.sh))
 #     KIND  e2e  (RSP hash stream, screenshots at 6 frames up to LAST, AI audio dump; stops after frame LAST)
-#           (EQUIV_RDRAM=1 adds a hash of all RDRAM to the per-call RSPT_STATE stream, EQUIV_THREADS=<n> sets FOIR_THREADS, default 3)
+#           (EQUIV_TMO=<s> the run's time limit, default LAST / 40 + 60; slow runs such as ARMLET_HLE_VERIFY=1; EQUIV_RDRAM=1 adds a hash of all RDRAM to the per-call RSPT_STATE stream, EQUIV_THREADS=<n> sets FOIR_THREADS, default 3)
 #           time (stops at the first RSP call after frame LAST's screenshot; the shim logs RSP ms and CPU ms there)
+# KEEP_SHOTS=1 keeps the screenshots (frame_*.ppm) of the runs instead of only their md5.
 # Needs: X (work dir: plug/ out/ cfg/ runs.txt), MUPEN (emulator command incl. core options), ROMDIR. Optional: VIDARGS, WRAP (a command
 # prefix, e.g. a memory-capped scope), GAP (seconds between runs), KILLALL=1 (a device with one user: also pkill every mupen64plus).
 # Plugins in $X/plug: mupen64plus-rdp-foir.so mupen64plus-rsp-armlet.so rsp-shim.so input-det.so audio-adump.so ref/{mupen64plus-rsp-hle,mupen64plus-rsp-parallel}.so
@@ -50,7 +51,7 @@ equiv_run() {
         export FOIR_SHOT_FRAMES=$S,$((S * 2)),$((S * 3)),$((S * 4)),$((S * 5)),$LAST
         export RSPT_HASH=$OUT/rsp.hash RSPT_STATE=$OUT/rsp.state ADUMP_FILE=$OUT/audio.raw
         RSPT_RDRAM=${EQUIV_RDRAM:-0}; export RSPT_RDRAM
-        AUD=$P/audio-adump.so; TMO=$((LAST / 40 + 60))
+        AUD=$P/audio-adump.so; TMO=${EQUIV_TMO:-$((LAST / 40 + 60))}
     else
         export FOIR_SHOT_FRAMES=$LAST RSPT_MARK=$LASTF
         AUD=dummy; TMO=$((LAST / 30 + 60))
@@ -79,7 +80,7 @@ equiv_run() {
     (
         cd "$OUT" || exit
         md5sum frame_*.ppm > shots.md5 2>/dev/null
-        rm -f frame_*.ppm
+        [ -n "$KEEP_SHOTS" ] || rm -f frame_*.ppm
         [ -f rsp.hash ] && { wc -l < rsp.hash > rsp.hash.lines; md5sum rsp.hash > rsp.hash.md5; }
         [ -f rsp.state ] && md5sum rsp.state > rsp.state.md5
         [ -f audio.raw ] && wc -c < audio.raw > audio.bytes

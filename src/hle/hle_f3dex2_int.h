@@ -81,6 +81,7 @@ struct f3 {
     uint32_t clip_mask;
     int rc;                         /* a result an ext command's helper left (hle_rej.c)  */
     int ho_req;                     /* an ext command ended the outermost display list: the loop hands the task back (f3_enddl) */
+    int cut;                        /* the hand-over is a G_DL to itself (PRSP_POLL_IDLE): the interpreter runs it to the JIT's idle cut, which ends the call */
     int lean;                       /* the external-effects mode: no DMA the effects do not need (the display list and the vertices are read from RDRAM, the overlays are loaded once at the end) */
     int ov0;                        /* the overlay IMEM held at the start */
     int trace, watch;

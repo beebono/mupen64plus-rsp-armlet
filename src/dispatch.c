@@ -9,6 +9,7 @@
 #include "dispatch.h"
 #include "gfx_ucode.h"
 #include "hle/probe.h"
+#include "prsp_bridge.h"
 #include "ustats.h"
 
 static const char *const l_family[] = { "other", "F3D", "F3DEX", "F3DEX2" };
@@ -24,8 +25,21 @@ bool armlet_gfx_try_native(struct armlet_ctx *c)
     /* a graphics task: a task at all (not a bare RSP program), type 1, started fresh and not a yield resume */
     if (armlet_dmem32(c, ARMLET_TASK_UCODE_BOOT_SIZE) > 0x1000 || armlet_dmem32(c, ARMLET_TASK_TYPE) != 1)
         return false;
-    if ((*c->rsp.SP_PC_REG & 0xfff) != 0 || (armlet_dmem32(c, ARMLET_TASK_FLAGS) & 1))
+    if (armlet_dmem32(c, ARMLET_TASK_FLAGS) & 1)
         return false;
+    if ((*c->rsp.SP_PC_REG & 0xfff) != 0) {
+        /* a call that continues a task, after the JIT's idle-poll cut (PRSP_POLL_IDLE: a task that waits for the CPU, Gauntlet Legends): a family that can take it up answers (hle_core.c, wait_pc); no probe,
+         * no counting of tasks */
+#ifdef ARMLET_NATIVE
+        if (prsp_poll_idle_limit() <= 0)
+            return false;
+        u = armlet_gfx_identify(c, &is_new);
+        n = armlet_gfx_native_find(u->id);
+        return n && armlet_gfx_allowed(&c->cfg, u->id) && n->run(c, u) != 0;
+#else
+        return false;
+#endif
+    }
 
     u = armlet_gfx_identify(c, &is_new);
     n = armlet_gfx_native_find(u->id);

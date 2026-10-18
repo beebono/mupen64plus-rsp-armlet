@@ -170,6 +170,11 @@ static struct {
     unsigned end_pc;
     int broke;
     int switched;                       /* the last native task took another build over (hle_task.switched) */
+    int cut;                            /* the last native run ended at an idle-poll cut (PRSP_POLL_IDLE, hle_cut): the task goes on in a later call */
+    unsigned cut_lo[2], cut_hi[2];      /* the DMEM that is live at the cut though the family declares it dead (hle_cut_live): [0] a buffer, [1] a list of RDP commands */
+    uint32_t cut_sregs;                 /* the scalar registers the next call reads (bit k = register k) */
+    PrspPollState poll0;                /* the fork's idle-poll tracker before the native run */
+    uint64_t resumes, r_native, r_idle, r_declined, r_ticks, i_ticks, cuts, cut_sreg[32];   /* PRSP_POLL_IDLE: calls that continue a task, native, of those the unchanged wait, declined; native runs that ended at a cut; scalar registers that differed from the JIT's at a cut (verify) */
     /* verify */
     struct evbuf ev[2];                 /* [0] native, [1] JIT */
     struct hle_stream st[2];
@@ -459,6 +464,23 @@ void hle_break(struct hle_task *t, unsigned end_pc)
     K.broke = 1;
 }
 
+void hle_cut(struct hle_task *t, unsigned end_pc)
+{
+    *t->cr[4] &= ~SP_STATUS_HALT;                   /* RSP_MFC0 set it for the cut; run_rsp_task clears it again so that the core goes on with the task */
+    K.end_pc = end_pc & 0xffc;
+    K.cut = 1;
+}
+
+void hle_cut_live(struct hle_task *t, unsigned lo0, unsigned hi0, unsigned lo1, unsigned hi1, uint32_t sregs)
+{
+    (void)t;
+    K.cut_sregs = sregs;
+    K.cut_lo[0] = lo0;
+    K.cut_hi[0] = hi0;
+    K.cut_lo[1] = lo1;
+    K.cut_hi[1] = hi1;
+}
+
 /* a whole task on the interpreter, from the task's start pc */
 int hle_interp_task(struct hle_task *t)
 {
@@ -592,6 +614,19 @@ static int in_ring(const struct hle_ucode *u, uint32_t dram, uint32_t span, unsi
     return u->ring_off && l_ring_hi > l_ring_lo && dram >= l_ring_lo && end <= l_ring_hi;
 }
 
+/* byte `at` of the RDP commands that start at DMEM `lo` (the pending output of a cut): inside the second word of a NO_OP or sync command? Those bytes are scratch the RDP ignores */
+static int cut_w1_ignored(const struct hle_ucode *u, const uint8_t *dmem, unsigned lo, unsigned at)
+{
+    unsigned p = lo;
+    while (p <= at) {
+        unsigned first = dmem[p ^ 3], op = first & 0x3f, sz = u->rdp_cmd_size ? u->rdp_cmd_size(first) : hle_rdp_cmd_size(op);
+        if (at < p + sz)
+            return hle_rdp_w1_ignored(op) && at >= p + 4 && at < p + 8;
+        p += sz;
+    }
+    return 0;
+}
+
 /* The final state of the native run (a) against the JIT's (b) (docs/design.md, "What verify compares"). The standard mode compares the EXTERNAL EFFECTS: DMEM (except the ucode's dead
  * ranges, hle_dead_range), IMEM, the SP and DPC registers, MI_INTR, the pc, SP_STATUS_TIMEOUT, the RDRAM the task wrote by DMA (the bytes of every range either side wrote, except the RDP
  * output ring, hle_ucode.ring_off), and the concatenated bytes of the RDP lists (not their boundaries). The order and number of the intermediate SP register writes, the DMA chunking, the
@@ -630,6 +665,36 @@ static void compare_tasks(struct report *r, const struct hle_ucode *u, const Prs
         rep(r, "  pc: native %03x, JIT %03x\n", a->pc, b->pc);
     if (a->sp_status_timeout != b->sp_status_timeout)
         rep(r, "  SP_STATUS_TIMEOUT: native %d, JIT %d\n", a->sp_status_timeout, b->sp_status_timeout);
+    if (K.cut) {                                /* the call ends in the middle of the task, which goes on from here (PRSP_POLL_IDLE): everything the next call reads is part of the result */
+        unsigned k, h, nr = 0;
+        static int all = -1;
+        if (all < 0)
+            all = getenv("HLE_CUT_SREG_ALL") != NULL;
+        for (k = 1; k < 32; k++)
+            if (a->sr[k] != b->sr[k]) {
+                K.cut_sreg[k]++;
+                if (all || (K.cut_sregs >> k & 1))
+                    rep(r, "  scalar register %u at the cut: native %08x, JIT %08x\n", k, a->sr[k], b->sr[k]);
+            }
+        for (h = 0; h < 2; h++)                 /* the live DMEM the family declares dead at the end of a task */
+            for (k = K.cut_lo[h]; k < K.cut_hi[h]; k++) {
+                /* (range 1 is RDP commands from the start of the buffer: the second word of NO_OP and of the syncs is stale scratch that the RDP ignores, as in the stream compare) */
+                if (da[k ^ 3] != db[k ^ 3] && !(h == 1 && cut_w1_ignored(u, da, K.cut_lo[1], k)) && nr++ < 24)
+                    rep(r, "  DMEM[%03x] live at the cut: native %02x, JIT %02x\n", k, da[k ^ 3], db[k ^ 3]);
+            }
+        if (getenv("HLE_CUT_VR")) {             /* development: the vector unit's state (not part of the result) */
+            for (k = 0; k < 32; k++)
+                if (memcmp(a->vr[k], b->vr[k], 16))
+                    fprintf(stderr, "cut: vector register %u differs\n", k);
+            for (k = 0; k < 3; k++)
+                if (memcmp(a->flags[k], b->flags[k], 32))
+                    fprintf(stderr, "cut: flags register %u (VCO VCC VCE) differs\n", k);
+            if (memcmp(a->acc, b->acc, sizeof(a->acc)))
+                fprintf(stderr, "cut: accumulator differs\n");
+            if (a->div_out != b->div_out || a->div_in != b->div_in || a->dp_flag != b->dp_flag)
+                fprintf(stderr, "cut: divide unit differs\n");
+        }
+    }
     if (u->flags & HLE_F_REGS_LIVE) {           /* the scalar registers a later task reads are part of the result */
         unsigned k;
         for (k = 1; k < 32; k++)
@@ -756,7 +821,7 @@ static void compare_tasks(struct report *r, const struct hle_ucode *u, const Prs
 static void poison_regs(uint32_t live)
 {
     unsigned i, k;
-    /* development: HLE_POISON_SEL="s=<hex mask of scalar registers>,v=<hex mask of vector registers>,x=<1 accumulator | 2 flags | 4 divide unit>" poisons only these (default: all) */
+    /* development: HLE_POISON_SEL="s=<hex mask of scalar registers>,v=<hex mask of vector registers>,x=<1 accumulator | 2 flags | 4 divide unit | 8 flags but VCO>" poisons only these (default: all) */
     uint32_t sm = ~live, vm = ~0u, xm = 7;
     const char *e = getenv("HLE_POISON_SEL");
     if (e) {
@@ -782,6 +847,10 @@ static void poison_regs(uint32_t live)
             K.v.acc[i] = (uint16_t)(0xbeef ^ i);
     if (xm & 2)
         for (i = 0; i < 3; i++)
+            for (k = 0; k < 16; k++)
+                K.v.flags[i][k] = (k ^ i) & 1 ? 0xffff : 0;
+    if (xm & 8)                                     /* VCC and VCE only (the microcode keeps VCO clear at the end of a command: vadd and vsub consume it) */
+        for (i = 1; i < 3; i++)
             for (k = 0; k < 16; k++)
                 K.v.flags[i][k] = (k ^ i) & 1 ? 0xffff : 0;
     if (xm & 4) {
@@ -875,6 +944,17 @@ static void report(int final)
         return;
     armlet_log(M64MSG_INFO, "hle: %" PRIu64 " tasks, %" PRIu64 " native (%.1f us each), %" PRIu64 " declined%s", K.tasks, K.native,
                K.native ? (double)K.ticks / 1000.0 / (double)K.native : 0.0, K.declined, final ? " (final)" : "");
+    if (K.resumes || K.cuts) {
+        armlet_log(M64MSG_INFO, "hle: PRSP_POLL_IDLE: %" PRIu64 " calls that continue a task, %" PRIu64 " native (%" PRIu64 " of them the wait unchanged without the framework: %.2f us each; the others %.1f us each), %" PRIu64 " declined; %" PRIu64 " native runs ended at a cut",
+                   K.resumes, K.r_native, K.r_idle, K.r_idle ? (double)K.i_ticks / 1000.0 / (double)K.r_idle : 0.0,
+                   K.r_native > K.r_idle ? (double)K.r_ticks / 1000.0 / (double)(K.r_native - K.r_idle) : 0.0, K.r_declined, K.cuts);
+        if (K.verify) {
+            int k;
+            for (k = 1; k < 32; k++)
+                if (K.cut_sreg[k])
+                    armlet_log(M64MSG_INFO, "hle:   scalar register %d differed from the JIT's at %" PRIu64 " cuts", k, K.cut_sreg[k]);
+        }
+    }
     if (K.verify)
         armlet_log(M64MSG_INFO, "hle: verify: %" PRIu64 " tasks compared, %" PRIu64 " with differences", K.verified, K.mismatches);
     for (i = 0; i < MAX_REASONS && K.reasons[i].why; i++)
@@ -929,26 +1009,34 @@ enum { PRSP_TIMEOUT_INIT = 0x7fff };
 
 /* The native run in the sandbox, from the state as it is. HLE_OK: the task is complete, the sandbox is still on (the caller commits or compares, then sandbox(0));
  * else the state is restored and the sandbox is off. */
+static void task_init(struct hle_task *t, struct armlet_ctx *c, const struct hle_ucode *uc)
+{
+    memset(t, 0, sizeof(*t));
+    t->dmem = K.v.dmem;
+    t->imem = K.v.imem;
+    t->rdram = (uint8_t *)K.v.rdram;
+    t->cr = K.v.cr;
+    t->irq = K.v.irq;
+    t->uc = uc;
+    t->ctx = c;
+    t->start_pc = c ? (*c->rsp.SP_PC_REG & 0xfff) : *K.v.pc;
+    t->log = 1;
+}
+
 static int native_run(struct armlet_ctx *c, const struct hle_ucode *uc, int record, int interp)
 {
     struct hle_task t;
     int rc;
 
-    memset(&t, 0, sizeof(t));
-    t.dmem = K.v.dmem;
-    t.imem = K.v.imem;
-    t.rdram = (uint8_t *)K.v.rdram;
-    t.cr = K.v.cr;
-    t.irq = K.v.irq;
-    t.uc = uc;
-    t.ctx = c;
-    t.start_pc = c ? (*c->rsp.SP_PC_REG & 0xfff) : *K.v.pc;
-    t.log = 1;
+    task_init(&t, c, uc);
     hle_bind(&t, uc);
     K.n_recs = K.n_arena = 0;
     g_n_undo = g_n_uarena = 0;
     K.why = NULL;
     K.broke = 0;
+    K.cut = 0;
+    K.cut_hi[0] = K.cut_hi[1] = 0;
+    prsp_poll_save(&K.poll0);
     prsp_poll_task_begin(t.start_pc);
     prsp_native_save(K.s0);
     if (MUT(316, K.s0->sp_status_timeout != PRSP_TIMEOUT_INIT, 0)) {
@@ -965,7 +1053,7 @@ static int native_run(struct armlet_ctx *c, const struct hle_ucode *uc, int reco
     prsp_native_sandbox(1);
     rc = interp || K.interp ? hle_interp_task(&t) : uc->fam->run(&t, uc);
     K.switched = t.switched;
-    if (rc == HLE_OK && !K.broke) {
+    if (rc == HLE_OK && !K.broke && !K.cut) {
         K.why = "the family returned without ending the task";
         rc = HLE_DECLINE;
     }
@@ -976,10 +1064,11 @@ static int native_run(struct armlet_ctx *c, const struct hle_ucode *uc, int reco
             armlet_event_listener = NULL;
         }
         prsp_native_load(K.s0);
+        prsp_poll_load(&K.poll0);
         prsp_native_resync();                       /* (the JIT may have compiled code for IMEM contents the task went through) */
         return rc;
     }
-    if (K.poison)
+    if (K.poison && (!K.cut || getenv("HLE_POISON_SEL")))   /* (a cut task goes on in a later call: its registers are live; only the selection of HLE_POISON_SEL, the ones that are not, is filled) */
         poison_regs(uc->flags & HLE_F_REGS_LIVE ? uc->live_sregs : 0);
     *K.v.pc = K.end_pc;
     return HLE_OK;
@@ -995,6 +1084,8 @@ int armlet_hle_run(struct armlet_ctx *c, const struct armlet_ucode_id *u)
         return 0;
     if (armlet_hle_fe_trylock()) {                  /* the validator is replaying a task through the front-ends: this one goes to the JIT (never waits) */
         init_once();
+        if (*c->rsp.SP_PC_REG & 0xfff)                  /* (a call that continues a task: not counted as a task) */
+            return 0;
         K.tasks++;
         K.declined++;
         count_reason("the validator held the front-end lock");
@@ -1005,28 +1096,85 @@ int armlet_hle_run(struct armlet_ctx *c, const struct armlet_ucode_id *u)
     return rc;
 }
 
+/* a call that continues a task after the JIT's idle-poll cut (PRSP_POLL_IDLE): its reasons are counted apart from the tasks' */
+static void count_resume_reason(const char *why)
+{
+    static const char pfx[] = "continued call: ";
+    static char buf[MAX_REASONS][112];
+    static unsigned n;
+    char *b;
+    unsigned i;
+    for (i = 0; i < n; i++)
+        if (!strcmp(buf[i] + sizeof(pfx) - 1, why)) {
+            count_reason(buf[i]);
+            return;
+        }
+    if (n == MAX_REASONS) {
+        count_reason("continued call: (other reasons)");
+        return;
+    }
+    b = buf[n++];
+    snprintf(b, sizeof(buf[0]), "%s%s", pfx, why);
+    count_reason(b);
+}
+
 static int hle_run_locked(struct armlet_ctx *c, const struct hle_ucode *uc)
 {
     uint64_t t0;
+    int resume = (*c->rsp.SP_PC_REG & 0xfff) != 0;      /* dispatch.c offers a call that starts anywhere but at 0 only when the PRSP_POLL_IDLE policy is on */
 
     init_once();
-    K.tasks++;
-    if (!(K.tasks & 63))
-        report(0);
+    if (resume) {
+        unsigned wp = uc->fam->wait_pc ? uc->fam->wait_pc(uc, K.v.imem) : 0;
+        if (!wp || wp != (*c->rsp.SP_PC_REG & 0xfff))     /* (not a call the family can take up: the JIT's, uncounted) */
+            return 0;
+        K.resumes++;
+    } else {
+        K.tasks++;
+        if (!(K.tasks & 63))
+            report(0);
+    }
     /* the JIT's own preconditions (run_rsp_task), and the one thing the replay relies on: the video plugin is foir, behind the coalescing path */
     if ((*c->rsp.SP_STATUS_REG & (SP_STATUS_HALT | SP_STATUS_BROKE)) || !c->cfg.rdp_coalesce || ((*c->rsp.DPC_STATUS_REG & DPC_STATUS_XBUS) && !(uc->flags & HLE_F_XBUS_OK))) {
-        K.declined++;
+        if (resume)
+            K.r_declined++;
+        else
+            K.declined++;
         K.why = "not eligible (SP halted, RDP coalescing off or XBUS)";
-        count_reason(K.why);
+        if (resume)
+            count_resume_reason(K.why);
+        else
+            count_reason(K.why);
         return 0;
+    }
+
+    if (resume && !K.verify && uc->fam->idle) {         /* the wait nothing has changed in: the state the JIT's idle slice leaves, without the snapshot and the commit */
+        struct hle_task t;
+        uint64_t i0 = K.stats ? now_ns() : 0;
+        task_init(&t, c, uc);
+        if (uc->fam->idle(&t, uc)) {
+            if (K.stats)
+                K.i_ticks += now_ns() - i0;
+            *c->rsp.SP_PC_REG = 0x04001000 | (MUT(487, t.start_pc, t.start_pc + 4) & 0xffc);        /* (the core had left the pc without the 0x04001000 that run_rsp_task sets) */
+            K.r_native++;
+            K.r_idle++;
+            return 1;
+        }
     }
 
     t0 = now_ns();
     if (native_run(c, uc, K.verify != 0, 0) != HLE_OK) {
-        K.declined++;
-        count_reason(K.why ? K.why : "(no reason given)");
+        if (resume) {
+            K.r_declined++;
+            count_resume_reason(K.why ? K.why : "(no reason given)");
+        } else {
+            K.declined++;
+            count_reason(K.why ? K.why : "(no reason given)");
+        }
         return 0;
     }
+    if (K.cut)
+        K.cuts++;
 
     if (K.verify) {
         struct report r;
@@ -1040,6 +1188,7 @@ static int hle_run_locked(struct armlet_ctx *c, const struct hle_ucode *uc)
         memcpy(K.ram_n, K.v.rdram, 0x800000);
         sandbox_off();
         prsp_native_load(K.s0);
+        prsp_poll_load(&K.poll0);
         prsp_native_resync();
         side_reset(1, uc);
         K.cur_ev = 1;
@@ -1092,9 +1241,15 @@ static int hle_run_locked(struct armlet_ctx *c, const struct hle_ucode *uc)
                     abort();
             }
         }
-        K.native++;
-        K.ticks += now_ns() - t0;
-        armlet_hle_poison(uc);
+        if (resume) {
+            K.r_native++;
+            K.r_ticks += now_ns() - t0;
+        } else {
+            K.native++;
+            K.ticks += now_ns() - t0;
+        }
+        if (!K.cut)
+            armlet_hle_poison(uc);
         return 1;
     }
 
@@ -1103,10 +1258,16 @@ static int hle_run_locked(struct armlet_ctx *c, const struct hle_ucode *uc)
     armlet_rdp_defer_task_begin(c);
     replay(c);
     armlet_rdp_defer_task_end();
-    *c->rsp.SP_PC_REG = 0x04001000 | (K.end_pc & 0xffc);
-    K.native++;
-    K.ticks += now_ns() - t0;
-    armlet_hle_poison(uc);
+    *c->rsp.SP_PC_REG = 0x04001000 | ((K.cut ? MUT(487, K.end_pc, K.end_pc + 4) : K.end_pc) & 0xffc);
+    if (resume) {
+        K.r_native++;
+        K.r_ticks += now_ns() - t0;
+    } else {
+        K.native++;
+        K.ticks += now_ns() - t0;
+    }
+    if (!K.cut)
+        armlet_hle_poison(uc);
     return 1;
 }
 

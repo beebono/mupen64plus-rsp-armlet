@@ -22,6 +22,7 @@
 #include "hle_f3dex2_int.h"
 #include "latch.h"
 #include "probe.h"
+#include "prsp_native.h"
 
 #ifdef ARMLET_NATIVE
 
@@ -515,7 +516,7 @@ void f3_do_dl(struct f3 *f, uint32_t w0, uint32_t w1)
         hle_st32(t, DL_STACK + d, ret);
         hle_st8(t, DL_DEPTH, (uint8_t)(d + 4));
     }
-    if ((int32_t)(w0 << 15) < 0 && target == ret - 8)  /* a branch to the command itself: the microcode spins on it until the CPU patches the list (Gauntlet Legends), 32767 polls of the JIT; the JIT gets the task now */
+    if ((int32_t)(w0 << 15) < 0 && target == ret - 8)  /* a branch to the command itself: the microcode spins on it until the CPU patches the list (Gauntlet Legends), 32767 polls of the JIT; the JIT gets the task now (with PRSP_POLL_IDLE the loop does not get here: f3_cut_dl) */
         f->bad = "the display list branches to itself (a wait for the CPU)";
     f->k0 = target;
     if (MUT(240, target & 7, 0))                        /* the refill DMA rounds the address down to 8 and the list starts at the rounded address; the lean mode reads from the address itself */
@@ -620,6 +621,131 @@ static const struct hle_ucode *loaded_build(const struct hle_task *t, uint32_t s
     return NULL;
 }
 
+/* ---- a wait for the CPU (PRSP_POLL_IDLE=N of the fork, docs/design.md "Waits for the CPU") ------------------------------------------------------------------------------------------------
+ * Gauntlet Legends' display lists contain a G_DL branch to the command itself, which the microcode spins on until the CPU patches the list. With the policy on the JIT cuts such a task after N idle
+ * polls of SP_STATUS: the poll is the delay slot of the `jal` that waits for the DMA of the refill (head - 4: `jal wait`, head: `mfc0 at, SP_STATUS`), so the cut leaves pc at the wait routine, with
+ * ra = head + 4, the refill DMA done, the registers of the loop (k0 = the target + 168, k1 = -168, t9 = w0, t8 = the target, at = the status), and HALT set and cleared again for the core. The next call
+ * (SP_PC at the wait pc) runs the DMA wait, returns to head + 4 and executes the command still in the input buffer (the stale one: the same G_DL), whose refill brings the patched list. */
+/* the scalar registers the loop carries across commands or the wait routine and the handler leave (at, v0, v1, t3, t4, s3, s4, s6, s7, t8, t9, k0, k1, gp, ra): the verify compare takes them as the JIT leaves them. The others
+ * (a0 .. a3, t0 .. t2, t5 .. t7, s0 .. s2, s5, sp, s8) are the temporaries of the vertex, matrix and triangle code the front-end runs in place of the microcode: written before read in every handler (the poison run of
+ * docs/testing.md fills them at every cut and nothing changes) */
+#define F3_CUT_SREGS ((1u << 1) | (1u << 2) | (1u << 3) | (1u << 11) | (1u << 12) | (1u << 19) | (1u << 20) | (1u << 22) | (1u << 23) | (1u << 24) | (1u << 25) | (1u << 26) | (1u << 27) | (1u << 28) | (1u << 31))
+
+static unsigned f3_wait_pc_b(const struct f3dex2_build *b, const uint32_t *imem)
+{
+    uint32_t j, m;
+    if (!b || b->pcs || b->lay || b->head < 4 || prsp_poll_idle_limit() <= 0)
+        return 0;
+    j = imem[(b->head - 4) >> 2];
+    m = imem[b->head >> 2];
+    if ((j >> 26) != 3 || (m >> 26) != 0x10 || ((m >> 21) & 31) != 0 || ((m >> 11) & 31) != 4)    /* jal ..., mfc0 rt, SP_STATUS */
+        return 0;
+    return ((j & 0x3ff) << 2) & 0xffc;
+}
+
+static unsigned f3_wait_pc(const struct hle_ucode *u, const uint32_t *imem) { return f3_wait_pc_b((const struct f3dex2_build *)u->fam_data, imem); }
+
+/* G_DL (branch) to its own address, taken up at the loop head: the microcode's own code runs the handler and the loop to the JIT's cut (the interpreter ends the call there: hle_cut) */
+static int f3_cut_dl(struct f3 *f, uint32_t w0, uint32_t w1)
+{
+    struct hle_task *t = f->t;
+    if (t->dx || (int32_t)(w0 << 15) >= 0 || seg_addr(t, w1) != f->k0 + f->k1 - 8 || !f3_wait_pc_b(f->b, t->imem))
+        return 0;
+    f->ho_pc = hle_dm16(t, JUMP_TABLE + 2 * (int)(int8_t)(w0 >> 24)) & 0xfff;       /* (the handler: t3 of the jump) */
+    f->cut = 1;
+    t->cut_ok = 1;
+    return 1;
+}
+
+/* A call at the wait pc: the state the JIT's cut left, if it is that of a wait on a G_DL to itself (NULL, and the target of the branch), else the reason it is not */
+static const char *f3_wait_state(struct hle_task *t, const struct f3dex2_build *b, const uint32_t *r, uint32_t *target)
+{
+    uint32_t k0 = r[HLE_REG_K0], k1 = r[HLE_REG_K1], w0, w1, tg;
+    if (t->dx)
+        return "a replay";
+    if (r[HLE_REG_RA] != (uint32_t)b->head + 4)
+        return "not at the loop head's wait (ra)";
+    if (k1 != (uint32_t)-F2_IN_REFILL)
+        return "the input buffer is not just refilled";
+    if (*t->cr[4] & SIG0)
+        return "the task yields";
+    w0 = hle_dm32(t, F2_IN_END + k1);                   /* the command still in the input buffer: the stale one */
+    w1 = hle_dm32(t, F2_IN_END + 4 + k1);
+    if ((w0 >> 24) != 0xde || (int32_t)(w0 << 15) >= 0 || (hle_dm16(t, JUMP_TABLE + 2 * (int)(int8_t)(w0 >> 24)) & 0xfff) != PC_DL)
+        return "the command in the input buffer is not a G_DL branch";
+    tg = seg_addr(t, w1);
+    if (tg != k0 + k1)
+        return "the G_DL does not branch to itself";
+    if ((tg & 7) || (tg & 0x7fffff) + F2_IN_REFILL > 0x800000)
+        return "the G_DL address is unaligned or at the end of RDRAM";
+    if (r[HLE_REG_T9] != w0 || r[HLE_REG_T8] != tg)
+        return "the registers are not those of the cut";
+    *target = tg & 0x7ffff8;
+    return NULL;
+}
+
+/* nothing has changed in the list the CPU has not patched yet: the JIT's idle slice (the refill of the same bytes, the same loop, the same registers, `at` = the status of that poll) leaves the
+ * state it started from. The tracker of the fork is left as the slice's N idle polls leave it. */
+static int f3_wait_unchanged(struct hle_task *t, uint32_t target)
+{
+    return !MUT(481, memcmp(&t->dmem[F2_IN >> 2], t->rdram + target, F2_IN_REFILL), 0);
+}
+
+static void f3_wait_apply(struct hle_task *t, uint32_t *r)
+{
+    r[HLE_REG_AT] = MUT(482, *t->cr[4], *t->cr[4] ^ 0x40);
+    prsp_poll_idle_mark(r);
+}
+
+static int f3_idle(struct hle_task *t, const struct hle_ucode *u)
+{
+    const struct f3dex2_build *b = (const struct f3dex2_build *)u->fam_data;
+    struct hle_cpu c;
+    uint32_t target;
+    if (hle_exact())                                    /* (the microcode's own loop: f3_resume) */
+        return 0;
+    f2L = &l_lay_std;                                   /* (wait_pc: b->lay is NULL) */
+    hle_cpu_init(t, &c, t->start_pc, 0);
+    if (f3_wait_state(t, b, c.r, &target) || !f3_wait_unchanged(t, target))
+        return 0;
+    f3_wait_apply(t, c.r);
+    return 1;
+}
+
+/* The call that takes the task up at the wait pc. HLE_STOP: the interpreter has run the microcode to the loop head (the stale command's iteration included); the caller goes on with the loop as it does after the
+ * boot code of a fresh task. HLE_OK: the wait was unchanged, the call ends at the cut again. */
+static int f3_resume(struct hle_task *t, const struct f3dex2_build *b, struct hle_cpu *c)
+{
+    uint32_t target;
+    const char *why;
+    int rc;
+    if (prsp_poll_idle_limit() <= 0)
+        return hle_decline(t, "the idle-poll policy is off");
+    why = f3_wait_state(t, b, c->r, &target);
+    if (why)
+        return hle_decline(t, why);
+    if (f3_wait_unchanged(t, target)) {
+        if (hle_exact()) {                              /* the exact-events mode does what the microcode does, DMA for DMA: its loop, to the cut */
+            c->stop_pc = 0x1000;
+            t->cut_ok = 1;
+            rc = hle_rsp_run(t, c);
+        } else {
+            f3_wait_apply(t, c->r);
+            hle_cut(t, t->start_pc);
+            rc = HLE_OK;
+        }
+        if (rc == HLE_OK)
+            hle_cut_live(t, F2_IN, F2_IN_END, c->r[HLE_REG_S6] - OUT_BYTES, c->r[HLE_REG_S7], F3_CUT_SREGS);
+        return rc;
+    }
+    rc = hle_rsp_run(t, c);                             /* the DMA wait and the return to the loop head */
+    if (rc != HLE_STOP)
+        return rc;
+    if (MUT(483, 1, 0))
+        rc = hle_rsp_run(t, c);                         /* the stale command (the G_DL to itself) again, with its refill: the patched list is in the buffer and the registers are the loop's */
+    return rc;
+}
+
 static int run_loop(struct f3 *f, int *handover)
 {
     struct hle_task *t = f->t;
@@ -660,6 +786,10 @@ static int run_loop(struct f3 *f, int *handover)
         case K_NOP:
             break;
         case K_DL:
+            if (f3_cut_dl(f, w0, w1)) {                 /* a wait for the CPU (PRSP_POLL_IDLE): the microcode's own code takes it up to the JIT's idle cut */
+                *handover = 1;
+                return HLE_OK;
+            }
             f3_do_dl(f, w0, w1);
             break;
         case K_ENDDL:
@@ -1016,14 +1146,14 @@ static int f3dex2_run(struct hle_task *t, const struct hle_ucode *u)
         if (g_prof)
             atexit(prof_dump);
     }
-    if (!t->dx && load_known(t))
+    if (!t->dx && !t->start_pc && load_known(t))
         return hle_decline(t, "an earlier task with these pointers loaded another ucode");
     f2L = b->lay ? b->lay : &l_lay_std;
     hle_cpu_init(t, &c, t->start_pc, 1u << 22);
     c.stop_pc = b->head + 4;                            /* the first fetch has polled SP_STATUS already */
-    rc = hle_rsp_run(t, &c);
+    rc = t->start_pc ? f3_resume(t, b, &c) : hle_rsp_run(t, &c);
     if (rc != HLE_STOP)
-        return rc;                                      /* the task ended before the loop, or declined */
+        return rc;                                      /* the task ended before the loop, or declined (a call that continues a task: ended at the cut again) */
     if (*t->cr[4] & SIG0)
         return hle_decline(t, "the task yields");
     memset(&f, 0, sizeof(f));
@@ -1107,10 +1237,22 @@ static int f3dex2_run(struct hle_task *t, const struct hle_ucode *u)
         if (++runs % 400 == 0)
             prof_dump();
     }
-    return hle_rsp_run(t, &c);
+    rc = hle_rsp_run(t, &c);
+    if (rc == HLE_OK && f.cut) {
+        /* the call ended at the cut, in the middle of the task. What the lean mode does not do for the flushes (the DMA write registers) and what is live though declared dead at the end of a task:
+         * the display list input buffer and the RDP output not flushed yet */
+        if (f.lean && f.total)
+            *t->cr[3] = MUT(484, 0xff8, 0x1234);
+        hle_cut_live(t, F2_IN, F2_IN_END, c.r[HLE_REG_S6] - OUT_BYTES, c.r[HLE_REG_S7], F3_CUT_SREGS);
+        if (MUT(485, 0, 1))
+            c.r[HLE_REG_S7] += 8;
+        if (MUT(486, 0, 1))
+            hle_st32(t, f2L->viewport_scale, hle_dm32(t, f2L->viewport_scale) ^ 0x10000);
+    }
+    return rc;
 }
 
-const struct hle_family f3dex2_fam = { .name = "f3dex2", .run = f3dex2_run };
+const struct hle_family f3dex2_fam = { .name = "f3dex2", .run = f3dex2_run, .wait_pc = f3_wait_pc, .idle = f3_idle };
 
 static const struct f3dex2_build l_b_dk64 = {
     .head = 0x18c, .copy = 0x208, .sync = 0x20c, .segcopy = 0x218, .ef = 0x238, .ed = 0x244, .tri1 = 0x7b4, .tri2 = 0x7ac, .vtx = 0x4f0,

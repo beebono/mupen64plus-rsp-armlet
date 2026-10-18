@@ -243,7 +243,15 @@ extern "C" int hle_rsp_run(struct hle_task *t, struct hle_cpu *c)
 					if ((rd & 15) == 4)
 					{
 						if (hle_poll_status(t, rt, &v))
+						{
+							if (t->cut_ok && prsp_poll_idle_cut())
+							{ // the JIT's idle cut (PRSP_POLL_IDLE): RSP_MFC0 has put the status read into rt; the call ends here, at the next instruction (the target of the branch this is the delay slot of)
+								r[0] = 0;
+								hle_cut(t, pending ? ptarget : next);
+								return HLE_OK;
+							}
 							return hle_decline(t, "SP_STATUS polled too often (the JIT would halt)");
+						}
 					}
 					else
 						v = *t->cr[rd & 15];
