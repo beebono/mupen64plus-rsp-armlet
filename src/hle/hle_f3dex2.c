@@ -451,7 +451,8 @@ static int do_clip(struct f3 *f, const struct fx2_vtx *const v[3])
     f2_ld_vctx(t, &vc);
     vc.gen204 = f->b->gen204;
     cc.v = &vc;
-    cc.sign0 = cc.fan_l0 = f->b->gen204;
+    cc.sign0 = f->b->clip204;
+    cc.fan_l0 = f->b->gen204;
     for (p = 0; p < 6; p++) {
         unsigned a1 = 20 - 4 * p;
         for (k = 0; k < 4; k++)
@@ -558,6 +559,19 @@ static void load_note(const struct hle_task *t)
     }
 }
 
+/* the load of these pointers ran through (the loaded text has a build now: a latch came since the notes): the pointers start afresh, or load_known would go on declining them, 63 tasks in 64, for
+ * as long as the old loads outnumber the runs (NBA Jam 2000: 2200 declines after its loaded Rej text latched) */
+static void load_took(const struct hle_task *t)
+{
+    unsigned i;
+    for (i = 0; i < l_nloads; i++)
+        if (l_loads[i].uc == hle_dm32(t, 0xfd0) && l_loads[i].data == hle_dm32(t, 0xfd8)) {
+            l_loads[i].loads = 0;
+            l_loads[i].runs = 1;
+            l_loads[i].skip = 0;
+        }
+}
+
 /* The build a G_LOAD_UCODE loads: the one whose text is the 3912 bytes the command copies to IMEM 0x80 (f3dex2_build.load_key, the FNV of exactly those bytes: the overlay code behind them is not part of
  * the identity, as in the ucode id of a task). Only a build of this front-end (f3dex2_fam: the F3DEX2 dialects and S2DEX 2.x) can be taken over. The keys of the last two texts are remembered (compared with
  * memcmp against RDRAM, as gfx_ucode.c does), so that a task that loads the same text every time does not hash it every time. NULL: not a registered (or latched) build. */
@@ -662,8 +676,9 @@ static int run_loop(struct f3 *f, int *handover)
             f->nb = b;
             if (memcmp(t->rdram + src, t->rdram + cur, 0xf48)) {
                 const struct hle_ucode *nu = loaded_build(t, src);
-                if (!t->dx)                             /* (a replay under validation leaves the probe's and the decline statistics' state alone) */
-                    armlet_probe_note_load(src, hle_dm32(t, 0xd8), 0x180 + (w0 & 0xfff) + 1);     /* (the probe derives a loaded text too; the G_RDPHALF_1 address is the image of DMEM 0: docs/design.md, "The probe and the ucode cache") */
+                /* the probe derives a loaded text too (the G_RDPHALF_1 address is the image of DMEM 0: docs/design.md, "The probe and the ucode cache"); a replay notes it as well: a latched
+                 * derived build's task that loads an unknown text declines at the gate in the real run before it gets here, and its replay is the only one that does (NBA Jam 2000) */
+                armlet_probe_note_load(src, hle_dm32(t, 0xd8), 0x180 + (w0 & 0xfff) + 1);
                 if (f->trace)
                     fprintf(stderr, "  G_LOAD_UCODE text %08x key %016llx data %08x -> %s\n", src, (unsigned long long)armlet_ucode_hash(t->rdram, src, 0xf48), hle_dm32(t, 0xd8), nu ? nu->name : "(not registered)");
                 if (!nu || (t->ctx && !armlet_gfx_allowed(&t->ctx->cfg, nu->id))) {
@@ -673,6 +688,8 @@ static int run_loop(struct f3 *f, int *handover)
                 }
                 if (hle_cmd(t, LATCH_K_LOAD))
                     return HLE_DECLINE;
+                if (!t->dx)
+                    load_took(t);
                 f->nu = nu;
                 f->nb = (const struct f3dex2_build *)nu->fam_data;
                 f->nsrc = src;

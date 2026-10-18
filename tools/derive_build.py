@@ -141,6 +141,8 @@ def fmt_f2_record(reg, res, U, name, ident):
     fs = [".%s = %s" % (k, hx(rec.pc[k])) for k in F2.PC_FIELDS if rec.pc.get(k) not in (0, None, -1) or k in ("head", "tri1", "tri2", "vtx")]
     if rec.gen204:
         fs.append(".gen204 = 1")
+    if rec.clip204:
+        fs.append(".clip204 = 1")
     if rec.zex:
         fs.append(".zex = 1")
     if rec.bz_z:
@@ -204,11 +206,13 @@ def report(reg, fam, res, U, args):
     P("VERDICT %s" % res.verdict)
     n_near = collections.Counter(res.near.values()) if hasattr(res, "near") else {}
     P("  unexplained words: %d; near-class words: %s; reference-only words: %s" % (len(res.x), dict(n_near) or "-", dict(collections.Counter(getattr(res, "xr_res", {}).values())) or "-"))
+    xc, xrc = F2.region_counts(res, U)
+    P("  unexplained words by region (%s): %s; deleted reference-only words: %s" % ("/".join(F2.REGIONS), "/".join(map(str, xc)), "/".join(map(str, xrc))))
     if fam == "f3dex2":
         rec = res.rec
         P("record (derived):")
         P("  pcs: " + ", ".join("%s=%s" % (k, hx(rec.pc[k])) for k in F2.PC_FIELDS if rec.pc.get(k, 0)))
-        P("  gen204=%d zex=%d reject_mask=%s load_key=0x%016x pipe_sync=%d" % (rec.gen204, rec.zex, hx(rec.reject_mask, 4), rec.load_key, rec.lay.get("pipe_sync", 0)))
+        P("  gen204=%d clip204=%d zex=%d reject_mask=%s load_key=0x%016x pipe_sync=%d" % (rec.gen204, rec.clip204, rec.zex, hx(rec.reject_mask, 4), rec.load_key, rec.lay.get("pipe_sync", 0)))
         std = reg.recs["f3dex2"]["l_b_dk64"].lay
         P("  layout fields that differ from the standard layout: %s" % ({k: hx(v) for k, v in rec.lay.items() if k in F2.LAY_ADDR and v != std.get(k)} or "none"))
         P("  layout fields / constants confirmed by aligned instructions (moved or unchanged): %d; not confirmed by any aligned instruction (kept from the primary reference): %s" % (
@@ -276,7 +280,17 @@ EXPECTED = {
     ("l_wr", "pc.tri1"): "Wave Race's G_TRI1 entry is a call into a routine it shares with its quad command (`jal 0x288`): no other reference's handler maps onto it; the derived build declines G_TRI1. Verdict NONE (80 unexplained words)",
     ("l_wr", "pc.quad"): "Wave Race's quad command is in no other reference: no handler to map it from (the derived build declines the command)",
     ("l_ge", "pc.tri4"): "GoldenEye's G_TRI4 (2.0G) is in no other reference: no handler to map it from (the derived build declines the command). Verdict NONE (its 17 words unexplained)",
+    ("l_b_s2_xbus", "lay.out_bytes"): "an XBUS build has no output buffer (hand value 0): the words that carry Worms' buffer size are replaced by the ring code (init, the flush routine at 0x648), and the tool reads an unrelated immediate there as a size (16)",
     ("l_ge", "lay.tri4_tab"): "follows from the handler: without a G_TRI4 pc there is no table to read",
+    ("l_b_ex2_208n_xbus", "lay.out_bytes"): "an XBUS build has no RDP output buffers (its list is a ring in DMEM, the layout's xbus / ring_start): the buffer sizes that its flush code does not name are 0 in the hand record; the transport is not derived (the XBUS work); verdict NONE",
+    ("l_b_ex2_208n_xbus", "lay.out_toggle"): "the same",
+    ("l_b_rej_xbus", "lay.out_bytes"): "the same: Excitebike 64's Rej text is an XBUS build, derived here from the fifo Rej texts (the flush code is unexplained words); xbus / ring_start are the primary reference's, not derived",
+    ("l_b_rej_xbus", "lay.out_toggle"): "the same",
+    ("l_b_rej_203", "lay.rej_flags"): "REJ_LIT_LX (the unsigned multiply-accumulate lighting) is in no other reference, so no remaining reference can show it; REJ_FLAT_A is flx's alone, and flx is the primary reference (no discriminating evidence: the primary's bit)",
+    ("l_b_rej_206", "lay.rej_flags"): "every other Rej reference rounds y (REJ_YQ): none shows the text that does not, so the bit is the primary reference's",
+    ("l_b_rej_206", "lay.no_lit"): "F3DEX.Rej 2.06's lighting is not modelled (lit vertex commands decline): a front-end decision no operand shows",
+    ("l_b_rej_206", "lay.light_scale"): "2.06 lights no vertex (no_lit); the hand record's 0x1c6 is a copy of the 2.08 text's, its constant vector has the scale in lane 7 (0x1ce), which is what the derivation reads",
+    ("l_b_rej_flx", "lay.rej_flags"): "REJ_FLAT_A and REJ_LIT_FLX are in no other reference (this build is the only one with them), REJ_LIT_LX is the primary reference's: bits that no remaining reference can show",
 }
 
 

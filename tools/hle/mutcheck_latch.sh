@@ -1,14 +1,17 @@
 #!/bin/bash
 # The latch policy's test (tools/hle/test_latch.c) with each deliberate error of src/hle/latch.c: it must pass unmutated and fail for 430 (the fingerprint without the counts), 431 (repeats count
 # fully), 432 (NEAR needs no more evidence), 433 (no distinct fingerprints needed), 434 (a NEAR build is suspended, not unlatched, at its first mismatch), 435 (one strike more than set), 436 (a
-# suspension keeps the validated kinds and fingerprints), 437 (no sampling decay). docs/testing.md, "The background validator and the latch policy".
+# suspension keeps the validated kinds and fingerprints), 437 (no sampling decay), and the loose tier's 450 (a loose build needs no more evidence), 451 (a structural difference graded NUMERIC),
+# 452 (a HARD difference graded STRUCTURAL), 453 (a strict build's NUMERIC grade is not a strike), 457 (a never kind admitted by a match: the region gate), 458 (a default-record build needs
+# only the loose evidence), 465 (no floor under a repeat's weight), 469 (the override latches with one fingerprint). docs/testing.md, "The background
+# validator and the latch policy", "The loose tier".
 set -e
 R=$(cd "$(dirname "$0")/../.." && pwd)
 T=$(mktemp -d)
 trap 'rm -rf "$T"' EXIT
 build() { cc -O2 -Wall -Wextra ${1:+-DARMLET_HLE_MUTATE=$1} -I"$R/src/hle" -o "$T/t" "$R/tools/hle/test_latch.c" "$R/src/hle/latch.c" -lm; }
 build ""; "$T/t" | tail -1
-for m in 430 431 432 433 434 435 436 437; do
+for m in 430 431 432 433 434 435 436 437 450 451 452 453 457 458 465 469; do
     build $m
     if "$T/t" >"$T/out" 2>&1; then echo "mutation $m: NOT CAUGHT"; exit 1; fi
     echo "mutation $m: caught ($(grep -c FAILED "$T/out") checks failed)"

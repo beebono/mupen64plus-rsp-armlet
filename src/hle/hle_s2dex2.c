@@ -319,4 +319,20 @@ HLE_UCODE(l_s2_oot) = { .id = 0xaf535d1683a57fcbull, .name = "S2DEX fifo 2.05 [S
 
 HLE_UCODE(l_s2_208) = { .id = 0xfa171b4489d45ef2ull, .name = "S2DEX fifo 2.08 (Worms Armageddon)", .fam = &f3dex2_fam, .fam_data = &l_b_s2_208, S2DEAD };
 
+/* S2DEX xbus 2.08 (StarCraft 64's, docs/ucode-s2dex2.md section 8): Worms' 2.08 with the XBUS transport: the RDP list goes through a ring in DMEM (0x4c0 .. 0xee0, the commands may run over by 0xb0; there is no
+ * output buffer, so no out_toggle / out_bytes) that every call of the flush routine (0x648: DPC_END = the output pointer, the wrap, the wait while the RDP is within 224 bytes ahead) hands to the RDP. The init is
+ * shorter, so the handlers sit 0x28 lower from 0x1ac on and the continuation pcs of G_OBJ_LOADTXTR with them (ldtx_spr / ldtx_rect); the overlays, constants and DMEM state are the 2.08's. */
+static const struct f2_layout l_lay_s2_xbus = {
+    .jump_table = 0x370, .mw_max = 14, .geom_def = F2_GEOM_DEF, .in = 0x418, .in_end = 0x4c0, .moveword_adj = 10374, .desc_clip = 0x314, .desc_light = 0x31c,
+    .xbus = 1, .ring_start = 0x4c0, .ring_end = 0xee0, .ring_gap = 224 };
+static const uint16_t l_ext_s2x[][2] = {
+    { 0x024, K_S2_SELDL }, { 0x558, K_S2_LOADTXTR }, { 0xb54, K_S2_BG1CYC }, { 0x210, K_S2_BGCOPY }, { 0x0e8, K_S2_RENDERMODE }, { 0xb60, K_S2_RECT }, { 0x6a0, K_S2_SPRITE },
+    { 0x0a4, K_S2_MOVEMEM }, { 0x1d8, K_S2_SCISSOR }, { 0x128, K_S2_HALF2 }, { 0xffff, 0 } };
+static const struct f3dex2_build l_b_s2_xbus = {
+    .head = 0x1ac, .copy = 0x140, .sync = 0x144, .segcopy = 0x150, .ef = 0x170, .ed = MUT(248, 0xffff, 0xfff), .tri1 = 0, .tri2 = 0, .vtx = 0,
+    .mtx = 0, .geom = 0, .enddl = 0x07c, .half2 = MUT(248, 0xffff, 0xfff), .modvtx = 0, .culldl = 0, .branchz = 0, .reject_mask = 0, .tri4 = 0, .ldtx_spr = 0x6c0, .ldtx_rect = 0xb80, .lay = &l_lay_s2_xbus, .pcs = &l_pcs_s2, .ext = l_ext_s2x, .ext_cmd = s2_ext_cmd, .load_key = 0xe51b62cd9879aeccull };
+/* dead at the end of a task: the display list input buffer and the ring with its slack (0x418 .. 0xf90) */
+static const struct hle_dead_range l_dead_s2x[] = { { 0x418, 0xf90 }, { 0xfc8, 0xfcc } };
+HLE_UCODE(l_s2_xbus) = { .id = 0x3ee636569037de5bull, .name = "S2DEX xbus 2.08 (StarCraft 64)", .fam = &f3dex2_fam, .flags = HLE_F_XBUS_OK, .fam_data = &l_b_s2_xbus, .dead = l_dead_s2x, .n_dead = 2 };
+
 #endif

@@ -42,11 +42,11 @@ the `HLE_UCODE` entries), so the hand-written tables are the one source of truth
    lead to it in the reference's table are looked up in the unknown's table (a majority vote; the loop head is the target of the no-op opcodes), so the S2DEX shifted handlers need no alignment. A handler the reference lacks (`G_SPECIAL_1`, `G_TRI4`)
    is taken when the unknown's table leads that opcode to code that is not the head and the reference's leads it to the head.
 6. **Several references.** The reference with the fewest unexplained words is the *primary*; the words it leaves unexplained are offered to the others (greedily: most words first). A word may be explained by a reference only if that reference has
-   the **flag value that owns the word**: `zex` owns the triangle-setup code (reachable from `G_TRI1` / `G_TRI2`, not from `G_VTX`, not the clip or light overlays), `gen204` the vertex pipeline (`G_VTX`) and the clipper. Without this rule a text could be
+   the **flag value that owns the word**: `zex` owns the triangle-setup code (reachable from `G_TRI1` / `G_TRI2`, not from `G_VTX`, not the clip or light overlays), `gen204` the vertex pipeline (`G_VTX`) and the clipper but for its reciprocal, `clip204` the clipper's reciprocal (the vector computation words of the clip overlay). Without this rule a text could be
    "explained" by mixing words of a F3DZEX build and a plain one that no build has (mutation 2 below).
-7. **Flags** (`gen204`, `zex`): the value whose references explain words in the owned code that the references with the other value do not. F3D has attributes of this kind too (`xbus`, `vtx_wr`, ...): there the vote is
+7. **Flags** (`gen204`, `clip204`, `zex`): the value whose references explain words in the owned code that the references with the other value do not. F3D has attributes of this kind too (`xbus`, `vtx_wr`, ...): there the vote is
    taken only over pairs of references that differ in that attribute alone, and not at all when there is no such pair or the margin is under 4 : 1 (the tool says so). F3DEX 1.x decides its attributes otherwise (below).
-   Rules that the tool knows about the front-end: `G_BRANCH_Z` reads the clip w (`lh 6(v)`) for F3DZEX without `gen204`, else the screen z (`lw 28(v)`), as `hle_f3dex2.c` does; the loop is checked against all registered builds.
+   Rules that the tool knows about the front-end: `G_BRANCH_Z` reads the clip w (`lh 6(v)`) for F3DZEX without `gen204`, else the screen z (`lw 28(v)`), as `hle_f3dex2.c` does; `clip204` is voted from the clip overlay's vector words (`vrcph` / `vabs` of the intersection's scale) alone, `gen204` from the rest of the vertex pipeline and the clipper (its new-vertex stores, the fan), so a text can have the 2.04 reciprocal under 2.06 stores (F3DEX 2.05, Chameleon Twist 2); the loop is checked against all registered builds.
 8. **The rest of the record**: `load_key` is the FNV of the first 0xf48 bytes (the tool reproduces Donkey Kong 64's `0x4d947651fb1d5494` and the removed F-Zero X entry's `0xd02467acf66d7396`); the dead ranges, `ring_off` and the informational `HLE_UCODE.flags`
    are copied from the primary reference and are **not evidence**: a dead range needs the poison proof of [testing.md](testing.md) (`ARMLET_DMEM_POISON`) whatever the tool says.
 
@@ -62,27 +62,37 @@ the `HLE_UCODE` entries), so the hand-written tables are the one source of truth
   - reference code of 16 or more words that the unknown lacks (a feature the unknown does not have: the unknown can do less than the reference, and the front-end declines what it cannot do).
 - **NONE**: anything else, in particular any unexplained word in the vertex, triangle, clip, matrix or command code, a conflicting constant, a short run of missing instructions, and a family score under 50 % aligned.
 
-A verdict is a statement about the *code*. NONE does not mean "wrong": Chameleon Twist 2's F3DEX 2.05 is NONE (2.04's pcs and F3DZEX's triangle code, but the clipper has two words of the 2.04 flavour that no reference combines with the rest, and three instructions are missing) and verifies clean in 3839 tasks (below).
+A verdict is a statement about the *code*. NONE does not mean "wrong": Chameleon Twist 2's F3DEX 2.05 was NONE until `clip204` was split from `gen204` (2.04's pcs and F3DZEX's triangle code, the clipper's reciprocal of the 2.04 flavour under the 2.06 stores and fan: two words that no reference combined with the rest, and three instructions missing); it derives EXACT now (`gen204 = 0, zex = 1, clip204 = 1`) and verified clean in 3839 tasks (below).
 It means that a person or the probe has to look.
 
 ## Validation: leave-one-out against the hand-written records
 
-Every registered build is derived **without its own table** (all texts of its record are removed from the reference set) and the derived record is compared with the hand-written one, field by field (F3DEX2 and S2DEX: 74 fields each, from `pc.*`, `f2pcs.*`, `lay.*`,
+Every registered build is derived **without its own table** (all texts of its record are removed from the reference set) and the derived record is compared with the hand-written one, field by field (F3DEX2, S2DEX and Rej: 79 fields each since the Rej work (74 before the S2DEX pcs, then 77, 78, now `lay.rej_flags`), from `pc.*`, `f2pcs.*`, `lay.*`,
 `gen204`, `zex`, `reject_mask`, `load_key` and the extension table; F3DEX 1.x: 65 since its records run (below; the rows here are the current ones); F3D: 70 since its records run, "F3D records that run" below). `tools/derive_check.sh DUMPS` runs it (and the mutation check) and fails on a mismatch that is not in the table of understood ones below.
 
 | family | build (hand record) | ids | primary reference | also needs | verdict | unexplained | near / reference-only | fields compared | fields that differ from the hand record |
 |---|---|---|---|---|---|---|---|---|---|
-| f3dex2 | l_b_dk64 | 1fdeaad6 | l_b_ex2_208 | - | NEAR | 0 | - / 1 | 74 | none |
-| f3dex2 | l_b_snap | d576cfcf | l_b_ex2_208 | l_b_ex2_204h | EXACT | 0 | - / 0 | 74 | none |
-| f3dex2 | l_b_pm | c734403d | l_b_ex2_208 | l_b_bg | NEAR | 0 | {'light-positional': 169} / 0 | 74 | none |
-| f3dex2 | l_b_oot | 0d3f849c | l_b_dk64 | l_b_ex2_204 | NEAR | 0 | {'init': 1} / 1 | 74 | none |
-| f3dex2 | l_b_ex2_208 | d2d1f9f2 | l_b_snap | - | EXACT | 0 | - / 0 | 74 | none |
-| f3dex2 | l_b_ex2_204 | 5dce3244 | l_b_ex2_204h | - | EXACT | 0 | - / 0 | 74 | none |
-| f3dex2 | l_b_ex2_204h | e8574467 | l_b_ex2_204 | l_b_snap | EXACT | 0 | - / 0 | 74 | none |
-| f3dex2 | l_b_bg | e80e5292 | l_b_pm | l_b_ex2_208, l_b_s2_208 | NONE | 202 | {'init': 2} / 203 | 74 | unconfirmed 12, expected 4 |
-| f3dex2 | l_b_s2_kirby | 5f33af89 | l_b_s2_208 | - | NEAR | 0 | - / 1 | 74 | none |
-| f3dex2 | l_b_s2_oot | Lf535d16 | l_b_s2_kirby | l_b_oot | EXACT | 0 | - / 0 | 74 | none |
-| f3dex2 | l_b_s2_208 | b228360b | l_b_s2_kirby | l_b_bg | EXACT | 0 | - / 0 | 74 | none |
+| f3dex2 | l_b_dk64 | 1fdeaad6 | l_b_ex2_207n | - | EXACT | 0 | - / 0 | 79 | none |
+| f3dex2 | l_b_snap | d576cfcf | l_b_ex2_208 | l_b_ex2_204h | EXACT | 0 | - / 0 | 79 | none |
+| f3dex2 | l_b_pm | c734403d | l_b_ex2_208 | l_b_bg, l_b_ex2_203 | NEAR | 0 | {'light-positional': 168} / 0 | 79 | none |
+| f3dex2 | l_b_oot | 0d3f849c | l_b_ex2_206 | - | NEAR | 0 | {'init': 1} / 1 | 79 | none |
+| f3dex2 | l_b_ex2_208 | d2d1f9f2 | l_b_ex2_208n | - | EXACT | 0 | - / 0 | 79 | none |
+| f3dex2 | l_b_ex2_204 | 5dce3244 | l_b_ex2_204h | - | EXACT | 0 | - / 0 | 79 | none |
+| f3dex2 | l_b_ex2_204h | e8574467 | l_b_ex2_204 | l_b_snap | EXACT | 0 | - / 0 | 79 | none |
+| f3dex2 | l_b_bg | e80e5292 | l_b_pm | l_b_ex2_203, l_b_ex2_208, l_b_rej_flx | NONE | 194 | {'init': 1} / 200 | 79 | unconfirmed 12, expected 4 |
+| f3dex2 | l_b_ex2_208n | 9875370e | l_b_ex2_208 | - | EXACT | 0 | - / 0 | 79 | none |
+| f3dex2 | l_b_ex2_206 | 0bbec7c3 | l_b_oot | l_b_dk64 | NEAR | 0 | - / 1 | 79 | none |
+| f3dex2 | l_b_ex2_207n | d8bde272 | l_b_dk64 | - | EXACT | 0 | - / 0 | 79 | none |
+| f3dex2 | l_b_s2_kirby | 5f33af89 | l_b_s2_208 | - | NEAR | 0 | - / 1 | 79 | none |
+| f3dex2 | l_b_s2_oot | Lf535d16 | l_b_s2_kirby | l_b_oot | EXACT | 0 | - / 0 | 79 | none |
+| f3dex2 | l_b_s2_208 | b228360b | l_b_s2_kirby | l_b_s2_xbus | EXACT | 0 | - / 0 | 81 | none |
+| f3dex2 | l_b_s2_xbus | 3ee63656 | l_b_s2_208 | l_b_ex2_208n_xbus, l_b_oot, l_b_rej_flx, l_b_rej_xbus | NONE | 51 | {'init': 1} / 11 | 81 | unconfirmed 1, expected 1 |
+| f3dex2 | l_b_ex2_208n_xbus | L649a083 | l_b_ex2_208 | l_b_s2_xbus | NONE | 7 | - / 19 | 81 | unconfirmed 1, expected 1 |
+| f3dex2 | l_b_ex2_203 | 33dc705a | l_b_ex2_204 | l_b_bg | NONE | 32 | - / 36 | 79 | none |
+| f3dex2 | l_b_rej_203 | 7de803fd | l_b_rej_flx | l_b_rej_206, l_b_rej_xbus | NONE | 27 | - / 35 | 79 | unconfirmed 2, expected 1 |
+| f3dex2 | l_b_rej_206 | 95129dc7 | l_b_rej_203 | l_b_rej_xbus | NONE | 153 | - / 150 | 79 | unconfirmed 1, expected 2 |
+| f3dex2 | l_b_rej_flx | c750be26 | l_b_rej_203 | - | NONE | 50 | {'init': 1, 'light-small': 1} / 61 | 79 | unconfirmed 2, expected 1 |
+| f3dex2 | l_b_rej_xbus | 8b0a3e32 | l_b_rej_203 | l_b_ex2_208n_xbus | NONE | 88 | {'init': 2, 'light-small': 12} / 87 | 79 | unconfirmed 1, expected 1 |
 | f3dex1 | l_b_121 | 208a567e | l_b_123 | l_b_non122 | EXACT | 0 | - / 0 | 65 | none |
 | f3dex1 | l_b_non122 | fd5a31cc | l_b_121 | l_b_non100 | EXACT | 0 | - / 0 | 65 | none |
 | f3dex1 | l_b_123 | 047252e8 | l_b_121 | l_b_lx123 | EXACT | 0 | - / 0 | 65 | none |
@@ -120,18 +130,30 @@ listed in `EXPECTED` of `derive_build.py`; **UNEXPLAINED** would fail the check,
 | l_b_bg | lay.mw_max | 0x10 | 0xe | expected | the size of the G_MOVEWORD table (16 in BG): a bound in a compare no other build's code shows |
 | l_b_bg | lay.no_lit | 0x1 | 0x0 | expected | BG's lighting is another kernel (f3dexbg_fx): the tool reports the lighting overlay as different (X) but cannot name the kernel |
 | l_b_bg | lay.lit_vtx | 0x1 | 0x0 | expected | the same |
-| l_dex | flag.non | 0x0 | 0x1 | noted | noted: the tool says it could not decide it |
-| l_dex:047252 | flag.non | 0x0 | 0x1 | noted | noted: the tool says it could not decide it |
-| l_non:5063f1 | flag.v095 | 0x0 | 0x1 | noted | noted: the tool says it could not decide it |
-| l_dex095 | flag.non | 0x0 | 0x1 | expected | 0.95 is another text (71 words unexplained; verdict NONE) |
-| l_dex095 | flag.v095 | 0x1 | 0x0 | noted | noted: the tool says it could not decide it |
-| l_dlxn | flag.non | 0x1 | 0x0 | noted | noted: the tool says it could not decide it |
-| l_dlxn:0a7cc6 | flag.non | 0x1 | 0x0 | noted | noted: the tool says it could not decide it |
-| l_wr | pc.tri1 | 0x278 | 0x0 | expected | Wave Race's G_TRI1 entry is a call into a routine it shares with its quad command (`jal 0x288`): no other reference's handler maps onto it; the derived build declines G_TRI1 |
+| l_b_s2_xbus | lay.out_toggle | 0x0 | 0xc00 | unconfirmed | unconfirmed: no aligned instruction anchors it, kept from the primary reference (reported as such) |
+| l_b_s2_xbus | lay.out_bytes | 0x0 | 0x10 | expected | an XBUS build has no output buffer (hand value 0): the words that carry Worms' buffer size are replaced by the ring code (init, the flush routine at 0x648), and the tool reads an unrelated immediate there as a size (16) |
+| l_b_ex2_208n_xbus | lay.out_toggle | 0x0 | 0x208 | unconfirmed | unconfirmed: no aligned instruction anchors it, kept from the primary reference (reported as such) |
+| l_b_ex2_208n_xbus | lay.out_bytes | 0x0 | 0x10 | expected | an XBUS build has no RDP output buffers (its list is a ring in DMEM, the layout's xbus / ring_start): the buffer sizes that its flush code does not name are 0 in the hand record; the transport is not derived (the XBUS work); verdict NONE |
+| l_b_rej_203 | lay.movemem_tab | 0x2f0 | 0x290 | unconfirmed | unconfirmed: no aligned instruction anchors it, kept from the primary reference (reported as such) |
+| l_b_rej_203 | lay.moveword_adj | 0x27fe | 0x279e | unconfirmed | unconfirmed: no aligned instruction anchors it, kept from the primary reference (reported as such) |
+| l_b_rej_203 | lay.rej_flags | 0x9 | 0x3 | expected | REJ_LIT_LX (the unsigned multiply-accumulate lighting) is in no other reference, so no remaining reference can show it; REJ_FLAT_A is flx's alone, and flx is the primary reference (no discriminating evidence: the primary's bit) |
+| l_b_rej_206 | lay.light_scale | 0x1c6 | 0x1ce | unconfirmed | unconfirmed: no aligned instruction anchors it, kept from the primary reference (reported as such) |
+| l_b_rej_206 | lay.no_lit | 0x1 | 0x0 | expected | F3DEX.Rej 2.06's lighting is not modelled (lit vertex commands decline): a front-end decision no operand shows |
+| l_b_rej_206 | lay.rej_flags | 0x0 | 0x1 | expected | every other Rej reference rounds y (REJ_YQ): none shows the text that does not, so the bit is the primary reference's |
+| l_b_rej_flx | lay.movemem_tab | 0x290 | 0x2f0 | unconfirmed | unconfirmed: no aligned instruction anchors it, kept from the primary reference (reported as such) |
+| l_b_rej_flx | lay.moveword_adj | 0x279e | 0x27fe | unconfirmed | unconfirmed: no aligned instruction anchors it, kept from the primary reference (reported as such) |
+| l_b_rej_flx | lay.rej_flags | 0x7 | 0x9 | expected | REJ_FLAT_A and REJ_LIT_FLX are in no other reference (this build is the only one with them), REJ_LIT_LX is the primary reference's: bits that no remaining reference can show |
+| l_b_rej_xbus | lay.out_toggle | 0x0 | 0x300 | unconfirmed | unconfirmed: no aligned instruction anchors it, kept from the primary reference (reported as such) |
+| l_b_rej_xbus | lay.out_bytes | 0x0 | 0x10 | expected | the same: Excitebike 64's Rej text is an XBUS build, derived here from the fifo Rej texts (the flush code is unexplained words); xbus / ring_start are the primary reference's, not derived |
+| l_b_095 | pc.persp | 0x3c8 | 0x0 | expected | F3DEX 0.95's G_PERSPNORM handler is in no other reference (F3DLX 0.95, the only other build with it, has no dump): no handler to map it from; the front-end of the derived build declines the command. Verdict NONE (32 unexplained words) |
+| l_b_095 | pc.quad | 0x244 | 0x0 | expected | the same for G_QUAD |
+| l_b_095 | pc.culldl | 0x368 | 0x0 | expected | the same for the 0.95 form of G_CULLDL (byte offsets, the last vertex not tested): its code differs from the 1.2x handler |
+| l_b_095 | flag.culldl_off | 0x1 | 0x0 | expected | follows from the handler: without a G_CULLDL pc the attribute is the primary reference's (and the command declines) |
+| l_wr | pc.tri1 | 0x278 | 0x0 | expected | Wave Race's G_TRI1 entry is a call into a routine it shares with its quad command (`jal 0x288`): no other reference's handler maps onto it; the derived build declines G_TRI1. Verdict NONE (80 unexplained words) |
 | l_wr | pc.quad | 0x1fc | 0x0 | expected | Wave Race's quad command is in no other reference: no handler to map it from (the derived build declines the command) |
-| l_wr | flag.vptr_mul | 0x8 | 0x4 | noted | follows from G_TRI1: the index scale is read from its handler, which is not mapped |
-| l_ge | pc.tri4 | 0x20c | 0x0 | expected | GoldenEye's G_TRI4 (2.0G) is in no other reference: no handler to map it from (the derived build declines the command) |
+| l_wr | flag.vptr_mul | 0x8 | 0x4 | noted | noted: the tool says it could not decide it |
 | l_ge | lay.tri4_tab | 0x2d0 | 0x0 | expected | follows from the handler: without a G_TRI4 pc there is no table to read |
+| l_ge | pc.tri4 | 0x20c | 0x0 | expected | GoldenEye's G_TRI4 (2.0G) is in no other reference: no handler to map it from (the derived build declines the command). Verdict NONE (its 17 words unexplained) |
 
 What this shows:
 
@@ -205,29 +227,29 @@ with the highest aligned fraction; rows with the state "registered (declines for
 | 2 | F3DEX fifo 2.06 `0bbec7c3` | F3DEX2 | 3 | 4.69% | 4.69% | none | f3dex2 | NEAR | 0 | init 1 | l_b_oot + l_b_dk64 |
 | 3 | F3D 2.0G `538f79d8` | F3D | 1 | 1.56% | 1.56% | none | f3d | NONE | 17 | deleted 16 | l_pw + l_tt |
 | 4 | F3DEX fifo 2.07 `48c7e653` | F3DEX2 | 1 | 1.56% | 1.56% | none | - | SAME TEXT as registered l_b_dk64 | - | - | - |
-| 5 | S2DEX 1.06 / F3DEX.NoN 1.23 `5b327e0d` | F3DEX | 1 | 1.56% | 1.56% | none | f3dex2 | NONE | 344 | init 29, deleted 153, init 10, extra 17 | l_b_s2_kirby + l_b_ex2_204, l_b_oot, l_b_snap |
+| 5 | S2DEX 1.06 / F3DEX.NoN 1.23 `5b327e0d` | F3DEX | 1 | 1.56% | 1.56% | none | f3dex2 | NONE | 339 | init 29, deleted 153, init 10, extra 17 | l_b_s2_kirby + l_b_oot, l_b_rej_flx, l_b_rej_xbus, l_b_snap |
 | 6 | F3DEX fifo 2.05 `97989ee9` | F3DEX2 | 1 | 1.56% | 1.56% | none | f3dex2 | NONE | 2 | init 1, deleted 3 | l_b_oot + l_b_ex2_204 |
 | 7 | F3DEX.NoN 1.23 `efe4b8f3` | F3DEX | 1 | 1.56% | 1.56% | none | f3dex1 | NONE | 0 | deleted 2 | l_non + l_dex:047252 |
-| 8 | F3DLX.Rej xbus 2.08 `8b0a3e32` | F3DEX2 | 1 | 1.56% | 1.56% | none | f3dex2 | NONE | 697 | init 4, deleted 62, init 5, extra 542 | l_b_ex2_208 + l_b_oot, l_b_s2_208 |
+| 8 | F3DLX.Rej xbus 2.08 `8b0a3e32` | F3DEX2 | 1 | 1.56% | 1.56% | none | - | SAME TEXT as registered l_b_rej_xbus | - | - | - |
 | 9 | (no banner) `bfbf5496` | other | 1 | 1.56% | 1.56% | none | f3dex1 | NONE | 851 | deleted 281, extra 453 | l_dex:047252 + l_dlx:7502cf, l_non:5063f1 |
 | 10 | F3DEX.NoN fifo 2.07 `d8bde272` | F3DEX2 | 1 | 1.56% | 1.56% | none | f3dex2 | EXACT | 0 | - | l_b_dk64 |
 | 11 | F3D 2.0H `4212d63f` | F3D | 1 | 1.56% | 1.56% | registered (declines for other reasons) | - | SAME TEXT as registered l_mm | - | - | - |
-| 12 | S2DEX 1.07 `190d04df` | other | 1 | 1.53% | 1.34% | none | f3dex2 | NONE | 302 | init 29, deleted 133, init 10 | l_b_s2_kirby + l_b_ex2_204, l_b_oot, l_b_pm, l_b_snap |
+| 12 | S2DEX 1.07 `190d04df` | other | 1 | 1.53% | 1.34% | none | f3dex2 | NONE | 297 | init 29, deleted 133, init 10 | l_b_s2_kirby + l_b_oot, l_b_pm, l_b_rej_flx, l_b_rej_xbus, l_b_snap |
 | 13 | (no banner) `a6c64e8d` | other | 1 | 1.45% | 1.00% | registered (declines for other reasons) | f3dex1 | NONE | 862 | deleted 237, extra 511 | l_dex:047252 + l_dlx:7502cf |
 | 14 | F3D 2.0D `3e9b9c3a` | F3D | 1 | 1.37% | 0.43% | registered (declines for other reasons) | - | SAME TEXT as registered l_pw | - | - | - |
 | 15 | F3DEX 1.21 `208a567e` | F3DEX | 1 | 1.36% | 0.27% | registered (declines for other reasons) | - | SAME TEXT as registered l_dex | - | - | - |
 | 16 | F3D 2.0H `968dec0e` | F3D | 1 | 1.27% | 0.22% | none | f3d | NONE | 783 | deleted 65, extra 630 | l_tt + l_wr |
-| 17 | F3DEX fifo 2.03 / F3DLX.Rej fifo 2.03 `33dc705a` | F3DEX2 | 1 | 0.89% | 0.81% | none | f3dex2 | NONE | 32 | deleted 36 | l_b_ex2_204 + l_b_bg |
+| 17 | F3DEX fifo 2.03 / F3DLX.Rej fifo 2.03 `33dc705a` | F3DEX2 | 1 | 0.89% | 0.81% | none | - | SAME TEXT as registered l_b_ex2_203 | - | - | - |
 | 18 | S2DEX fifo 2.06 / F3DEX 1.23 `5f33af89` | F3DEX2 | 1 | 0.63% | 0.40% | registered (declines for other reasons) | - | SAME TEXT as registered l_b_s2_kirby | - | - | - |
-| 19 | F3DFLX.Rej fifo 2.03F / L3DEX fifo 2.03 `c750be26` | F3DEX2 | 1 | 0.57% | 0.59% | none | f3dex2 | NONE | 720 | init 2, deleted 107, init 2, extra 450 | l_b_ex2_204 + l_b_s2_kirby |
+| 19 | F3DFLX.Rej fifo 2.03F / L3DEX fifo 2.03 `c750be26` | F3DEX2 | 1 | 0.57% | 0.59% | none | - | SAME TEXT as registered l_b_rej_flx | - | - | - |
 | 20 | F3DEX 1.23 `047252e8` | F3DEX | 2 | 0.47% | 0.51% | registered (declines for other reasons) | - | SAME TEXT as registered l_dex:047252 | - | - | - |
-| 21 | F3DEX.Rej fifo 2.06 / F3DEX.Rej xbus 2.06 `95129dc7` | F3DEX2 | 1 | 0.45% | 0.39% | none | f3dex2 | NONE | 633 | init 1, deleted 23, init 2, extra 519 | l_b_ex2_204 + l_b_dk64, l_b_s2_kirby |
+| 21 | F3DEX.Rej fifo 2.06 / F3DEX.Rej xbus 2.06 `95129dc7` | F3DEX2 | 1 | 0.45% | 0.39% | none | - | SAME TEXT as registered l_b_rej_206 | - | - | - |
 | 22 | F3DEX.NoN 1.21 `fd5a31cc` | F3DEX | 1 | 0.37% | 0.11% | registered (declines for other reasons) | - | SAME TEXT as registered l_non | - | - | - |
 | 23 | F3DEX.NoN 1.22 `dff34c75` | F3DEX | 1 | 0.21% | 0.06% | none | f3dex1 | NONE | 14 | - | l_non |
-| 24 | F3DLX.Rej fifo 2.03 / F3DFLX.Rej fifo 2.03F `7de803fd` | F3DEX2 | 1 | 0.10% | 0.16% | none | f3dex2 | NONE | 672 | init 1, deleted 49, init 2, extra 533 | l_b_ex2_204 + l_b_bg, l_b_ex2_208, l_b_s2_kirby |
+| 24 | F3DLX.Rej fifo 2.03 / F3DFLX.Rej fifo 2.03F `7de803fd` | F3DEX2 | 1 | 0.10% | 0.16% | none | - | SAME TEXT as registered l_b_rej_203 | - | - | - |
 | 25 | F3D 2.0H `9d0d289f` | F3D | 1 | 0.09% | 0.27% | none | f3d | NONE | 789 | deleted 59, extra 631 | l_mm + l_tt |
 | 26 | L3DEX 1.21 `3c7a64e0` | other | 1 | 0.08% | 0.22% | none | f3dex1 | NONE | 535 | deleted 38, extra 360 | l_dex + l_non:5063f1 |
-| 27 | L3DEX fifo 2.08 `cd32d8e5` | F3DEX2 | 1 | 0.08% | 0.78% | none | f3dex2 | NONE | 331 | init 1, init 3, deleted 49, extra 554 | l_b_oot + l_b_pm, l_b_s2_208 |
+| 27 | L3DEX fifo 2.08 `cd32d8e5` | F3DEX2 | 1 | 0.08% | 0.78% | none | f3dex2 | NONE | 327 | init 1, light-small 4, init 3, deleted 49, extra 554 | l_b_oot + l_b_pm, l_b_s2_208 |
 | 28 | F3DLX 1.21 `76c763bc` | F3DEX | 1 | 0.03% | 0.00% | registered (declines for other reasons) | - | SAME TEXT as registered l_dlx | - | - | - |
 | 29 | F3D 2.0D `2f411927` | F3D | 1 | 0.02% | 0.25% | none | f3d | NONE | 33 | deleted 43 | l_sm64 + l_mm |
 | 30 | F3D 2.0D `1d12f4b3` | F3D | 1 | 0.00% | 0.03% | none | f3d | NONE | 507 | deleted 34, extra 384 | l_sm64 + l_wr |
@@ -236,7 +258,7 @@ Reading the verdicts:
 
 - **Rows 1, 2, 4, 10: EXACT or NEAR F3DEX2 builds, 12.5 points of the 34.4 left on the JIT** (mean over 64 games; the three games of row 1 and the three of row 2 are the largest single items). Row 4 is the registered Donkey Kong 64 text under another id (Rocket's `ucode_size` is 0xf80).
   Row 1 is **EXACT against the registered 2.08**: same code, `reject_mask 0x70b0` (NoN), pcs of the 2.08 builds. Row 10 is **EXACT against Donkey Kong 64's 2.07** with the NoN mask. Row 2 (2.06) is NEAR: one `init` word, with the F3DZEX triangle code (`zex = 1`).
-- **Rows 6 and 7 (NONE)** are close: Chameleon Twist 2's 2.05 (2 unexplained words in the clipper, 3 missing) and Donald Duck's F3DEX.NoN 1.23 (no unexplained word, 2 instructions missing against the 1.22 / 1.21 builds). Both verify clean in the experiment below.
+- **Rows 6 and 7** were close: Chameleon Twist 2's 2.05 (2 unexplained words in the clipper, 3 missing: EXACT since `clip204`) and Donald Duck's F3DEX.NoN 1.23 (no unexplained word, 2 instructions missing against the 1.22 / 1.21 builds). Both verify clean in the experiment below.
 - **Everything else is another microcode** (the 18.8 points that remain after rows 1, 2, 4, 6, 7 and 10 are 7.2 points of registered builds that decline in the front-end and 11.6 of the microcode below): S2DEX 1.06 / 1.07 (a different generation than 2.x; 300 to 340 words), the Rej / F3DLX.Rej / F3DFLX.Rej / L3DEX texts (500 to 700 words differ: 20-byte vertex records, other triangle code), F3D 2.0G (GoldenEye: 17 + 16 words against
   the 2.0D family) and the 2.0H re-layouts (Glover, Wipeout: 780 words), Star Wars Rogue Squadron and Indiana Jones (no family), F-Zero X's 2.03 (above), the F3DEX.NoN 1.22 of Iggy's Reckin' Balls (14 words). Their 11.6 points need kernels, not records.
 - (2026-10-17) The F3D rows as the F3D derivation sees them now ("F3D records that run" below): row 3 (GoldenEye's 2.0G) NONE, 17 unexplained words, 16 reference-only, l_pw + l_tt: its four-triangle
@@ -258,7 +280,7 @@ runs one of the texts was run for 70 s with `GfxMode = hle` and `ARMLET_HLE_VERI
 | | | Gauntlet Legends | 209 | **207** | 3502 (`too many SP_STATUS polls`) |
 | F3DEX.NoN 2.07 `d8bd` | EXACT | Tonic Trouble | 1663 | **0** | 0 |
 | F3DEX 2.07 `1fde` (DK64 text, another id) | EXACT | Rocket | 1919 | **0** | 0 |
-| F3DEX 2.05 `9798` | NONE | Chameleon Twist 2 | 3839 | **0** | 0 |
+| F3DEX 2.05 `9798` | EXACT (was NONE: 2 words, 3 missing; the verify column is from before the split) | Chameleon Twist 2 | 3839 | **0** | 0 |
 | F3DEX.NoN 1.23 `efe4` (record `l_non`) | NONE | Donald Duck | 1983 | **0** | 0 |
 
 Nine of ten games verify clean (26 935 tasks without a difference). **Gauntlet Legends fails with the same text that verifies in two other games**: its tasks differ in the RDP state words (DMEM 0xc0 .. 0xe8) and in IMEM 0 .. 0xc at the end, and 3502 of its tasks poll the RSP status more than the 30 000 times
@@ -380,7 +402,7 @@ the fix, ran natively and differed (207 of 209).
 
 ## With the native Rej builds (merge of ucode-probe and native-rej, 2026-10-17)
 
-`derive_refs.c` is generated from the hand-written tables that `tools/derive_lib.py` reads back (`hle_f3dex2.c`, `hle_f3dex2_dialects.c`, `hle_s2dex2.c`, `f3dex.c`, `f3d.c` and their headers). The F3DEX 2.03 build and the Rej builds (F3DLX.Rej, F3DFLX.Rej, F3DEX.Rej, the XBUS F3DLX.Rej) are registered in `hle_rej.c`, which the tool does not read, and they are different microcodes (20-byte vertex records, other triangle code; hot list rows 8, 17, 19, 21, 24): as references they would not align with an unknown text above the family threshold. They are therefore **not** in the references; the regenerated `derive_refs.c` after the merge is byte-identical (`--check` passes). The static ids of `hle_rej.c` and the dynamic registry cannot collide: a derived build is found after the registered ones and `armlet_hle_find` takes the first, so a registered text is never re-derived.
+`derive_refs.c` is generated from the hand-written tables that `tools/derive_lib.py` reads back. Until 2026-10-18 the F3DEX 2.03 build and the Rej builds (F3DLX.Rej, F3DFLX.Rej, F3DEX.Rej, the XBUS F3DLX.Rej), registered in `hle_rej.c`, were **not** among them (different microcodes: 20-byte vertex records, other triangle code; hot list rows 8, 17, 19, 21, 24); they are references now, with a Rej extension of the derivation: "Rej as a derivation family" below. The static ids of `hle_rej.c` and the dynamic registry cannot collide: a derived build is found after the registered ones and `armlet_hle_find` takes the first, so a registered text is never re-derived.
 
 ## S2DEX records that run (2026-10-17)
 
@@ -390,6 +412,11 @@ a unique run of six instruction shapes or the aligned word; the overlay A code l
 field by field (2.08 from the 2.06 reference: `ldtx` 0x6e0 -> 0x6e8 ...; 2.06 from 2.08: NEAR, one reference-only word; 2.05 [Safe] from 2.06: EXACT, `out_bytes` 792 and `pipe_sync` from the knob / pattern evidence as before). `dbuild_make` builds a
 runnable S2DEX build from such a record (the dialect commands run on the primary reference's `ext_cmd`; a handler the primary reference marks absent, 0 or 0xffff, may be absent; no reject mask is needed without `G_TRI1`), and the ucode cache stores the
 dialect table (format 2).
+
+**An S2DEX xbus record by hand (2026-10-18).** StarCraft 64's S2DEX xbus 2.08 (`3ee636569037de5b`) derived NONE (108 unexplained words, 48 of them the transport's: another start-up, the flush routine at 0x648 with the ring at 0x4c0 .. 0xee0, buffer knobs that encode differently)
+and is registered by hand now (`l_b_s2_xbus`, [ucode-s2dex2.md](ucode-s2dex2.md) section 9), so it is a reference for the other xbus derivations. The start-up's `addi s7, zero, ring_start` is searched from 0x400 up (was 0x800: StarCraft's ring starts at 0x4c0). The ring's end and the room
+margin (`ring_end` 0xee0 / 0xf10, `ring_gap` 224 / 176) are layout fields of the front-end, not of the derivation record: a derived xbus build takes them from its primary reference when that one has the transport (`dbuild_make`), else the Rej / F3DEX2.NoN defaults (0), so the
+S2DEX xbus family derived from `l_b_s2_xbus` is right (the flush routine's constants `addi t3, s7, -3808` and `addi t3, t3, -224` are in the aligned words, but nothing checks them against the primary's: a text whose flush differs from its primary's has unexplained words).
 
 **The data image of a loaded text.** `tools/ucode_dump_shim.c` writes a `L...` dump's `.data` as 0x180 zero bytes followed by RDRAM from the `G_RDPHALF_1` address; that address is the image of DMEM **0** (`G_LOAD_UCODE` fills DMEM 0x180 .. from
 address + 0x180), so the dump's bytes sit 0x180 too high. `derive_lib.Ucode`, `derive_c_check.c` and `armlet-probe-replay` drop the first 0x180 bytes of a loaded dump (the shim is unchanged, so the existing dumps stay valid). Before, the jump table
@@ -467,3 +494,35 @@ does not have), its `1d12` (51 % aligned: other code) and the 2.0H texts of Wipe
 derives with Pilotwings' clip flag word and masks, the 2.0H RDPHALF numbering and depth byte and every handler but G_TRI4, its main triangle command: as a derived build it would decline nearly every
 task, so it is registered by hand instead, with G_TRI4 as a new command of the front-end ([ucode-f3d.md](ucode-f3d.md) 15, testing.md "F3D data-driven").
 
+
+## Rej as a derivation family (2026-10-18)
+
+The Rej builds ([ucode-rej.md](ucode-rej.md); `hle_rej.c`, `rej_dmem.h`) are references now, so an unknown Rej text is aligned with them (and the rest of the family) and gets a record that `dbuild_make` can build; before, every Rej text outside the four registered ones derived NONE with ~40 % of its words aligned.
+
+**References.** `tools/derive_lib.py` reads `hle_rej.c`, `rej_dmem.h` and `rej_fx.h` too (the `__attribute__((unused))` of the layouts, the designated-initialiser macro `REJ_FIFO_FRONT` and the `REJ_*` bits are understood), so six records join the F3DEX2 family: the four Rej builds (`l_b_rej_xbus`, `l_b_rej_203`,
+`l_b_rej_flx`, `l_b_rej_206`), F-Zero X's F3DEX 2.03 (`l_b_ex2_203`) and the F3DEX.NoN xbus 2.08 text Excitebike 64 loads (`l_b_ex2_208n_xbus`): 20 F3DEX2-family references, 35 in all (`armlet-probe-replay --sync`: 0 out of step). `derive_refs.c` was regenerated (`--check` passes).
+The Rej extension kinds start at `K_REJ_BASE` 0x60 (S2DEX's at `K_EXT` 0x40), which is how the derivation tells the two dialects apart (`DERIVE_K_REJ`, a static assertion in `dbuild.c`).
+
+**What is derived** (`derive_f2.py` and `derive.c`, decision for decision): the extension table's seven pcs (the primary reference's table mapped through the jump tables, as S2DEX's), the layout (knobs as before), the new field `lay.rej_flags` (`derive_rec.rej_flags`, `ucache_entry.rej_flags` in the old padding),
+and the Rej-specific rules of [ucode-rej.md](ucode-rej.md) section 10: one vote per bit of `rej_flags` over the words of the regions it owns; a reference of the other class explains no word of the vertex, triangle, lighting and clip code, and a Rej reference only the ones whose bits agree; the short runs of the primary
+reference's variant code that the unknown lacks are "a feature the unknown lacks" (`extra`, so NEAR), not "an instruction missing" (`deleted`, NONE); the light-setup scale is the lane of the constant vector at `const30` that holds 0x0100 (when no operand anchors it). One more rule, for the pair of re-entry addresses of the
+start-up code (`ra` = 0x1080 up to the 2.04 generation, 0x1084 after): a relocation, not the knob "mvp" that it had been read as (that ambiguity alone made Mario Party 3's and NBA Jam's texts NONE). `xbus`, `ring_start`, the dead ranges and the ring are **copied from the primary reference** in `dbuild_make`
+and not derived (the flush code that depends on them is aligned, so another transport is unexplained words and NONE); the XBUS derivation is separate work. `DERIVE_TOOL_VERSION` 5.
+
+**The leave-one-out table** above has the six new builds; all verdicts NONE (every Rej text differs from its neighbours in variant code, no record comes out EXACT from the others), and the new mismatches are the understood ones: `rej_flags` bits that no remaining reference shows (203's LX lighting, flx's FLAT_A / LIT_FLX, 206's missing rounding), `no_lit`
+of 2.06, `light_scale` of 2.06 (lane 7; the hand record's 0x1c6 is a copy, the build lights nothing), and for the two XBUS builds `out_bytes` / `out_toggle` (no output buffers). Unconfirmed: the F3DFLX layout's `movemem_tab` / `moveword_adj` in both directions, `light_scale` / `out_toggle` as before.
+**Every earlier row is field for field as before** (79 fields now with `lay.rej_flags`); what the new references changed in those rows (composite and counts only): Paper Mario's light-positional words 169 -> 168 (`l_b_ex2_203` explains one word), Conker's F3DEXBG 202 -> 194 unexplained, `init` 2 -> 1, reference-only 203 -> 200 (also needs `l_b_ex2_203`,
+`l_b_rej_flx` besides `l_b_ex2_208`), Kirby's S2DEX 2.08 also needs `l_b_rej_xbus` instead of `l_b_bg`; verdicts unchanged. In the hot list the five registered Rej texts (rows 8, 17, 19, 21, 24) are "SAME TEXT as registered" now, and three S2DEX / L3DEX rows lose 4 or 5 unexplained words to the Rej references
+(rows 5: 344 -> 339, 12: 302 -> 297, 27: 331 -> 327 with 4 `light-small`).
+
+**The recount's Rej texts** (dumps of the not-coded set; `armlet-probe-replay`, no `--force` needed):
+
+| text | games | family | verdict | unexplained / reference-only | primary + composite | `rej_flags` | probe |
+|---|---|---|---|---|---|---|---|
+| `9332f30c` F3DLX.Rej fifo 2.08 | Mario Party 3 | f3dex2 (497 of 1024 words align; the rest is S2DEX's overlay) | **NEAR** | 0 / `extra` 10 | `l_b_rej_203` + `l_b_rej_xbus` (67 words) | `REJ_YQ` | 28 of 28 equal, latched |
+| `36f10dc3` F3DLX.Rej fifo 2.05 (loaded by `G_LOAD_UCODE`) | NBA Jam 2000, NFL Blitz | f3dex2 (732) | **NEAR** | 0 / `extra` 10 | `l_b_rej_203` + `l_b_rej_xbus` (52) | `REJ_YQ` | 28 of 28 equal, latched |
+| `23cb9e85` F3DEX.Rej fifo 2.08 | ECW Hardcore Revolution | f3dex2 (786 of 1024) | NONE | 22 (triangle setup 20, vertex 2) / `deleted` 21 | `l_b_rej_206` | 0 | not admitted; with `ARMLET_PROBE_NONE_X` 7 of 28 canned tasks differ |
+| `3c51d836` F3DLX.Rej 1.21 | Air Boarder 64, ISS 64 | **f3dex1** (425 of 1024 with F3DEX 1.21, 25 with F3DLX 1.21; f3dex2 0.025) | NONE | 585 / 50 + 437 | `l_b_121` + `l_b_lx121` | - | no candidate |
+
+Mario Party 3's and NBA Jam's two texts differ from F3DLX.Rej 2.03 in the lighting only (the F3DEX2 loop of the 2.08 xbus text, scale in lane 3 or 7 of the constant vector: `rej_flags` loses `REJ_LIT_LX`, the 10 words of 2.03's unsigned-multiply loop are the `extra`), and ECW's text is F3DEX.Rej 2.06
+with the 2.08 generation's lane layout in the triangle setup (20 words with other element selectors that no reference has: `v30[15]` where 2.06 has another lane); Air Boarder's is Rej in the F3DEX 1.x generation (no F3DEX2 skeleton: the command loop, the state commands and the matrix code align with F3DEX 1.21): the Rej extension exists in the F3DEX2 front-end only, so it stays on the JIT.

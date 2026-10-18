@@ -416,18 +416,21 @@ static void replay(struct vslot *s)
     } else {
         unsigned nd;
         int tol = 0;
+        struct latch_diff df = { 0, 0, 0 };
         memset(&opts, 0, sizeof(opts));
         opts.tol = s->tg.tol;
-        opts.dmem_ok = s->tg.tol ? s->tg.dmem_ok : NULL;
+        opts.loose_levels = s->tg.loose_levels;
+        opts.dmem_ok = (s->tg.tol || s->tg.loose_levels) ? s->tg.dmem_ok : NULL;
         j.s1 = &s->s1;
         j.st = &s->st;
         j.wr = s->wr;
         j.n_wr = s->n_wr;
         j.wr_bytes = s->wrb;
         rep[0] = 0;
-        nd = armlet_hle_dx_compare(x, s->tg.run, &j, &opts, rep, sizeof(rep), &tol);
+        nd = armlet_hle_dx_compare(x, s->tg.run, &j, &opts, rep, sizeof(rep), &tol, s->tg.loose_levels ? &df : NULL);
         r.outcome = nd ? VAL_MISMATCH : VAL_MATCH;
         r.tol = tol;
+        r.grade = s->tg.loose_levels ? latch_grade(&df) : LATCH_G_STRUCTURAL;
         r.report = rep;
     }
     /* the replay's RDRAM back to zeros (the pages it touched are dropped) */

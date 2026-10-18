@@ -9,6 +9,7 @@
 #include <string.h>
 
 #include "dbuild.h"
+#include "rej_dmem.h"
 
 #ifdef ARMLET_NATIVE
 
@@ -27,7 +28,7 @@ const struct hle_ucode *dbuild_registered(uint64_t load_key)
 #define LAY_FIELDS(X) \
     X(mv) X(p) X(mvp) X(persp_norm) X(viewport_scale) X(viewport_trans) X(clip_ratio) X(const31) X(const30) X(fog_mul) X(fog_ofs) X(texture) X(tex_scale_s) X(tex_scale_t) X(geom) \
     X(mvp_valid) X(lights_valid) X(lights_size) X(light_raw) X(light_base) X(tg) X(light_scale) X(light_scale_zex) X(vtab) X(clipmask) X(culltab) X(in) X(in_end) X(jump_table) \
-    X(movemem_tab) X(moveword_adj) X(desc_light) X(desc_clip) X(clip_planes) X(clip_masks) X(out_toggle) X(geom_def) X(mw_max) X(out_bytes) X(pipe_sync) X(no_lit)
+    X(movemem_tab) X(moveword_adj) X(desc_light) X(desc_clip) X(clip_planes) X(clip_masks) X(out_toggle) X(ring_start) X(geom_def) X(mw_max) X(out_bytes) X(pipe_sync) X(no_lit)
 
 #define F1LAY_FIELDS F3DEX_LAY_FIELDS
 #define F3LAY_FIELDS F3D_LAY_FIELDS
@@ -93,7 +94,10 @@ void dbuild_rec_of(const struct hle_ucode *u, struct derive_rec *r)
     LAY_FIELDS(X)
 #undef X
     r->lay[LY_LIT_VTX] = l->lit_vtx != NULL;
+    r->lay[LY_XBUS] = l->xbus;
+    r->rej_flags = l->rej_flags;
     r->gen204 = (uint8_t)b->gen204;
+    r->clip204 = (uint8_t)b->clip204;
     r->zex = (uint8_t)b->zex;
     r->bz_z = (uint8_t)b->bz_z;
     r->reject_mask = b->reject_mask;
@@ -125,7 +129,8 @@ int dbuild_rec_equal(const struct derive_rec *a, const struct derive_rec *b, con
         CMP(f3[k], "f3")
     CMP(clip_mask, "clip_mask") CMP(culldl_mask, "culldl_mask")
     CMP(fam, "fam") CMP(non, "non") CMP(dlx, "dlx") CMP(culldl_off, "culldl_off")
-    CMP(gen204, "gen204") CMP(zex, "zex") CMP(bz_z, "bz_z") CMP(reject_mask, "reject_mask") CMP(load_key, "load_key") CMP(n_ext, "n_ext")
+    CMP(rej_flags, "rej_flags")
+    CMP(gen204, "gen204") CMP(clip204, "clip204") CMP(zex, "zex") CMP(bz_z, "bz_z") CMP(reject_mask, "reject_mask") CMP(load_key, "load_key") CMP(n_ext, "n_ext")
 #undef CMP
     for (k = 0; k < a->n_ext; k++) {
         unsigned q, found = 0;
@@ -303,6 +308,17 @@ static int make_f3(struct dbuild *d, uint64_t text_id, const struct derive_resul
     return 0;
 }
 
+_Static_assert(DERIVE_K_REJ == K_REJ_BASE, "the derivation's Rej kinds are hle_rej.c's");
+
+static int is_rej_rec(const struct derive_rec *rec)
+{
+    unsigned k;
+    for (k = 0; k < rec->n_ext; k++)
+        if (rec->ext[k].kind >= DERIVE_K_REJ)
+            return 1;
+    return 0;
+}
+
 int dbuild_make(struct dbuild *d, uint64_t text_id, const struct derive_result *r, const char **why)
 {
     const struct derive_rec *rec = &r->rec;
@@ -354,7 +370,7 @@ int dbuild_make(struct dbuild *d, uint64_t text_id, const struct derive_result *
             *why = "a dialect command's pc of the record is missing or not an instruction address";
             return 1;
         }
-    if (rec->n_ext && (rec->pc[PC_LDTX_SPR] <= 0 || rec->pc[PC_LDTX_SPR] >= 0x1000 || (rec->pc[PC_LDTX_SPR] & 3) || rec->pc[PC_LDTX_RECT] <= 0 || rec->pc[PC_LDTX_RECT] >= 0x1000 || (rec->pc[PC_LDTX_RECT] & 3))) {
+    if (rec->n_ext && !is_rej_rec(rec) && (rec->pc[PC_LDTX_SPR] <= 0 || rec->pc[PC_LDTX_SPR] >= 0x1000 || (rec->pc[PC_LDTX_SPR] & 3) || rec->pc[PC_LDTX_RECT] <= 0 || rec->pc[PC_LDTX_RECT] >= 0x1000 || (rec->pc[PC_LDTX_RECT] & 3))) {
         *why = "a continuation pc of G_OBJ_LOADTXTR is missing";
         return 1;
     }
@@ -381,6 +397,21 @@ int dbuild_make(struct dbuild *d, uint64_t text_id, const struct derive_result *
 #undef X
     if (rec->lay[LY_LIT_VTX])
         d->lay.lit_vtx = (pb->lay ? pb->lay : f3dex2_std_layout())->lit_vtx;
+    d->lay.xbus = (uint8_t)rec->lay[LY_XBUS];               /* the XBUS transport (docs/design.md "XBUS"): the record's flag and ring start, not the primary's */
+    if (d->lay.xbus && !d->lay.ring_start) {
+        *why = "an XBUS build without a ring start";
+        return 1;
+    }
+    if (d->lay.xbus && pb->lay && pb->lay->xbus) {          /* the flush routine's constants (wrap point, room margin) are no record fields: the primary reference's, when it has the transport (S2DEX's 0xee0 / 224); else the defaults (0) */
+        d->lay.ring_end = pb->lay->ring_end;
+        d->lay.ring_gap = pb->lay->ring_gap;
+    }
+    d->lay.rej_flags = MUT(470, rec->rej_flags, rec->rej_flags ^ REJ_YQ);
+    if (is_rej_rec(rec) && pb->lay) {               /* the transport (the code that names it is aligned: another transport is unexplained words) is the primary reference's, not derived */
+        d->lay.xbus = pb->lay->xbus;
+        d->lay.ring_start = pb->lay->ring_start;
+        d->lay.light_scale = (uint16_t)MUT(471, d->lay.light_scale, d->lay.light_scale ^ 8);     /* (0x1c6 <-> 0x1ce) */
+    }
 
     d->b.head = (uint16_t)rec->pc[PC_HEAD]; d->b.copy = (uint16_t)rec->pc[PC_COPY]; d->b.sync = (uint16_t)rec->pc[PC_SYNC]; d->b.segcopy = (uint16_t)rec->pc[PC_SEGCOPY];
     d->b.ef = (uint16_t)rec->pc[PC_EF]; d->b.ed = (uint16_t)rec->pc[PC_ED]; d->b.tri1 = (uint16_t)rec->pc[PC_TRI1]; d->b.tri2 = (uint16_t)rec->pc[PC_TRI2];
@@ -389,6 +420,7 @@ int dbuild_make(struct dbuild *d, uint64_t text_id, const struct derive_result *
     d->b.mvp = rec->pc[PC_MVP] > 0 ? (uint16_t)rec->pc[PC_MVP] : 0;
     d->b.tri4 = rec->pc[PC_TRI4] > 0 ? (uint16_t)rec->pc[PC_TRI4] : 0;
     d->b.gen204 = rec->gen204;
+    d->b.clip204 = rec->clip204;
     d->b.zex = rec->zex;
     d->b.bz_z = rec->bz_z;
     d->b.reject_mask = rec->reject_mask;
@@ -415,9 +447,9 @@ int dbuild_make(struct dbuild *d, uint64_t text_id, const struct derive_result *
     d->uc.id = text_id;
     d->uc.name = d->name;
     d->uc.fam = &f3dex2_fam;
-    d->uc.flags = pu->flags;
+    d->uc.flags = (pu->flags & ~(unsigned)HLE_F_XBUS_OK) | (d->lay.xbus ? HLE_F_XBUS_OK : 0);
     d->uc.fam_data = &d->b;
-    d->uc.ring_off = pu->ring_off;
+    d->uc.ring_off = d->lay.xbus ? 0 : pu->ring_off;         /* (an XBUS build's lists are in DMEM: no ring in RDRAM) */
     d->uc.rdp_cmd_size = pu->rdp_cmd_size;
     d->uc.live_sregs = pu->live_sregs;
     if (pu->n_dead > sizeof(d->dead) / sizeof(d->dead[0])) {

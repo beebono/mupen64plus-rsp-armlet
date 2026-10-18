@@ -887,7 +887,7 @@ F3D_UCODE(l_f3d_sm64, 0x94c7cfdd2c872523ull, "Fast3D 2.0D (Super Mario 64)", l_s
 F3D_UCODE(l_f3d_pw, 0x3e9b9c3a6ebde1e0ull, "Fast3D 2.0D (Pilotwings 64)", l_pw, l_dead_sm64);
 F3D_UCODE_R(l_f3d_wr, 0xfb483893c5b0ad3dull, "Fast3D 2.0D (Wave Race 64)", l_wr, l_dead_wr, 0xfe8, .rdp_cmd_size = f3d_wr_cmd_size);
 /* the lists go through a ring in DMEM (no ring in RDRAM) */
-F3D_UCODE_R(l_f3d_mm, 0x4212d63f6e483348ull, "Fast3D 2.0H (Mischief Makers, XBUS)", l_mm, l_dead_tt, 0);
+F3D_UCODE_R(l_f3d_mm, 0x4212d63f6e483348ull, "Fast3D 2.0H (Mischief Makers, War Gods; XBUS)", l_mm, l_dead_tt, 0, .flags = HLE_F_XBUS_OK);
 F3D_UCODE(l_f3d_tt, 0x0b574ecb06d75978ull, "Fast3D 2.0H (Tetrisphere)", l_tt, l_dead_tt);
 F3D_UCODE(l_f3d_ge, 0x538f79d8ff151c3eull, "Fast3D 2.0G (GoldenEye 007)", l_ge, l_dead_sm64);
 

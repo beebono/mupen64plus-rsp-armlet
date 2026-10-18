@@ -541,12 +541,14 @@ static const uint8_t *ram_n_at(uint32_t addr)
 }
 
 /* The near-match tolerance for the RDP stream (docs/design.md, "The probe"): the two streams have the same length and differ only inside the shade block of shaded triangles (commands
- * 0x0c .. 0x0f: bytes 32 .. 95), by at most 2 colour levels in a channel's base value (0x20000 of a 16.16) and 1/128 level per pixel step in a slope (0x200). Nothing else, no command word, no
- * edge, texture or depth coefficient, may differ. */
-static int stream_tolerable(const struct hle_ucode *u, const struct hle_stream *sa, const struct hle_stream *sb)
+ * 0x0c .. 0x0f: bytes 32 .. 95), by at most `levels` colour levels in a channel's base value (levels << 16 of a 16.16; 2 for the probe's tolerance: 0x20000) and levels / 256 of a level per
+ * pixel step in a slope (0x200 for 2). Nothing else, no command word, no edge, texture or depth coefficient, may differ. */
+#define TOL_LEVELS 2
+static int stream_tolerable(const struct hle_ucode *u, const struct hle_stream *sa, const struct hle_stream *sb, int levels)
 {
     const uint8_t *a = sa->bytes, *b = sb->bytes;
     uint64_t pos = 0, n = sa->len;
+    const int64_t lim_base = (int64_t)levels << 16, lim_slope = (int64_t)levels << 8;
     if (!a || !b || sa->len != sb->len || n > (sa->keep ? sa->keep : HLE_STREAM_KEEP) || n > (sb->keep ? sb->keep : HLE_STREAM_KEEP))
         return 0;
     while (pos < n) {
@@ -567,7 +569,7 @@ static int stream_tolerable(const struct hle_ucode *u, const struct hle_stream *
                 for (g = 0; g < 4; g++)
                     for (ch = 0; ch < 4; ch++) {
                         unsigned wi = (iw[g] + (ch >> 1)) * 4, wf = (fw[g] + (ch >> 1)) * 4, sh = (ch & 1) ? 0 : 16;
-                        int64_t va, vb, lim = g ? 0x200 : 0x20000;
+                        int64_t va, vb, lim = g ? lim_slope : lim_base;
                         uint32_t ia = (uint32_t)sa[wi] << 24 | sa[wi + 1] << 16 | sa[wi + 2] << 8 | sa[wi + 3], fa = (uint32_t)sa[wf] << 24 | sa[wf + 1] << 16 | sa[wf + 2] << 8 | sa[wf + 3];
                         uint32_t ib = (uint32_t)sb[wi] << 24 | sb[wi + 1] << 16 | sb[wi + 2] << 8 | sb[wi + 3], fb = (uint32_t)sb[wf] << 24 | sb[wf + 1] << 16 | sb[wf + 2] << 8 | sb[wf + 3];
                         va = (int32_t)(((ia >> sh) & 0xffff) << 16 | ((fa >> sh) & 0xffff));
@@ -609,7 +611,7 @@ static void compare_tasks(struct report *r, const struct hle_ucode *u, const Prs
     }
     for (i = 0; i < 4096; i++) {
         unsigned addr = i ^ 3;
-        if (da[i] != db[i] && !dead_dmem(u, addr) && !(g_popt && g_popt->dmem_ok && g_popt->dmem_ok(u, a->dmem, addr, da[i], db[i]) && (g_ptol_used = 1))) {
+        if (da[i] != db[i] && !dead_dmem(u, addr) && !(g_popt && g_popt->tol && g_popt->dmem_ok && g_popt->dmem_ok(u, a->dmem, addr, da[i], db[i], TOL_LEVELS) && (g_ptol_used = 1))) {
             if (nd++ < (getenv("HLE_DMEM_ALL") ? 100000u : 24u))
                 rep(r, "  DMEM[%03x]: native %02x, JIT %02x\n", addr, da[i], db[i]);
         }
@@ -652,7 +654,7 @@ static void compare_tasks(struct report *r, const struct hle_ucode *u, const Prs
         }
     }
     /* the RDP lists, as one byte stream */
-    if ((K.st[0].len != K.st[1].len || (K.st[0].hash != K.st[1].hash && !(K.switched && K.st[0].hash_r == K.st[1].hash_r))) && !(g_popt && g_popt->tol && stream_tolerable(u, &K.st[0], &K.st[1]))) {
+    if ((K.st[0].len != K.st[1].len || (K.st[0].hash != K.st[1].hash && !(K.switched && K.st[0].hash_r == K.st[1].hash_r))) && !(g_popt && g_popt->tol && stream_tolerable(u, &K.st[0], &K.st[1], TOL_LEVELS))) {
         uint64_t k, n = K.st[0].len < K.st[1].len ? K.st[0].len : K.st[1].len;
         rep(r, "  RDP command stream: native %" PRIu64 " bytes %016" PRIx64 ", JIT %" PRIu64 " bytes %016" PRIx64 "\n", K.st[0].len, K.st[0].hash, K.st[1].len, K.st[1].hash);
         if (n > HLE_STREAM_KEEP)
@@ -1714,15 +1716,17 @@ int armlet_hle_dx_run(struct hle_dx *x, const struct hle_ucode *uc, const PrspNa
 }
 
 /* the end state of the replay against the JIT's (compare_tasks, external effects) */
-unsigned armlet_hle_dx_compare(const struct hle_dx *x, const struct hle_ucode *u, const struct hle_dx_jit *j, const struct hle_probe_opts *opts, char *out, size_t outsz, int *tol_used)
+unsigned armlet_hle_dx_compare(const struct hle_dx *x, const struct hle_ucode *u, const struct hle_dx_jit *j, const struct hle_probe_opts *opts, char *out, size_t outsz, int *tol_used,
+                               struct latch_diff *diff)
 {
     static __thread struct report r;                 /* (8 KiB: not on the validator's stack) */
     const PrspNativeSnap *b = j->s1;
     const uint8_t *da = (const uint8_t *)x->dmem, *db = (const uint8_t *)b->dmem;
     uint32_t ring_lo = 0, ring_hi = 0;
-    unsigned i, nd = 0;
+    unsigned i, nd = 0, hard0;
     size_t k;
-    int tol = 0;
+    int tol = 0, loose = opts && diff && opts->loose_levels > 0 && opts->dmem_ok;
+    struct latch_diff d = { 0, 0, 0 };
 
     r.n = 0;
     r.count = 0;
@@ -1733,16 +1737,21 @@ unsigned armlet_hle_dx_compare(const struct hle_dx *x, const struct hle_ucode *u
     for (i = 0; i < 4096; i++) {
         unsigned addr = i ^ 3;
         if (da[i] != db[i] && !dead_dmem(u, addr)) {
-            if (opts && opts->dmem_ok && opts->dmem_ok(u, x->dmem, addr, da[i], db[i])) {
+            if (opts && opts->tol && opts->dmem_ok && opts->dmem_ok(u, x->dmem, addr, da[i], db[i], TOL_LEVELS)) {
                 tol = 1;
                 continue;
             }
+            if (loose && opts->dmem_ok(u, x->dmem, addr, da[i], db[i], opts->loose_levels))
+                d.numeric = 1;
+            else
+                d.structural = 1;
             if (nd++ < 8)
                 rep(&r, "  DMEM[%03x]: native %02x, JIT %02x\n", addr, da[i], db[i]);
         }
     }
     if (nd > 8)
         rep(&r, "  ... %u DMEM bytes differ in all\n", nd);
+    hard0 = r.count;                                /* (everything reported from here to the stream is of the HARD class: the task ended otherwise) */
     for (i = 0; i < 1024; i++)
         if (x->imem[i] != b->imem[i]) {
             rep(&r, "  IMEM[%03x]: native %08x, JIT %08x\n", i * 4, x->imem[i], b->imem[i]);
@@ -1764,11 +1773,18 @@ unsigned armlet_hle_dx_compare(const struct hle_dx *x, const struct hle_ucode *u
             if ((u->live_sregs >> q & 1) && sr[q] != b->sr[q])
                 rep(&r, "  scalar register %u: native %08x, JIT %08x\n", q, sr[q], b->sr[q]);
     }
+    if (r.count > hard0)
+        d.hard = 1;
     if (x->st.len != j->st->len || (x->st.hash != j->st->hash && !(x->switched && x->st.hash_r == j->st->hash_r))) {
-        if (opts && opts->tol && stream_tolerable(u, &x->st, j->st))
+        if (opts && opts->tol && stream_tolerable(u, &x->st, j->st, TOL_LEVELS))
             tol = 1;
-        else
+        else {
+            if (loose && stream_tolerable(u, &x->st, j->st, opts->loose_levels))
+                d.numeric = 1;
+            else
+                d.structural = 1;
             rep(&r, "  RDP command stream: native %" PRIu64 " bytes %016" PRIx64 ", JIT %" PRIu64 " bytes %016" PRIx64 "\n", x->st.len, x->st.hash, j->st->len, j->st->hash);
+        }
     }
     /* RDRAM: the rows either side wrote outside the RDP output ring, native bytes against the JIT's final ones */
     {
@@ -1780,6 +1796,7 @@ unsigned armlet_hle_dx_compare(const struct hle_dx *x, const struct hle_ucode *u
                 while (q + 4 <= w->n && !memcmp(x->rdram + w->a + q, j->wr_bytes + off + q, 4))
                     q += 4;
                 rep(&r, "  RDRAM[%06x] written by DMA (JIT): native %08x, JIT %08x\n", w->a + q, *(const uint32_t *)(x->rdram + w->a + q), *(const uint32_t *)(j->wr_bytes + off + q));
+                d.structural = 1;
             }
             off += w->n;
         }
@@ -1796,6 +1813,7 @@ unsigned armlet_hle_dx_compare(const struct hle_dx *x, const struct hle_ucode *u
                     in = q >= j->wr[m].a && q + 4 <= j->wr[m].a + j->wr[m].n;
                 if (!in) {
                     rep(&r, "  RDRAM[%06x] written by DMA (native) where the JIT wrote nothing\n", q);
+                    d.hard = 1;
                     break;
                 }
             }
@@ -1803,6 +1821,8 @@ unsigned armlet_hle_dx_compare(const struct hle_dx *x, const struct hle_ucode *u
     }
     if (tol_used)
         *tol_used = tol && !r.count;
+    if (diff)
+        *diff = d;
     snprintf(out, outsz, "%.*s", (int)r.n, r.buf);
     return r.count;
 }

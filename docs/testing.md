@@ -814,3 +814,119 @@ Toy Story 2 (F3DLX 1.23) task 22 of `fuzz_snaps.py` seed 2 differed from the JIT
 | 3700-frame gates `ref` against `armlet-hle` / `ARMLET_HLE_VERIFY=1` (and `armlet` for Toy Story 2) | Toy Story 2 (hash, state, 6 pictures, audio identical; verify 1535 tasks, 0 differences), A Bug's Life, Clay Fighter, Banjo-Kazooie, Mario Kart 64: all identical |
 
 `G_BRANCH_Z` reads a slot address the same way: with w1 = 0 the synthetic one goes the other way in the lean mode (it did not with w1 = 0x7fffffff, which is why it was first missed), now declined too.
+
+## The loose tier (2026-10-17; docs/design.md "The loose tier")
+
+Desktop x86_64, `GfxMode=hle`. The tier is opt-in (`GfxProbe = loose`); `on` stays the default, and the first row shows it unchanged.
+
+| check | result |
+|---|---|
+| `tools/hle/mutcheck_latch.sh` (`test_latch.c`: the `loose` key and default 2.5, loose thresholds 60 / 20, NUMERIC counted and never a strike, STRUCTURAL a strike as EXACT, HARD unlatches at once, loose over NEAR, a strict build's NUMERIC is a strike, `latch_grade`) | passes; 430 .. 437 as before, **450 .. 453** caught (4 / 1 / 2 / 1 checks) |
+| `tools/hle/mutcheck_ucache.sh` (format 6: the tier in the key, `n_x` and `numeric` round trip, a loose store replaces the loose entry only, a strict lookup never sees the loose latch) | passes; 345 .. 349, 442 as before, **454** caught (6 checks) |
+| `armlet-probe-replay --force` on the 10 registered F3DEX2 texts of `mutcheck_probe.sh`, strict and `--tol` (the compare's bounds became parameters) | 10 PASS strict, 10 PASS tolerant, records equal: as before |
+| **strict tier unchanged**: `tools/equiv/check_direct.sh` (DK64, Ocarina of Time, SM64, Kirby 64, `GfxProbe=on`); 3700-frame gates against `ref` with `ARMLET_PROBE=on ARMLET_HLE_VERIFY=1`: DK64 forced, Donald Duck (unregistered `efe4`, the strict latch) | 63 of 64 native, validator idle, all four; DK64 LATCHED after 39 tasks (evidence 24.4, 16 distinct) in 1.3 s, Donald Duck after 33 in 0.9 s: the strict thresholds; both **identical** to `ref` (hash 3385 / 9672, state, 6 shots, audio), verify 0 differences |
+| Chameleon Twist 2 (F3DEX 2.05 `9798`: NONE, 2 unexplained + 3 missing words, both in the clip overlay), `ARMLET_PROBE=loose`, 900 frames | **admitted** (the 0.9 aligned-fraction floor first tried refused it at 944 / 1154: lowered to the derivation's 0.5); the probe **FAILS 4 of 28 canned tasks**, all `clip`: the stream is 2800 bytes against the JIT's 2464 (another number of clipped triangles), DMEM 0xf2 .. 0xf3 and the DPC registers differ: structural, cached as failed; the game's own tasks never reach that path (it verified clean in 3839 tasks before). The right outcome; the fix was strict-tier: the `clip204` flag (the section below), after which it derives EXACT and latches strictly |
+| Blast Corps F3D 2.0D `2f41` (NONE, 32 + 29 words), `ARMLET_PROBE=loose`: unmutated against `--hmut=456` (the admission bound ignored) | unmutated: *not admitted to the loose tier*; **456**: admitted, the probe fails **26 of 26** canned tasks: the bound is the first net and the probe the second |
+| Donkey Kong 64 forced through the loose tier (`ARMLET_PROBE=loose ARMLET_PROBE_FORCE=1 ARMLET_PROBE_LOOSE_FORCE=1 ARMLET_PROBE_FORCE_CACHE=1 ARMLET_HLE_VERIFY=1`), 3700 frames against `ref`, cold and then from the cache | derived EXACT, "(loose tier)", probe 27 equal / 1 declined; **LATCHED after 310 equal tasks (evidence 60.94, 28 distinct) in 10.5 s** (strict: 24 / 8); 1258 of 1280 tasks native; validator 352 replayed, 352 equal; verify 0 differences; **identical** to `ref` (hash 3385, state, 6 shots, audio). Second launch: the cache says latched but the session marker is set (the e2e run is killed at its frame count, not closed): "a loose build latched when the last session ended uncleanly; validating it again" (a strict build would start native at once; a suspended strict one would be unlatched for good), LATCHED again after 268 tasks in 8.9 s, 1339 of 1344 native, 288 / 288 equal, identical to `ref` |
+
+| **the region gate** (`test_latch.c`: never kinds not added by matches, kept across a suspension; mutation **457**) | passes, 457 caught (2 checks) |
+| DK64 forced through the loose tier with `ARMLET_PROBE_LOOSE_FORCE=clip,light` (pretend the clip and light regions have unexplained words), 3700 frames vs `ref` | "unexplained words in the clip light regions; the tasks of those kinds stay on the JIT"; LATCHED after 310 tasks as above; **314 of 1344 tasks native, 1029 declined** at the gate (DK64 lights or clips in nearly every task: a region gate on a 3D game's clipper leaves little for the native path, which is why it is a safety, not a plan); verify 0 differences, **identical** to `ref` |
+
+| **the default-record arm** (`test_latch.c`: the `default` key and 3.0, thresholds 72 / 24; mutation **458** a default-record build needs only the loose evidence) | passes, 458 caught (1 check) |
+| the arm on the far-NONE texts of the set, `ARMLET_PROBE=loose`, 900 .. 1500 frames: Blast Corps F3D 2.0D `2f41` (32 + 29 words, 86 % aligned), Wipeout 64 L3DEX 1.21 `3c7a` (511 + 38, 51 %) and F3D 2.0H `968d` (24 %), Rogue Squadron `bfbf` (18 %) | `2f41`: tried as the F3D record as derived, the probe fails **26 of 26**; **`3c7a`: tried as the F3DEX 1.21 record as derived, the probe passes 28 of 28** (the unexplained words are the line code, "in the other region; no kind gate covers them"), a candidate; `968d` and `bfbf`: below the family floor, not admitted |
+| mutation **459** (the arm's family floor ignored), Rogue Squadron | admitted; `dbuild_make` refuses the record ("a handler pc of the record is missing or not an instruction address"), cached as unsupported: the third net after the bound and the probe |
+| Wipeout 64, `ARMLET_PROBE=loose ARMLET_HLE_VERIFY=1`, 3700 frames vs `ref`, cold and then from the cache (with the build's `latch: masks` as `EXTRA_MASKS`); then at `default=3` (the shipped value) and `ARMLET_LATCH_POLICY=default=2` | the L3DEX candidate: **1568 replayed, 1568 equal**, 0 numeric, verify 0 differences, every run **identical** to `ref` (hash 14768, state, 6 shots, audio); **not latched** at 4x, 3x or 2x. `ARMLET_LATCH_TRACE=1` (1800 frames, 812 validated tasks) shows why: every task has the **same fingerprint, the empty one** (`cbf29ce484222325`, no command counted): Wipeout's L3DEX tasks are near-empty lists (0.08 % of its RSP time in the hot list), one fingerprint never latches whatever the multiplier (the "scenes that vary little" rule), and there is nothing to gain from them anyway. The multiplier was set to 3 on the general argument (the protection is the probe, the grading and the three nets; the multiplier buys variety), not on this text |
+
+| **loads noted from replays** (NBA Jam 2000, found by the three-set recount: its latched 2.05 build declined 2326 of 3072 tasks "at the gate", every replay declined with `G_LOAD_UCODE of another ucode`, and the loaded text was never derived because only the replay reaches the load): `ARMLET_LATCH_TRACE=1` 5000 frames before and after | before: no `loaded by G_LOAD_UCODE` line; after: the loaded text `36f10dc3` (F3DLX.Rej 2.05) is derived (NONE, 391 of 1024 aligned: Rej is no derivation family yet, so the tasks still decline). Regression, forced, 3700 frames vs `ref`: Ocarina of Time (3 loaded notes, S2DEX and its own text back, LATCHED after 233) and DK64 (LATCHED after 39) **identical**, verify 0 differences |
+
+The cost of the tier on the desktop is the derivation (2 ms per pair) and, for an admitted pair, what a NEAR pair costs plus the higher evidence (310 captured tasks against DK64's 248 strict).
+No pair of the 64-ROM set runs on it today (design.md "What it is for"); the recount with `GfxProbe = loose` against `on` is what decides whether it becomes the default.
+
+## `clip204`: the clipper's reciprocal flag (2026-10-17; docs/ucode-f3dex2-dialects.md section 7)
+
+| check | result |
+|---|---|
+| `tools/derive_check.sh DUMPS` (leave-one-out, every registered record field for field, `clip204` included: 78 fields compared) | every row as before (`none`; `l_b_bg` unchanged) |
+| `tools/derive_c_check.sh DUMPS` (C vs Python, `clip204` in the compared fields; `derive_refs.c` regenerated, `--check` passes) | 54 texts, 29 loo, 17 mutants, 786 shortcut: 0 differ |
+| `tools/derive_build.py derive DUMPS 97989ee9c10ef7ad.1f45` (Chameleon Twist 2's F3DEX 2.05) | was NONE (2 unexplained, 3 missing); **EXACT**, 0 unexplained, `gen204 = 0 clip204 = 1 zex = 1`; votes `gen204` (15, 0), `clip204` (0, 2), `zex` (0, 19) |
+| `armlet-probe-replay --force`, the 10 texts of `mutcheck_probe.sh` | 10 PASS, records equal; Chameleon Twist 2's text: PASS, 28 canned tasks, 27 equal, 1 declined (was: 4 of 28 differ) |
+| `tools/hle/test_ucache.c` (`gen204 / clip204 / zex` round trip; the flag is in the entry's former `pad5`), `mutcheck_ucache.sh` | passes; mutation **460** (`clip204` not read back from an entry) caught (2 checks) |
+| Chameleon Twist 2, `ARMLET_PROBE=on ARMLET_HLE_VERIFY=1 ARMLET_HLE_STATS=1`, fresh cache, 3700 frames vs `ref` | derived EXACT, probe PASS, LATCHED after 1066 equal tasks in 18.6 s; verify 2301 tasks, 0 with differences; hash, state, 6 shots and audio identical |
+| Donkey Kong 64 forced (`ARMLET_PROBE=on ARMLET_PROBE_FORCE=1 ARMLET_HLE_VERIFY=1`), 3700 frames vs `ref` | identical (hash, state, 6 shots, audio) |
+
+## XBUS, part 1: the F3D builds' eligibility flag (2026-10-18; docs/ucode-f3d.md 4.4)
+
+The F3D front-end has had the XBUS transport since the 2.0H work (`xbus_emit`: the ring at `s7`, the room check, the wrap, `DPC_END` per command; `ucode-f3d.md` 4.4, harness-identical at 600 frames), but the registered Mischief Makers entry never carried `HLE_F_XBUS_OK`, so `armlet_hle_run` refused every task that starts with `DPC_STATUS.XBUS` set as "not eligible": 3198 of 3200 tasks in every coverage recount. The three-set recount found War Gods running the same text (`4212d63f`) with the same 4350 declines. The flag was added (`F3D_UCODE_R(l_f3d_mm, ..., .flags = HLE_F_XBUS_OK)`).
+
+| check | result |
+|---|---|
+| Mischief Makers, `ARMLET_PROBE=on ARMLET_HLE_VERIFY=1`, 3700 frames vs `ref` | **3647 of 3648 tasks native, 0 declined** (no `XBUS ring:` decline: the wrap and the RDP-not-caught-up cases did not occur), verify 0 differences, **identical** (hash 7245, state, 6 shots, audio) |
+| War Gods (not-coded set), the same | **5823 of 5824 native, 0 declined**, verify 0 differences, **identical** (hash 6998) |
+
+Part 2 (the F3DEX2 xbus texts of the not-coded set: Ms. Pac-Man 2.08, Lode Runner 3-D 2.07, Command & Conquer 2.06) is a derivation feature: their ~48 words of difference to the fifo builds are the init, the flush routine and the exit tail of Excitebike 64's loaded `f649` text, which the front-end already runs (`f3_flush_xbus`) but which is not a derivation reference.
+
+## The pair key: the static data signature (2026-10-18; docs/design.md "The probe and the ucode cache", "The pair key")
+
+Twisted Edge (not-coded set) derives EXACT but never got a probe result in six recount passes: its `ucode_data` buffer is a saved DMEM image rewritten every task (1082 whole-image hashes in 1082 tasks, 114 bytes at 0x422 .. 0x57f), so every task was a new (text, data) pair and the 16-pair table filled with the first 16. The pair key is now the signature of the bytes the derivation reads (`data_sig`: the jump table's own opcode range and the overlay descriptors for F3DEX2, the two handler tables for F3DEX 1.x and F3D).
+
+| check | result |
+|---|---|
+| first try, jump-table window ±0x100 around the table | still 16 pairs: the window overlapped the rewritten region (the halfwords of opcodes 0x20 .. 0x7f lie over other DMEM state); narrowed to -128 .. 0x1f |
+| Twisted Edge, `ARMLET_PROBE=on ARMLET_HLE_VERIFY=1`, 3700 frames vs `ref`, cold | **1 derivation, 1 pair**, EXACT (from `l_b_ex2_206`), probe 28 of 28, **LATCHED after 192 tasks (8 distinct) in 6.5 s**, 1469 of 1472 native, verify 0 differences, **identical** (hash 1692, state, 6 shots, audio) |
+| second launch from the cache | "latched in an earlier session", 1661 of 1664 native, identical |
+| regressions: DK64 forced, Donald Duck (`efe4`), 3700 frames vs `ref` | one pair each, latched after 39 / 33 tasks, identical, verify 0 differences |
+| Gauntlet Legends (the other game with many data images, 256) | its text is registered, so no pair is involved: 3388 of 3392 tasks decline with the status-poll time-out (ucode-derive.md "Gauntlet Legends"), unchanged; identical to `ref` |
+
+## Rej as a derivation family (2026-10-18; docs/ucode-rej.md section 10, docs/ucode-derive.md "Rej as a derivation family")
+
+The Rej builds, F-Zero X's F3DEX 2.03 and the F3DEX.NoN xbus 2.08 text are references of the derivation (35 references, `armlet-probe-replay --sync`: 0 out of step), the Rej extension table and `rej_flags` are derived, and `dbuild_make` builds a derived Rej record (the primary's `rej_ext_cmd`, the derived bits, the primary's transport).
+Two small changes in `probe.c` were needed to probe a Rej build at all: the canned tasks were the S2DEX ones for any build with an extension table (`ext[0][1] < DERIVE_K_REJ` now), and a build whose lighting is not modelled (`no_lit`: F3DEX.Rej 2.06, ECW's text) is not required to complete the "lit" case.
+
+| check | result |
+|---|---|
+| `tools/derive_check.sh` (selftest, leave-one-out of 35 builds, mutation check) | passes; every earlier row field for field as before (79 fields), six new rows, no UNEXPLAINED mismatch |
+| `tools/derive_c_check.sh` (refs `--check`; C against Python: 61 texts, 35 leave-one-out, 17 mutants, 848 pairs with the shortcut) | 0 differences |
+| `mutcheck_probe.sh` texts (10), `--force` | 10 PASS, records equal |
+| the four registered Rej texts, `--force --self` (derived with their own record among the references) | 4 PASS, records equal (28 / 28 / 26 / 25 canned tasks equal) |
+| the four, `--force` leave-one-out with `--none-x 1000` | 4 FAIL: each differs from its neighbours in what the other references cannot show (the LX / FLAT_A / FLX lighting bits, F3DFLX's other layout, the XBUS transport); without `--none-x`: NO_CANDIDATE (NONE) |
+| Mario Party 3 `9332f30c`, NBA Jam 2000's loaded `36f10dc3`, `--force` | NEAR, 28 of 28 equal, PASS, latched |
+| ECW `23cb9e85` | NONE (22 words); `--none-x 200`: 7 of 28 differ (RDP stream, byte 15 of the first triangle) |
+| mutation 470 (`rej_flags` ^ `REJ_YQ` in `dbuild_make`), 471 (the light scale lane 0x1c6 <-> 0x1ce): `tools/hle/mutcheck_rej_derive.sh DUMPS` | 470: 4 + 2 of 4 + 2 FAIL (all 28 tasks differ); 471: 3 of 4 registered builds and both derived FAIL (the fourth, 2.06, lights nothing) |
+
+End to end on the desktop (`ARMLET_PROBE=on ARMLET_HLE_VERIFY=1 ARMLET_HLE_STATS=1`, fresh cache, vs `ref`; hash, state, 6 shots and audio identical in all):
+
+| game | frames | result |
+|---|---|---|
+| Air Boarder 64 | 3700 | `3c51d836` and its loaded `578ac8cc`: NONE, F3DEX 1.x family, 425 of 1024 words aligned, no probe; 182 native, the rest declined (unchanged) |
+| ECW Hardcore Revolution | 3700 | `23cb9e85`: NONE (f3dex2, 786 of 1024 words aligned), no probe; 511 tasks native (the F3DEX.NoN 2.08 text), verify 0 differences |
+| Excitebike 64, F-Zero X (registered Rej builds) | 3700 | 1663 of 1664 and 3391 of 3392 native, verify 0 differences |
+| NBA Jam 2000 | 5000 | `97989ee9` (F3DEX 2.05) derived EXACT, probe 27 / 28, **latched** after 606 tasks; the text it loads, `36f10dc3`, "loaded by G_LOAD_UCODE", derived NEAR (`l_b_rej_203`), probe 28 of 28 equal, a NEAR candidate; its 2390 validated tasks are all equal, but with 2 distinct fingerprints (a NEAR build needs 14 of the policy's 8), so it did not latch in 5000 frames and the tasks that load it stay on the JIT |
+
+## XBUS, part 2: the F3DEX2 xbus texts derived (2026-10-18; docs/design.md "XBUS")
+
+`xbus` and `ring_start` are fields of the F3DEX2 record (a flag voted over the start-up, flush and exit code; a knob of the xbus references, else read from the start-up's `addi s7`), `dbuild_make` gives an xbus build `HLE_F_XBUS_OK` and no RDRAM ring, Excitebike 64's loaded `f649` text is a reference (the Rej work made `hle_rej.c`'s builds references), and `run_canned` no longer refuses a canned task because the game's `DPC_STATUS.XBUS` is set when the build is an XBUS one (every task of an XBUS game starts so; that refusal was why every xbus pair was "inconclusive" in the recount).
+
+| check | result |
+|---|---|
+| `tools/derive_check.sh`, `tools/derive_c_check.sh` (the record has 44 layout fields now), `derive_refs_gen.py --check` | pass; 61 texts, 35 leave-one-out, 17 mutants, 848 pairs: 0 differences |
+| the three not-coded xbus texts, `derive_build.py derive` | Ms. Pac-Man F3DEX xbus 2.08 `a986`: **EXACT**; Lode Runner 3-D F3DEX xbus 2.07 `cbe9`: **NEAR** (init 1); Command & Conquer F3DEX.NoN/L3DEX xbus 2.06 `65ad`: **NEAR** (init 1); all from `l_b_ex2_208n_xbus`, 0 unexplained, `xbus = 1`, `ring_start = 0xba8`, flag evidence xbus (0, 27) |
+| Ms. Pac-Man, `ARMLET_PROBE=on ARMLET_HLE_VERIFY=1`, 3700 frames vs `ref` | probe 27 equal / 1 declined, **LATCHED after 1021 tasks**, **2428 of 2432 native**, verify 0 differences, **identical** (hash 3383, state, 6 shots, audio) |
+| Lode Runner 3-D, the same | NEAR, probe 27 / 1, **LATCHED after 584 tasks** (43.8 evidence, 14 distinct), **1150 of 1152 native**, 0 differences, **identical** (hash 4593) |
+| Command & Conquer, the same | NEAR, probe 28 / 0, a candidate (not latched in 3700 frames: its tasks load a second text `b2b0…`, 1276 of 1612 aligned, NONE: the S2DEX xbus 2.06 it switches to, which has no transport in the S2DEX front-end yet), 0 differences, **identical** (hash 5803) |
+| Excitebike 64 (the registered xbus builds), regression | 1663 of 1664 native, identical |
+
+## XBUS, part 3: S2DEX xbus 2.08 (StarCraft 64; 2026-10-18; docs/ucode-s2dex2.md section 9)
+
+`l_b_s2_xbus` (`3ee636569037de5b`) is registered by hand: `f2_layout.xbus` with `ring_start` 0x4c0, `ring_end` 0xee0, `ring_gap` 224 (new layout fields; the Rej and F3DEX2.NoN layouts set 0xf10 / 176, a derived build's 0 means those). The S2DEX front-end's `after_emit` flushes through `f3_flush_xbus`.
+
+| check | result |
+|---|---|
+| StarCraft 64, `ARMLET_PROBE=on ARMLET_HLE_VERIFY=1 ARMLET_HLE_STATS=1`, 3700 frames vs `ref` | registered (no probe, no latch), 0 declined, verify 1535 compared / 0 differences, **identical** (hash 1448, state 1490, 6 shots, audio) |
+| regressions, the same | Worms Armageddon (S2DEX fifo 2.08, hash 5572), Kirby 64 (5324 common), Excitebike 64 (1451), Command & Conquer (5803): **identical**, verify 0 differences |
+| captured tasks (4 StarCraft snapshots, `ARMLET_HLE_CAPTURE`, `ARMLET_UCODES=0000000000000001`), `armlet-native-replay` | 4 of 4 native == JIT |
+| synthetic ring wrap: `tools/hle/synth_ex2.sh REPLAY SNAP 12 s2ring` (`mksyn_ex2.py s2ring`: 60 .. 119 sprite rectangles, more than the 0x4c0 .. 0xee0 ring holds) | 12 of 12 equal |
+| mutations 366 (`rej_flush` wraps 8 bytes late: `ring_end + 8`), 367 (the wrapped pointer `ring_start + 8`), same synthetic run (`tools/hle/mutcheck_s2xbus.sh`) | both differ in 10 of 12 seeds (caught); in the game itself (3700 frames, verify) both pass with 0 differences: its tasks never reach the end of the ring. Not observable: `ring_gap` (the room check; the synchronous video plugin has taken every list, so the state that it guards declines, as in the Rej builds) |
+| `tools/derive_check.sh DUMPS` | passes; every existing row unchanged but two composites: `l_b_s2_208` (also needs `l_b_s2_xbus` instead of `l_b_bg`; EXACT as before) and `l_b_ex2_208n_xbus` (primary `l_b_ex2_208`, also needs `l_b_s2_xbus`: 7 unexplained instead of 18, NONE as before); new row `l_b_s2_xbus`: NONE (51 unexplained words, as for every record derived without its own text), `unconfirmed 1` (`lay.out_toggle`), `expected 1` (`lay.out_bytes`) |
+| `tools/derive_c_check.sh DUMPS` | 848 derivations, 17 mutants: 0 differences |
+| `armlet-probe-replay --force` on the 10 texts of `mutcheck_probe.sh` | 10 PASS, records equal to the build before (`rec=equal`) |
+| derivation of the loaded text of Command & Conquer, `b2b01e17177e5881` ("S2DEX xbus 2.06") | NONE with 0 unexplained words (1423 of 1612 aligned): 7 + 320 words of the reference's overlays without counterpart (docs/ucode-s2dex2.md section 9); no build, no probe, its tasks stay on the JIT |

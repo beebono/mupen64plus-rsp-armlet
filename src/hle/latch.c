@@ -27,11 +27,15 @@ void latch_cfg_default(struct latch_cfg *c)
     c->sample_decay = 64;
     c->queue = 4;
     c->fp_max = 1024;
+    c->loose_mul = 2.5;
+    c->default_mul = 3.0;
+    c->repeat_min = 0.05;
+    c->override_mul = 4.0;
 }
 
 int latch_cfg_parse(struct latch_cfg *c, const char *s, const char **bad)
 {
-    static const char *const keys[] = { "evidence", "distinct", "near", "strikes", "sample", "sample_last", "decay", "queue", "fingerprints" };
+    static const char *const keys[] = { "evidence", "distinct", "near", "strikes", "sample", "sample_last", "decay", "queue", "fingerprints", "loose", "default", "repeat", "override" };
     int rc = 0;
     while (s && *s) {
         size_t n = strcspn(s, "=,"), k;
@@ -63,6 +67,10 @@ int latch_cfg_parse(struct latch_cfg *c, const char *s, const char **bad)
             case 6: c->sample_decay = v < 1 ? 1 : (unsigned)v; break;
             case 7: c->queue = v < 1 ? 1 : v > 64 ? 64 : (unsigned)v; break;
             case 8: c->fp_max = v < 16 ? 16 : v > 65536 ? 65536 : (unsigned)v; break;
+            case 9: c->loose_mul = v < 1 ? 1 : v; break;
+            case 10: c->default_mul = v < 1 ? 1 : v; break;
+            case 11: c->repeat_min = v > 1 ? 1 : v; break;
+            case 12: c->override_mul = v > 0 && v < 1 ? 1 : v; break;
             }
         }
         s = end + strcspn(end, ",");
@@ -74,11 +82,12 @@ int latch_cfg_parse(struct latch_cfg *c, const char *s, const char **bad)
     return rc;
 }
 
-int latch_init(struct latch_state *s, const struct latch_cfg *c, int near, unsigned strikes)
+int latch_init(struct latch_state *s, const struct latch_cfg *c, int near, int loose, unsigned strikes)
 {
     unsigned cap = 16;
     memset(s, 0, sizeof(*s));
     s->near = near;
+    s->loose = loose;
     s->strikes = strikes;
     s->state = LATCH_CAND;
     while (cap < 2 * c->fp_max)
@@ -134,17 +143,39 @@ static unsigned fp_slot(const struct latch_state *s, uint64_t fp)
     return i;
 }
 
-double latch_weight(const struct latch_state *s, uint64_t fp)
+double latch_weight(const struct latch_state *s, const struct latch_cfg *c, uint64_t fp)
 {
     unsigned prior;
+    double w;
     if (!s->fp)
         return 0;
     prior = s->fpn[fp_slot(s, fp)];
-    return 1.0 / (1.0 + LMUT(431, prior, 0));        /* (431: repeats count fully) */
+    w = 1.0 / (1.0 + LMUT(431, prior, 0));          /* (431: repeats count fully) */
+    return w < LMUT(465, c->repeat_min, 0.0) ? c->repeat_min : w;   /* (465: no floor) */
 }
 
-double latch_need_evidence(const struct latch_state *s, const struct latch_cfg *c) { return s->near ? c->evidence * LMUT(432, c->near_mul, 1.0) : c->evidence; }
-unsigned latch_need_distinct(const struct latch_state *s, const struct latch_cfg *c) { return s->near ? (unsigned)(c->distinct * c->near_mul + 0.5) : c->distinct; }
+/* the multiplier of a build's thresholds: loose over NEAR (a loose build's probe may have needed the tolerance too) */
+static double need_mul(const struct latch_state *s, const struct latch_cfg *c)
+{
+    return s->deflt ? LMUT(458, c->default_mul, c->loose_mul) : s->loose ? LMUT(450, c->loose_mul, 1.0) : s->near ? LMUT(432, c->near_mul, 1.0) : 1.0;
+}
+double latch_need_evidence(const struct latch_state *s, const struct latch_cfg *c) { return c->evidence * need_mul(s, c); }
+unsigned latch_need_distinct(const struct latch_state *s, const struct latch_cfg *c) { return (unsigned)(c->distinct * need_mul(s, c) + 0.5); }
+
+void latch_never(struct latch_state *s, unsigned k)
+{
+    if (k < LATCH_NKINDS)
+        s->never[k >> 6] |= 1ull << (k & 63);
+}
+
+int latch_grade(const struct latch_diff *d)
+{
+    if (LMUT(452, d->hard, 0))
+        return LATCH_G_HARD;
+    if (d->numeric && !LMUT(451, d->structural, 0))
+        return LATCH_G_NUMERIC;
+    return LATCH_G_STRUCTURAL;
+}
 
 int latch_match(struct latch_state *s, const struct latch_cfg *c, uint64_t fp, const uint32_t hist[LATCH_NKINDS])
 {
@@ -153,13 +184,13 @@ int latch_match(struct latch_state *s, const struct latch_cfg *c, uint64_t fp, c
         return LATCH_EV_NONE;
     s->matches++;
     for (k = 0; k < LATCH_NKINDS; k++)
-        if (hist[k])
+        if (hist[k] && !LMUT(457, s->never[k >> 6] >> (k & 63) & 1, 0))
             s->kinds[k >> 6] |= 1ull << (k & 63);
     if (s->state == LATCH_LATCHED) {
         s->post++;
         return LATCH_EV_NONE;
     }
-    s->evidence += latch_weight(s, fp);
+    s->evidence += latch_weight(s, c, fp);
     i = fp_slot(s, fp);
     if (!s->fp[i]) {
         if (s->fp_n < c->fp_max) {                  /* (a full table: new fingerprints count as new but are not remembered) */
@@ -171,7 +202,8 @@ int latch_match(struct latch_state *s, const struct latch_cfg *c, uint64_t fp, c
     } else {
         s->fpn[i]++;
     }
-    if (s->evidence + 1e-9 >= latch_need_evidence(s, c) && s->distinct >= LMUT(433, latch_need_distinct(s, c), 0)) {
+    if ((s->evidence + 1e-9 >= latch_need_evidence(s, c) && s->distinct >= LMUT(433, latch_need_distinct(s, c), 0)) ||
+        (c->override_mul > 0 && s->evidence + 1e-9 >= c->evidence * c->override_mul && s->distinct >= LMUT(469, 2u, 1u))) {   /* (the override: variety is not to be had, the evidence is; on the base bar, whatever the tier: variety and the record's certainty are separate questions) */
         s->state = LATCH_LATCHED;
         s->post = 0;
         return LATCH_EV_LATCH;
@@ -179,13 +211,17 @@ int latch_match(struct latch_state *s, const struct latch_cfg *c, uint64_t fp, c
     return LATCH_EV_NONE;
 }
 
-int latch_mismatch(struct latch_state *s, const struct latch_cfg *c)
+int latch_mismatch(struct latch_state *s, const struct latch_cfg *c, int grade)
 {
     if (s->state == LATCH_DEAD)
         return LATCH_EV_NONE;
     s->mismatches++;
+    if (grade == LATCH_G_NUMERIC && LMUT(453, s->loose, 1)) {   /* (a strict build never gets this grade; if it did, it is a strike) */
+        s->numeric++;
+        return LATCH_EV_NONE;
+    }
     s->strikes++;
-    if (LMUT(434, s->near, 0) || s->strikes >= LMUT(435, c->strikes, c->strikes + 1)) {
+    if (LMUT(434, s->near && !s->loose, 0) || grade == LATCH_G_HARD || s->strikes >= LMUT(435, c->strikes, c->strikes + 1)) {
         s->state = LATCH_DEAD;
         return LATCH_EV_DEAD;
     }

@@ -114,9 +114,16 @@ int main(int argc, char **argv)
                 free(t); free(d); free(e);
                 continue;
             }
-            printf("%.*s family=%s verdict=%s aligned=%u/%u nx=%u x=%u near=%u,%u,%u,%u xr=%u,%u,%u primary=%s contrib=", (int)(strlen(stem) - 5), stem, derive_family_name(res.family),
+            printf("%.*s family=%s verdict=%s aligned=%u/%u nx=%u x=%u near=%u,%u,%u,%u xr=%u,%u,%u primary=%s", (int)(strlen(stem) - 5), stem, derive_family_name(res.family),
                    derive_verdict_name(res.verdict), res.aligned_num, res.aligned_den, res.nx, res.n_x, res.n_near[0], res.n_near[1], res.n_near[2], res.n_near[3], res.n_xr[0], res.n_xr[1], res.n_xr[2],
                    derive_refs[res.primary].name);
+            printf(" xreg=");
+            for (k = 0; k < DERIVE_NREG; k++)
+                printf("%s%u", k ? "," : "", res.n_x_reg[k]);
+            printf(" xrreg=");
+            for (k = 0; k < DERIVE_NREG; k++)
+                printf("%s%u", k ? "," : "", res.n_xr_reg[k]);
+            printf(" contrib=");
             for (k = 0; k < (unsigned)res.n_contrib; k++)
                 printf("%s%s:%u", k ? "," : "", derive_refs[res.contrib[k].ref].name, res.contrib[k].n);
             printf(" trouble=%d", res.knob_trouble);

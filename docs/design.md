@@ -390,8 +390,8 @@ that share the F3DEX2 skeleton (the display list refill, the DL stack, the RDP c
   background); an unregistered text declines the task (F-Zero X's F3DLX.Rej and Resident Evil 2's F3DEX.Rej were such until the Rej front-end, [ucode-rej.md](ucode-rej.md); Excitebike 64's F3DEX.NoN xbus 2.08 likewise). The front-end remembers the text / data pointers of the tasks that declined at such a command
   with the number of tasks that ran with them: when more than half of them declined, the next tasks with the same pair decline at once (every 64th runs again), else they run and the minority declines late (Resident Evil 2: 4267 of 6464
   graphics tasks of 3700 frames are native; with the rule "one decline marks the pair" it was 69, because the pair is the same for the tasks that load and those that do not; mutation 306).
-- **`gen204`** (`f3dex2_build`): F3DEX2 2.04 / 2.04H, the generation before 2.05 (Buck Bumble, Cruis'n World, Super Smash Bros., Kirby 64): an unclamped screen z, another clipper reciprocal sign and fan, a slip in the linear texture generation, and `G_BRANCH_Z`
-  that compares the screen z (the F3DZEX builds compare the integer part of the clip w). One flag, three fields of the geometry structs (`fx2_vctx.gen204`, `fx2_clip_ctx.sign0` / `fan_l0`); the triangle setup is the existing `zex` parameter set
+- **`gen204`** (`f3dex2_build`): F3DEX2 2.04 / 2.04H, the generation before 2.05 (Buck Bumble, Cruis'n World, Super Smash Bros., Kirby 64): an unclamped screen z, another clipper reciprocal sign (`clip204`, a flag of its own: F3DEX 2.05 has the 2.04 reciprocal under the 2.06 vertex pipeline) and fan, a slip in the linear texture generation, and `G_BRANCH_Z`
+  that compares the screen z (the F3DZEX builds compare the integer part of the clip w). Two flags, four fields of the geometry structs (`fx2_vctx.gen204`, `fx2_clip_ctx.fan_l0` from `gen204`, `fx2_clip_ctx.sign0` from `clip204`; the registered builds have `clip204 == gen204`); the triangle setup is the existing `zex` parameter set
   ([ucode-f3dex2-dialects.md](ucode-f3dex2-dialects.md) section 5).
 - **Overlays.** The S2DEX 2.x code overlays take the slots of the F3DEX2 clip / light overlays (`OV_CLIP` = A, `OV_LIGHT` = B); the end-of-task fix-up of the resident overlay is the same.
 - **Kernels.** Nothing in the production path is a transliteration of the microcode any more. The three routines that once were (S2DEX's sprite rectangle and background, F3DEXBG's lit vertices; `tools/rsp2c/rsp2c.py` made or drafted
@@ -432,6 +432,24 @@ overlay switches), `s2copy` (`G_BG_COPY`) and `s2misc` (`G_SELECT_DL` taken and 
 The backgrounds write 300 to 1500 bytes, so the flush of the output buffer (its size, the [Safe] sync in front of it) is in every seed. **Pass:** no task differs; at least 60 % of the tasks were conclusive; at least 75 % of the conclusive ones completed natively (a build that declines the rest is not the build); every case completed natively at least once, `rej` and `bz` in every variant.
 
 **Near-match tolerance.** None by default (`GfxProbeNear = strict`): a NEAR verdict is held to the same equality as an EXACT one. `tolerant` (`ARMLET_PROBE_NEAR=tolerant`) admits two things and nothing else, for NEAR derivations that differ in colour only: in the RDP stream, the **shade block** of shaded triangles (commands 0x0c .. 0x0f, bytes 32 .. 95) may differ by at most 2 colour levels in a channel's base value and 1/128 of a level per pixel step in a slope, the streams having the same length and every other byte equal (no command word, edge, texture or depth coefficient); in DMEM, the **colour word of a vertex record** (+0x10 .. +0x13 of the slots the build's vertex table names) by at most 2. A pass that needed the tolerance is `PASS (tolerant)`, cached as such. Geometry and wrong colours are never admitted. (Tested with mutations 350 .. 353: the perturbation inside the bounds passes tolerant and fails strict; outside, it fails both.)
+
+**XBUS (2026-10-18).** The three-set recount showed seven games refused as "not eligible" because their lists go through a DMEM ring (`DPC_STATUS.XBUS`) and the build had no `HLE_F_XBUS_OK`:
+the F3D ones (Mischief Makers, War Gods: the same 2.0H text) only lacked the flag, the front-end's `xbus_emit` had been there since the F3D work. The F3DEX2 ones (Ms. Pac-Man 2.08, Lode Runner
+3-D 2.07, Command & Conquer's F3DEX.NoN/L3DEX 2.06) differ from their fifo siblings in about 48 words at three places and nowhere else: the start-up (`mtc0` to DPC_STATUS and DPC_START, `addi
+s7, zero, ring_start`), the flush routine behind the `ed` handler (the room check and the `DPC_END` write instead of the fifo's DMA) and the exit code below 0x80. That is exactly Excitebike 64's
+loaded `f649` text (`l_b_ex2_208n_xbus`, `f2_layout.xbus`, `ring_start` 0xba8, `f3_flush_xbus`), which the front-end already ran but which was not a derivation reference. The F3DEX2 record now
+carries `xbus` (a flag, voted like `zex` / `gen204` / `clip204` over the words it owns: the three places above) and `ring_start` (a knob of the xbus references; under a fifo primary read from the
+start-up's `addi s7`), `dbuild_make` gives an xbus build `HLE_F_XBUS_OK` and no RDRAM ring, and the Rej work made `hle_rej.c`'s builds references, `f649` among them. The three texts derive EXACT /
+NEAR / NEAR with 0 unexplained words. Still without the transport: S2DEX xbus (StarCraft 64) and F3DEX 1.x xbus (a third of Glover's lists): their front-ends have no DMEM-ring flush.
+
+**The pair key: the static data signature (2026-10-18).** A pair was (text id, hash of the whole data image). Some games point `ucode_data` at a saved DMEM image that they rewrite every task
+(Twisted Edge: 1082 hashes in 1082 tasks, 114 bytes at 0x422 .. 0x57f; Gauntlet Legends: 256 images in 55 s, a 0xc00-byte image whose matrices, vertex table and input buffer change), so no
+pair ever got its canned tasks and the 16-pair table filled with the first 16 images. What the derivation reads of the image, and so what can change the record, is the jump table (the whole
+signed-opcode range) and the overlay descriptors (F3DEX2), or the two handler tables (F3DEX 1.x, F3D): a pair's key is now the **signature** of those bytes (`data_sig`, FNV over the ranges the
+record names), computed once the text's record is known. A task's image is matched to a pair by its whole-image hash first (the common case, remembered per pair) and otherwise by its signature
+under each pair of the text that has a record (`task_pair`); a new image of a known text joins its pair without a derivation, and a pair that derives to a signature another pair of the text
+already has is dropped. The cache is keyed by the signature too; the whole-image hash is still looked up first, so entries of texts whose image never changes are found as before. The
+derivation's own safety is unchanged: the probe and the validator judge the build, the signature only decides which tasks are the same pair.
 
 **First sight, in order:** cache lookup (hit with a pass: the build is made from the cached record at once, no canned task; hit with a failure or NONE: nothing more) - derivation (verdict NONE: logged, cached, no probe) - build (a record that cannot be made: unsupported, cached) - probe. Up to 16 pairs at a time. `ARMLET_PROBE_FORCE=1` probes the registered ucodes too, with their own record left out of the references (leave-one-out) and compares the derived record with the registered one, and treats them as unknown: their tasks run on the JIT until the derived build latches, then on the derived build for the data image it was derived for (`armlet_probe_gate`). **Loaded texts.** A text that a `G_LOAD_UCODE` loads in the middle of a task (S2DEX in Kirby 64's and Ocarina of Time's tasks) is never a task's own ucode. The front-end reports every load of another text (`armlet_probe_note_load`: the text address and the
 `G_RDPHALF_1` address, which is the image of DMEM 0, the command filling DMEM 0x180 .. from it); the next offer makes a pair of it keyed by its **load key** (the FNV of the 0xf48 bytes the command copies, the key `loaded_build` looks builds up by) and the data image, derives
@@ -483,7 +501,10 @@ w <= 0 (at or behind the eye: computed from the clip coordinates, not from the f
 `LATCH_K_TRI_REJECT` a triangle rejected (all vertices beyond one plane), `LATCH_K_TRI_CULL` culled or degenerate, `LATCH_K_BRZ` a G_BRANCH_Z taken, and `LATCH_K_VFLAG` + b for each bit b of
 the vertex clip-flag words a G_VTX produced (the x / y / z / w planes and the guard-band ratio planes: F3DEX2's high halfword is bits 16 .. 31). S2DEX has no geometry: its commands are
 gated by opcode only (its data-dependent paths, scissor clipping of sprites and background wrap, are left as opcodes; an open point). The **fingerprint** is
-the FNV of the kinds with their counts bucketed (1, 2-3, 4-7, ... 128+). A match adds **1 / (1 + earlier matches of its fingerprint)** of evidence: repeats count little, variety counts fully. An
+the FNV of the kinds with their counts bucketed (1, 2-3, 4-7, ... 128+). A match adds **1 / (1 + earlier matches of its fingerprint)** of evidence, **at least `repeat` (0.05)**: repeats count
+little, variety counts fully, but a build whose tasks all look alike still moves (2026-10-18: before the floor the harmonic sum of 2000 repeats was 8.2, so such a build never reached 24; the
+distinct-fingerprint bar still holds it, unless the evidence reaches **`override` (4) times the base `evidence` (96, whatever the tier's multiplier) with at least 2 distinct fingerprints**: a loaded text's tasks, or a HUD's, are inherently
+uniform (NBA Jam 2000's loaded F3DLX.Rej: 2390 equal replays, 2 fingerprints), and hundreds of equal replays under the per-command gate are the stronger proof). An
 EXACT build **latches** at evidence >= `evidence` (24) **and** >= `distinct` (8) distinct fingerprints; a NEAR build (a NEAR derivation, or a probe pass that needed the tolerance) needs `near`
 (1.75) times both (42 and 14). Declined, inconclusive and loaded-text-not-loaded replays count neither way.
 
@@ -506,7 +527,10 @@ registered or latched (never while it is itself a candidate): before it latches,
 declines at the G_LOAD_UCODE (it runs on the JIT anyway) is captured with that build as the one under validation, and the replay runs the task's own build (a registered one, or a latched derived one)
 taking the candidate over at the load; in a replay any derived build that is not unlatched for good may be taken over (Ocarina of Time loads S2DEX and its own text back, both derived under
 `ARMLET_PROBE_FORCE`). A replay in which the candidate was not loaded counts as "without the build". Latched, it is sampled in the loading build's tasks at the same decaying rate. In a real run a
-derived text that is not latched is not taken over, and neither is a registered build in its place (`loaded_build`).
+derived text that is not latched is not taken over, and neither is a registered build in its place (`loaded_build`). **A replay notes loads too** (`armlet_probe_note_load` is thread-safe
+since 2026-10-17): a latched derived build whose tasks load an unknown text declines them at the gate in the real run before the load handler runs, so only the validator's replay ever reaches
+the load; without the note from there the loaded text was never derived and the tasks declined forever (NBA Jam 2000's F3DEX 2.05 loading its F3DLX.Rej 2.05; the text derives NONE, 38 % aligned,
+so those games wait for Rej as a derivation family, but the probe now sees it).
 
 **Cache.** Per (text, data): the record, the verdict, the probe's result as before, and the latch state, strikes, evidence summary, validated kinds and a session marker (`UCACHE_FORMAT` 5).
 Stored by the validator thread at a latch, a suspension and an unlatch, and by the emulation thread when a pair starts (the marker set) and at a clean close, RomClosed or PluginShutdown (the
@@ -517,6 +541,69 @@ its validated kinds, under the gate and the sampling; an unlatch for good is nev
 **Limits.** Validation is after the fact: a latched build that is wrong only in a situation that none of the kinds above tells apart from validated ones runs those tasks natively until a sampled
 one shows it, and the output differs meanwhile. Before the data kinds, test build 443 on Super Mario 64 (the clip-flag word of vertices behind the eye) did exactly that; with `LATCH_K_WNEG` the first
 such task declines and is validated (testing.md). A game whose scenes vary little (Kirby 64's intro: 3 fingerprints in 1800 tasks) does not latch.
+
+## The loose tier
+
+`GfxProbe = loose` (off by default; `on` is the default and is unchanged by any of this). A tier on top of the probe for texts the derivation calls **NONE but close**: the idea was a mode that
+does not match every ucode by hash but runs an approximate native build and accepts small differences; most of that was already the probe and the latch, and what was missing is this tier.
+Everything the strict tier does, it still does: registered builds run at once and are never derived, an EXACT or NEAR derivation is probed and latched as before, and the two tiers never see
+each other's cache entries.
+
+**Admission** (`probe.c`, `first_sight`). A derivation with the verdict NONE is admitted to the loose tier when its unexplained plus missing words are at most `GfxProbeLooseWords` (16), the
+family explains at least half of the image (the derivation's own floor: overlay slack, padding and reference features the text lacks are unaligned words too, so a text with 2 unexplained words
+can be 82 % aligned), and no constant was read two ways (`knob_trouble`). The verdict stays NONE; the pair is marked loose and everything about it goes to the loose section of the cache. A NONE
+text that is not admitted is marked as such in the loose section too, so it is not derived again. `ARMLET_PROBE_NONE_X` stays what it was: an uncached experiment.
+
+**The default-record arm** (the "generic handler" the idea asked for, without new kernels). A separate approximate handler is not worth building: the display-list decode *is* the ucode
+(opcodes, vertex layout, moveword / movemem indices differ per family), and RDP triangle setup must be bit-exact or it cracks and Z-fights, so the only parts that could be approximate
+(lighting, texgen) are already the tolerance's and are kernels shared across the families. What "generic" collapses to is the data-driven front-end with a **record the derivation made anyway**:
+`derive_run` always yields one (the handler pcs mapped by opcode through the text's own jump table, the layout knobs the aligned code confirms, the primary reference's for the rest) however
+many words it cannot explain; the verdict is about the words, not the record. So a NONE derivation **beyond** the word bound is admitted too when its family explains at least half of the image
+and no constant was read two ways, marked `default record` (cache flag `UC_FL_DEFAULT`), and the probe decides: another microcode fails every canned task (Blast Corps' F3D 2.0D `2f41`, 26 of
+26), a text that is a registered build with rewritten routines whose effect the canned tasks do not see passes, and latches at `default` (3) times the evidence (72 and 24) under the region
+gate (4 was tried first: Wipeout 64's L3DEX candidate had 1568 equal replays in 3700 frames and did not reach 32 distinct fingerprints; the multiplier buys variety before the first native
+task, the protection is the probe, the graded validator and the three refusal nets). `ARMLET_PROBE_DEFAULT=0` turns the arm off for an A/B.
+
+**The probe is as strict as for any other pair.** The canned tasks must come out equal (or within `GfxProbeNear = tolerant`'s tolerance). A text whose unexplained words change what a canned
+task does fails here and is cached as failed. Chameleon Twist 2's F3DEX 2.05 showed it: with 2 unexplained words in the clip overlay (the 2.04 flavour of the clipper's reciprocal under a 2.06
+vertex pipeline, which no record with one `gen204` flag expressed) it was admitted and failed 4 of its 28 canned tasks, all of the `clip` case, with a stream of another length, although it
+had verified clean in 3839 real tasks (the game's own lists do not reach that path). The right outcome: a difference in geometry is never admitted, whatever the tier. The text was then given
+what it needed in the strict tier, a clipper flag of its own (`clip204`, [ucode-f3dex2-dialects.md](ucode-f3dex2-dialects.md) section 7): it derives EXACT now and latches strictly.
+
+**The latch with graded mismatches** (`latch.c`, `latch_grade`, `latch_mismatch`; `hle_core.c`, `armlet_hle_dx_compare` with a `latch_diff`). A loose build needs `loose` (2.5) times the
+evidence and distinct fingerprints (60 and 20). The validator's compare classes every difference of a loose build's replay:
+
+- **HARD**: the task ended otherwise: SP_STATUS_TIMEOUT, the end pc, MI_INTR, a SP / DPC register or IMEM differ, or the build wrote RDRAM by DMA where the JIT wrote nothing. **Unlatched for
+  good at once.**
+- **NUMERIC**: every difference lies inside the loose tolerance: the shade block of shaded triangles by at most `GfxProbeLooseShade` (8) colour levels in a base value and 8/256 of a level per
+  pixel step in a slope, the streams of the same length and every other byte equal (the probe's `stream_tolerable` with a wider bound), or the colour word of a vertex record in DMEM by at most
+  8 levels. **Counted** (`numeric`, in the log and the cache), logged at INFO, **never a strike**; the build stays latched. This is the "tiny tint, not wrong colours" rule in code.
+- **STRUCTURAL**: anything else: a stream of another length or with another command word, edge, texture or depth coefficient, a DMA row with other bytes, DMEM state outside the colour words.
+  A strike, as for an EXACT build (suspended; the second unlatches for good). Wrong geometry is never kept.
+
+A strict build's mismatch is always STRUCTURAL (its behaviour is unchanged); the NEAR single-strike rule does not apply to a loose build that also needed the tolerance (the loose rules do).
+An unclean end (the session marker) with a *latched* loose build makes it a candidate again rather than unlatching it for good: a crash the build caused and a killed run (the coverage recount)
+cannot be told apart, and a loose build earning its evidence again is the cheaper mistake.
+
+**The region gate** (reading IMEM for features). The derivation reports its unexplained and missing words **by code region** (`derive_result.n_x_reg[]`, `n_xr_reg[]`: init, vertex,
+triangle, clip, light, other; `derive.c` has the reach sets of the F3DEX2 image, F3DEX 1.x and F3D count everything as "other"). A loose build whose light overlay has such words never admits
+`LATCH_K_LIT` (`latch_never`: a match does not add the kind, a suspension keeps the mask), one whose clip overlay has them never admits `LATCH_K_CLIP` / `LATCH_K_NEARCLIP`; the
+per-command gate then declines those tasks and the JIT runs them (and the validator takes them, as for any gate decline). The vertex, triangle and other regions have no kind of their own:
+there the graded validator is the only safety, and the log says so. The regions are stored in the cache entry (`xreg`). `ARMLET_PROBE_LOOSE_FORCE=clip,light` pretends those regions
+have unexplained words, for tests. (Chameleon Twist 2's two words were in the clip region: had its probe passed as a loose build, its clipped tasks would have stayed on the JIT; the strict
+`clip204` record runs them all.)
+
+**Cache.** `UCACHE_FORMAT` 6: the key is (text id, data id, **tier**). `ucache_find` / `ucache_get` look in the strict section; `ucache_find_t` / `ucache_get_t` take the tier; a store puts the
+entry in the section its `tier` names. A strict run never reads a loose entry, so a loose latch cannot weaken `tools/equiv`'s guarantees, and a loose run reads the strict section first (a
+text known as NONE there is looked up in the loose section, and derived again when that has nothing). Entries also carry `n_x` and the numeric count. The format bump retires the format-5 entries.
+
+**Tests.** `ARMLET_PROBE_LOOSE_FORCE=1` (with `GfxProbe = loose`) puts every derived pair in the loose tier whatever its verdict, so the loose latch path runs on a text that derives EXACT
+(with `ARMLET_PROBE_FORCE`, a registered one). Mutations 450 .. 453, 457 and 458 (`latch.c`), 454 (`ucache.c`), 456 and 459 (`probe.c`: the admission bound ignored; the default arm's family
+floor ignored; 455 is free); testing.md "The loose tier".
+
+**What it is for.** Inside the 64-ROM set no text gains from it today: the one NONE-but-close text (Chameleon Twist 2) failed the probe for a real reason and is a strict EXACT build since
+the `clip204` split, and the rest of the hot list is other microcode that needs kernels, not a looser gate (ucode-coverage.md). Its value is a retail text outside the set that is a registered build with a rewritten routine whose effect is a shade or
+colour rounding: it derives NONE, passes the probe, and runs with its small colour differences counted instead of unlatching.
 
 ## Native handler contract (superseded)
 

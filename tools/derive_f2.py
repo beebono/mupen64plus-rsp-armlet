@@ -13,8 +13,8 @@ PC_FIELDS = ["head", "copy", "sync", "segcopy", "ef", "ed", "tri1", "tri2", "vtx
 F2PCS_FIELDS = ["dl", "texture", "texrect", "half1", "moveword", "popmtx", "movemem", "omh", "oml"]
 LAY_ADDR = ["mv", "p", "mvp", "persp_norm", "viewport_scale", "viewport_trans", "clip_ratio", "const31", "const30", "fog_mul", "fog_ofs", "texture", "tex_scale_s", "tex_scale_t", "geom",
             "mvp_valid", "lights_valid", "lights_size", "light_raw", "light_base", "tg", "light_scale", "light_scale_zex", "vtab", "clipmask", "culltab", "in", "in_end", "jump_table",
-            "movemem_tab", "moveword_adj", "desc_light", "desc_clip", "clip_planes", "clip_masks", "out_toggle"]
-LAY_OTHER = ["geom_def", "mw_max", "out_bytes", "pipe_sync", "no_lit", "lit_vtx"]
+            "movemem_tab", "moveword_adj", "desc_light", "desc_clip", "clip_planes", "clip_masks", "out_toggle", "ring_start"]
+LAY_OTHER = ["geom_def", "mw_max", "out_bytes", "pipe_sync", "no_lit", "lit_vtx", "xbus"]
 LAY_FIELDS = LAY_ADDR + LAY_OTHER
 
 # a representative opcode of each handler pc field (the standard F3DEX2 command numbers)
@@ -23,6 +23,13 @@ PC_OPS = {"vtx": 0x01, "modvtx": 0x02, "culldl": 0x03, "branchz": 0x04, "tri1": 
 F2PCS_OPS = {"dl": 0xde, "texture": 0xd7, "texrect": 0xe4, "half1": 0xe1, "moveword": 0xdb, "popmtx": 0xd8, "movemem": 0xdc, "omh": 0xe3, "oml": 0xe2}
 OP_LOADER, OP_DMAIO = 0xdd, 0xd6
 DECLINED_OPS = {OP_DMAIO}
+
+# the Rej dialect (hle_rej.c): its extension kinds start at K_REJ_BASE (rej_dmem.h; the S2DEX kinds are below), and the variant bits of f2_layout.rej_flags (rej_fx.h: REJ_YQ, REJ_FLAT_A, REJ_LIT_FLX, REJ_LIT_LX)
+# each own the code of some regions of the image: the bits of the code in the vertex pipeline, the triangle setup and the lighting overlay (REJ_OWN, by DERIVE_REG_*)
+REJ_KIND = 0x60
+REJ_NBITS = 4
+REG_INIT, REG_VTX, REG_TRI, REG_CLIP, REG_LIGHT, REG_OTHER = range(6)
+REJ_OWN = {REG_VTX: 0xd, REG_TRI: 0x3, REG_LIGHT: 0xc}
 
 
 class Rec:
@@ -35,11 +42,13 @@ class Rec:
         self.f2pcs = {}     # F2PCS_FIELDS
         self.lay = {}       # LAY_FIELDS
         self.gen204 = 0
+        self.clip204 = 0    # the clipper's reciprocal flavour (2.04: VABS of the integer part), decided by the clip overlay's vector words alone
         self.zex = 0
         self.bz_z = 0       # zex build whose G_BRANCH_Z still reads the screen z (lw 28), not the clip w (lh 6)
         self.reject_mask = 0
         self.load_key = None
         self.ext = []       # [(pc, kind)]
+        self.rej_flags = 0  # f2_layout.rej_flags (the Rej dialect's variant bits)
         self.flags = set()  # HLE_F_NEAR_CLIP / HLE_F_ZEX (informational: nothing in the front-end reads them)
         self.extra = {}
 
@@ -53,12 +62,17 @@ class Rec:
         for k in LAY_FIELDS:
             out["lay." + k] = self.lay.get(k, 0)
         out["gen204"] = self.gen204
+        out["clip204"] = self.clip204
         out["zex"] = self.zex
         out["bz_z"] = self.bz_z
         out["reject_mask"] = self.reject_mask
         out["load_key"] = self.load_key
+        out["lay.rej_flags"] = self.rej_flags
         out["ext"] = tuple(sorted(self.ext))
         return out
+
+    def is_rej(self):
+        return any(k >= REJ_KIND for _, k in self.ext)
 
 
 def lookup(T, ref):
@@ -98,10 +112,13 @@ def load_f2_records(T, C):
                 v = pcs.get(k, std) if pcs else std
                 r.f2pcs[k] = v
             r.gen204 = int(b.get("gen204", 0))
+            r.clip204 = int(b.get("clip204", 0))
             r.zex = int(b.get("zex", 0))
             r.bz_z = int(b.get("bz_z", 0))
             r.reject_mask = int(b.get("reject_mask", 0))
             r.load_key = b.get("load_key")
+            rf = lay.get("rej_flags", 0)
+            r.rej_flags = rf if isinstance(rf, int) else 0
             ext = b.get("ext")
             if ext:
                 tab = T.vars[ext[1]][1] if isinstance(ext, tuple) else ext
@@ -324,7 +341,8 @@ class Pairing:
             elif c == isa.C_ALUI:
                 vr, vu = dx["imm"], dy["imm"]
                 lit = dx["rs"] == 0 and (vr & 3) == 0 and (vu & 3) == 0 and (vr >> 12) == (vu >> 12) and (vr >> 12) != 0
-                if lit and self.pc_ok(vr, vu, sr, su):
+                # (the builds differ in where the re-entry of the start-up code returns to: 0x80 up to the 2.04 generation, 0x84 behind the `vxor v0` after it)
+                if lit and (self.pc_ok(vr, vu, sr, su) or (vr, vu) in ((0x1080, 0x1084), (0x1084, 0x1080))):
                     self.ev.append(dict(kind="pc", i=i, j=j, vr=vr, vu=vu))
                 else:
                     self.ev.append(dict(kind="imm", i=i, j=j, vr=vr, vu=vu, rs=dx["rs"], op=dx["name"]))
@@ -666,6 +684,27 @@ def reach_sets(img, data, lay, tab, head):
     return out
 
 
+def region_map(U, rec, sets):
+    """the code region of every word of U: the first of light, clip, init, vtx, tri (tri1 | tri2), else other (REG_*)"""
+    img = U.img
+    head = rec.pc["head"]
+    out = []
+    for j in range(img.n):
+        if j in sets["light"]:
+            out.append(REG_LIGHT)
+        elif j in sets["clip"]:
+            out.append(REG_CLIP)
+        elif 0x80 <= img.pc[j] < head and img.seg[j] == 0:
+            out.append(REG_INIT)
+        elif j in sets["vtx"]:
+            out.append(REG_VTX)
+        elif j in sets["tri1"] or j in sets["tri2"]:
+            out.append(REG_TRI)
+        else:
+            out.append(REG_OTHER)
+    return out
+
+
 def derive(U, refs):
     for R in refs:
         R.img.active = None             # (set_active below leaves the primary reference restricted to its own overlays; one derivation must not depend on the ones before it)
@@ -729,9 +768,11 @@ def derive(U, refs):
     # flags
     sets = reach_sets(U.img, U.data, rec.lay, tab, rec.pc["head"])
     res.sets = sets
-    gen_own = sets["vtx"] | sets["clip"]
-    zex_own = (sets["tri1"] | sets["tri2"]) - gen_own - sets["light"]
-    for f, own in (("zex", zex_own), ("gen204", gen_own)):
+    # clip204 is the clipper's reciprocal (vector computation words of the clip overlay: the 2.04 differences of the intersection's scale); the rest of the clipper (new vertex stores, the fan) follows gen204
+    clip_own = {j for j in sets["clip"] if (U.img.w[j] >> 26) == 0x12 and (U.img.w[j] >> 25) & 1}
+    gen_own = (sets["vtx"] | sets["clip"]) - clip_own
+    zex_own = (sets["tri1"] | sets["tri2"]) - sets["vtx"] - sets["clip"] - sets["light"]
+    for f, own in (("zex", zex_own), ("gen204", gen_own), ("clip204", clip_own)):
         g = {0: set(), 1: set()}
         for R in refs:
             g[getattr(R.rec, f)] |= (explained_by[R.name] & own)
@@ -743,13 +784,70 @@ def derive(U, refs):
         else:
             v = 1 if ev1 > ev0 else 0
         setattr(rec, f, v)
-    res.zex_units, res.gen_units = zex_own, gen_own
+    # xbus: the transport flag (lay.xbus), owning the transport's code: the start-up (below the loop head: DPC_STATUS / DPC_START / s7 set, and the exit code below 0x80), and the flush routine
+    # behind the `ed` handler (the room check and the DPC_END write of the DMEM ring, or the fifo's DMA): the xbus texts differ from their fifo siblings there and nowhere else
+    body = sets["vtx"] | sets["tri1"] | sets["tri2"] | sets["clip"] | sets["light"]
+    ed = rec.pc.get("ed", 0) if valid_pc(rec.pc.get("ed", 0)) else -1
+    xbus_own = {j for j in range(U.img.n) if U.img.seg[j] == 0 and j not in body and
+                (U.img.pc[j] < rec.pc["head"] or (ed >= 0 and ed <= U.img.pc[j] < ed + 0x80))}
+    g = {0: set(), 1: set()}
+    for R in refs:
+        g[1 if R.rec.lay.get("xbus", 0) else 0] |= (explained_by[R.name] & xbus_own)
+    ev1, ev0 = len(g[1] - g[0]), len(g[0] - g[1])
+    res.flag_evidence["xbus"] = (ev0, ev1)
+    if ev1 == ev0:
+        rec.lay["xbus"] = 1 if prim.R.rec.lay.get("xbus", 0) else 0
+        res.notes.append("xbus: no discriminating evidence (%d/%d words), taken from the primary reference" % (ev0, ev1))
+    else:
+        rec.lay["xbus"] = 1 if ev1 > ev0 else 0
+    if rec.lay["xbus"] and not rec.lay.get("ring_start", 0):
+        # the ring's start is a knob of the xbus references only; under a fifo primary it is read from the start-up's `addi s7, zero, ring_start` (0xba8 in the F3DEX2 xbus texts, 0x9f8 in the Rej ones, 0x4c0 in S2DEX's)
+        for j in range(U.img.n):
+            w = U.img.w[j]
+            if U.img.seg[j] == 0 and U.img.pc[j] < rec.pc["head"] and (w >> 26) in (8, 9) and ((w >> 21) & 31) == 0 and ((w >> 16) & 31) == 23 and 0x400 <= (w & 0xffff) < 0xf00:
+                rec.lay["ring_start"] = w & 0xffff
+                res.notes.append("ring_start: read from the start-up's addi s7, zero, 0x%x" % (w & 0xffff))
+                break
+    res.zex_units, res.gen_units = zex_own, gen_own | clip_own
+    # the Rej dialect: the code of the vertex pipeline, the triangle setup and the lighting is its own (a reference of the other class cannot explain it), and the variant bits of rej_flags own
+    # regions of it (REJ_OWN); a bit is voted like the flags above, among the Rej references, over the words of the regions it owns. Without a Rej primary reference the bits are 0.
+    res.reg = region_map(U, rec, sets)
+    prim_rej = prim.R.rec.is_rej()
+    rec.rej_flags = 0
+    if prim_rej:
+        for b in range(REJ_NBITS):
+            g = {0: set(), 1: set()}
+            for R in refs:
+                if R.rec.is_rej():
+                    g[(R.rec.rej_flags >> b) & 1] |= {j for j in explained_by[R.name] if REJ_OWN.get(res.reg[j], 0) >> b & 1}
+            ev1, ev0 = len(g[1] - g[0]), len(g[0] - g[1])
+            res.flag_evidence["rej%d" % b] = (ev0, ev1)
+            v = ((prim.R.rec.rej_flags >> b) & 1) if ev1 == ev0 else (1 if ev1 > ev0 else 0)
+            if ev1 == ev0:
+                res.notes.append("rej_flags bit %d: no discriminating evidence (%d/%d words), taken from the primary reference" % (b, ev0, ev1))
+            rec.rej_flags |= v << b
+    # the scale of the light setup is a lane of the constant vector at const30 (no operand names it): the lane that holds 0x0100 (the generations lay the vector out differently: lane 3 in the 2.08
+    # texts, lane 7 in the 2.03 .. 2.06 ones), when exactly one does and no aligned code anchors the knob
+    if prim_rej and "lay.light_scale" not in merged:
+        c30 = rec.lay["const30"]
+        lanes = [c30 + 2 * k for k in range(8) if c30 + 2 * k + 2 <= len(U.data) and u16(U.data, c30 + 2 * k) == 0x0100]
+        if len(lanes) == 1:
+            rec.lay["light_scale"] = lanes[0]
     # the composite: a reference may explain a word only if it has the derived value of the flag that owns the word
     def usable(R, j):
         if j in zex_own and R.rec.zex != rec.zex:
             return False
         if j in gen_own and R.rec.gen204 != rec.gen204:
             return False
+        if j in clip_own and R.rec.clip204 != rec.clip204:
+            return False
+        if j in xbus_own and (1 if R.rec.lay.get("xbus", 0) else 0) != rec.lay["xbus"]:
+            return False
+        if res.reg[j] in (REG_VTX, REG_TRI, REG_LIGHT, REG_CLIP):
+            if R.rec.is_rej() != prim_rej:
+                return False
+            if (R.rec.rej_flags ^ rec.rej_flags) & REJ_OWN.get(res.reg[j], 0):
+                return False
         return True
     cur = set(prim.x_set())
     ok_by = {P.R.name: {j for j in explained_by[P.R.name] if usable(P.R, j)} for P in order[1:]}
@@ -900,7 +998,18 @@ def xr_residual(res):
             out[i] = "init"
         else:
             out[i] = "extra"
-    # a long run of reference-only code is a feature the unknown lacks (the reference's positional-light path, a handler); a short one is an instruction missing from the unknown
+    # a long run of reference-only code is a feature the unknown lacks (the reference's positional-light path, a handler); a short one is an instruction missing from the unknown,
+    # unless it lies in a region whose Rej variant bit the primary reference has and the unknown has not (then it is the variant's code: the same kind of feature)
+    flagged = set()
+    pb = P.R.rec.rej_flags ^ res.rec.rej_flags
+    if pb:
+        nr = ir.n
+        for i in out:
+            k = next((k for k in range(i, -1, -1) if k in P.pr), None)
+            if k is None:
+                k = next((k for k in range(i, nr) if k in P.pr), None)
+            if k is not None and REJ_OWN.get(res.reg[P.pr[k]], 0) & pb:
+                flagged.add(i)
     idxs = sorted(i for i, c in out.items() if c == "extra")
     runs = []
     for i in idxs:
@@ -911,9 +1020,51 @@ def xr_residual(res):
     for run in runs:
         if len(run) < 16:
             for i in run:
-                out[i] = "deleted"
+                out[i] = "extra" if i in flagged else "deleted"
     return out
 
 
 def derive_unknown(U, refs):
     return derive(U, refs)
+
+
+REGIONS = ("init", "vtx", "tri", "clip", "light", "other")
+
+
+def region_counts(res, U):
+    """the unexplained words (res.x), and the 'deleted' reference-only words by the nearest aligned word, by the code region of U: the first of light, clip, init, vtx, tri (tri1 | tri2), else other.
+    -> ([n_x per region], [n_deleted per region]); a family without res.sets (F3DEX 1.x, F3D) puts all in other"""
+    sets = getattr(res, "sets", None)
+    cnt = [0] * len(REGIONS)
+    cxr = [0] * len(REGIONS)
+    if sets is None:
+        cnt[-1] = len(res.x)
+        cxr[-1] = sum(1 for c in res.xr_res.values() if c == "deleted")
+        return cnt, cxr
+    img = U.img
+    head = res.rec.pc["head"]
+
+    def region(j):
+        if j in sets["light"]:
+            return 4
+        if j in sets["clip"]:
+            return 3
+        if 0x80 <= img.pc[j] < head and img.seg[j] == 0:
+            return 0
+        if j in sets["vtx"]:
+            return 1
+        if j in sets["tri1"] or j in sets["tri2"]:
+            return 2
+        return 5
+    for j in res.x:
+        cnt[region(j)] += 1
+    pr = res.prim.pr
+    nr = res.prim.R.img.n
+    for i, c in res.xr_res.items():
+        if c != "deleted":
+            continue
+        k = next((k for k in range(i, -1, -1) if k in pr), None)
+        if k is None:
+            k = next((k for k in range(i, nr) if k in pr), None)
+        cxr[region(pr[k]) if k is not None else 5] += 1
+    return cnt, cxr

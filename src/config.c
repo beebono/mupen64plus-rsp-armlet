@@ -32,6 +32,8 @@
 #define CFG_RDP_COALESCE_BYTES "RdpCoalesceBytes"
 #define CFG_GFX_PROBE "GfxProbe"
 #define CFG_GFX_PROBE_NEAR "GfxProbeNear"
+#define CFG_GFX_PROBE_LOOSE_WORDS "GfxProbeLooseWords"
+#define CFG_GFX_PROBE_LOOSE_SHADE "GfxProbeLooseShade"
 #define CFG_UCODE_CACHE "GfxUcodeCache"
 #define CFG_LATCH_POLICY "GfxLatchPolicy"
 
@@ -117,13 +119,18 @@ m64p_error armlet_config_startup(m64p_dynlib_handle core)
     ConfigSetDefaultInt(l_section, CFG_RDP_COALESCE_BYTES, ARMLET_COALESCE_BYTES_DEFAULT,
         "Bytes of pending RDP command list at which a coalesced list is handed to the video plugin");
     ConfigSetDefaultString(l_section, CFG_GFX_PROBE, "on",
-        "GfxMode=hle only: derive the build record of a graphics ucode that has no table entry and probe it with canned display lists against the JIT: off, on (see docs/design.md, The probe)");
+        "GfxMode=hle only: derive the build record of a graphics ucode that has no table entry and probe it with canned display lists against the JIT: off, on, "
+        "loose (on, and a NONE derivation within GfxProbeLooseWords is probed and latched too, with mismatches graded; see docs/design.md, The loose tier)");
+    ConfigSetDefaultInt(l_section, CFG_GFX_PROBE_LOOSE_WORDS, 16,
+        "GfxProbe=loose: unexplained plus missing words a NONE derivation may have and still be probed");
+    ConfigSetDefaultInt(l_section, CFG_GFX_PROBE_LOOSE_SHADE, 8,
+        "GfxProbe=loose: colour levels a latched loose build's shade coefficients and vertex colours may differ from the JIT's by without a strike");
     ConfigSetDefaultString(l_section, CFG_GFX_PROBE_NEAR, "strict",
         "Probe of a NEAR derivation: strict (the canned tasks must come out identical) or tolerant (shade coefficients and vertex colours may differ by a couple of levels)");
     ConfigSetDefaultString(l_section, CFG_UCODE_CACHE, "",
         "File of what the probe learned (armlet-ucode.cache in the core's config directory when empty; off = none)");
     ConfigSetDefaultString(l_section, CFG_LATCH_POLICY, "",
-        "GfxProbe: when a derived build runs natively (empty = the defaults): evidence=24,distinct=8,near=1.75,strikes=2,sample=32,sample_last=256,decay=64,queue=4,fingerprints=1024 (see docs/options.md)");
+        "GfxProbe: when a derived build runs natively (empty = the defaults): evidence=24,distinct=8,near=1.75,strikes=2,sample=32,sample_last=256,decay=64,queue=4,fingerprints=1024,loose=2.5,default=3,repeat=0.05,override=4 (see docs/options.md)");
     return M64ERR_SUCCESS;
 }
 
@@ -175,6 +182,8 @@ void armlet_config_load(struct armlet_config *cfg)
     const char *nroutines = l_section ? ConfigGetParamString(l_section, CFG_GFX_NATIVE_ROUTINES) : "";
     const char *probe = l_section ? ConfigGetParamString(l_section, CFG_GFX_PROBE) : "on";
     const char *pnear = l_section ? ConfigGetParamString(l_section, CFG_GFX_PROBE_NEAR) : "strict";
+    int lwords = l_section ? ConfigGetParamInt(l_section, CFG_GFX_PROBE_LOOSE_WORDS) : 16;
+    int lshade = l_section ? ConfigGetParamInt(l_section, CFG_GFX_PROBE_LOOSE_SHADE) : 8;
     const char *ucache = l_section ? ConfigGetParamString(l_section, CFG_UCODE_CACHE) : "";
     const char *lpol = l_section ? ConfigGetParamString(l_section, CFG_LATCH_POLICY) : "";
     const char *coalesce = l_section ? ConfigGetParamString(l_section, CFG_RDP_COALESCE) : "auto";
@@ -197,6 +206,10 @@ void armlet_config_load(struct armlet_config *cfg)
         probe = env;
     if ((env = getenv("ARMLET_PROBE_NEAR")) && *env)
         pnear = env;
+    if ((env = getenv("ARMLET_PROBE_LOOSE_WORDS")) && *env)
+        lwords = atoi(env);
+    if ((env = getenv("ARMLET_PROBE_LOOSE_SHADE")) && *env)
+        lshade = atoi(env);
     if ((env = getenv("ARMLET_UCODE_CACHE")))
         ucache = env;
     if ((env = getenv("ARMLET_LATCH_POLICY")))
@@ -221,13 +234,19 @@ void armlet_config_load(struct armlet_config *cfg)
 
     if (probe && (!strcasecmp(probe, "on") || !strcmp(probe, "1") || !strcasecmp(probe, "true")))
         cfg->probe = 1;
+    else if (probe && !strcasecmp(probe, "loose"))
+        cfg->probe = cfg->probe_loose = 1;
     else if (probe && strcasecmp(probe, "off") && strcmp(probe, "0") && strcasecmp(probe, "false") && *probe)
-        armlet_log(M64MSG_WARNING, "unknown GfxProbe '%s' (off or on); using off", probe);
+        armlet_log(M64MSG_WARNING, "unknown GfxProbe '%s' (off, on or loose); using off", probe);
+    cfg->probe_loose_words = lwords < 0 ? 0 : lwords > 4096 ? 4096 : (unsigned)lwords;
+    cfg->probe_loose_shade = lshade < 2 ? 2 : lshade > 255 ? 255 : (unsigned)lshade;
     cfg->probe_tol = pnear && !strcasecmp(pnear, "tolerant");
     if (pnear && strcasecmp(pnear, "strict") && strcasecmp(pnear, "tolerant") && *pnear)
         armlet_log(M64MSG_WARNING, "unknown GfxProbeNear '%s' (strict or tolerant); using strict", pnear);
     cfg->probe_latch = (env = getenv("ARMLET_PROBE_LATCH")) && *env && *env != '0';
     cfg->probe_force = (env = getenv("ARMLET_PROBE_FORCE")) && *env && *env != '0';
+    cfg->probe_loose_force = cfg->probe_loose && (env = getenv("ARMLET_PROBE_LOOSE_FORCE")) && *env && *env != '0';
+    cfg->probe_default = cfg->probe_loose && !((env = getenv("ARMLET_PROBE_DEFAULT")) && *env && *env == '0');
     cfg->probe_none_x = (env = getenv("ARMLET_PROBE_NONE_X")) && *env ? (unsigned)atoi(env) : 0;
     cfg->probe_seeds = (env = getenv("ARMLET_PROBE_SEEDS")) && *env ? (unsigned)atoi(env) : 0;
     if (cfg->probe_seeds > 40)
@@ -236,7 +255,7 @@ void armlet_config_load(struct armlet_config *cfg)
     {
         const char *bad = NULL;
         if (lpol && *lpol && latch_cfg_parse(&cfg->latch, lpol, &bad))
-            armlet_log(M64MSG_WARNING, "GfxLatchPolicy: cannot read '%.40s' (keys: evidence, distinct, near, strikes, sample, sample_last, decay, queue, fingerprints)", bad ? bad : lpol);
+            armlet_log(M64MSG_WARNING, "GfxLatchPolicy: cannot read '%.40s' (keys: evidence, distinct, near, strikes, sample, sample_last, decay, queue, fingerprints, loose, default, repeat, override)", bad ? bad : lpol);
     }
     if (ucache && *ucache)
         snprintf(cfg->ucode_cache, sizeof(cfg->ucode_cache), "%s", ucache);

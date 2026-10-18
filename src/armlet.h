@@ -36,6 +36,11 @@ struct armlet_config {
     int probe_latch;                    /* ARMLET_PROBE_LATCH=1 (tests): a ucode whose probe passed is latched at once, every command kind, never sampled (the latch policy's override) */
     int probe_force;                    /* ARMLET_PROBE_FORCE=1: probe the registered ucodes too, with their own record left out of the references (testing) */
     int probe_tol;                      /* GfxProbeNear = tolerant: the near-match tolerance of the probe (docs/design.md); default strict */
+    int probe_loose;                    /* GfxProbe = loose: the loose tier (docs/design.md "The loose tier"): a NONE derivation within the word bound is probed and latched with graded mismatches */
+    int probe_loose_force;              /* ARMLET_PROBE_LOOSE_FORCE=1 (tests): every derived build is treated as a loose-tier one, whatever its verdict (the loose latch path on a text that derives EXACT) */
+    int probe_default;                  /* GfxProbe = loose: the default-record arm (a NONE derivation outside the word bound is probed with the family's record as derived); ARMLET_PROBE_DEFAULT=0 turns it off */
+    unsigned probe_loose_words;         /* GfxProbeLooseWords: unexplained + missing words a NONE derivation may have to be admitted (default 16) */
+    unsigned probe_loose_shade;         /* GfxProbeLooseShade: colour levels a loose build's shade coefficients and vertex colours may differ by and count as NUMERIC (default 8) */
     unsigned probe_none_x;              /* ARMLET_PROBE_NONE_X=n (experiment): also probe a NONE derivation (any family) with at most n unexplained plus missing words; its result is not cached */
     unsigned probe_seeds;               /* ARMLET_PROBE_SEEDS: canned tasks per random case (default 3) */
     char ucode_cache[512];              /* GfxUcodeCache: path of the cache file; empty = armlet-ucode.cache in the core's config directory; "off" = none */

@@ -173,10 +173,12 @@ def generate(dumps):
     for fi, r in recs:
         if fi == 0:
             fs = ["    { .name = \"%s\", .fam = 0" % r.name]
-            fs.append(".gen204 = %d, .zex = %d, .bz_z = %d, .reject_mask = 0x%x, .load_key = 0x%016xull" % (r.gen204, r.zex, r.bz_z, r.reject_mask, r.load_key))
+            fs.append(".gen204 = %d, .clip204 = %d, .zex = %d, .bz_z = %d, .reject_mask = 0x%x, .load_key = 0x%016xull" % (r.gen204, r.clip204, r.zex, r.bz_z, r.reject_mask, r.load_key))
             fs.append(".pc = { %s }" % ", ".join(str(r.pc.get(k, 0)) for k in F2.PC_FIELDS))
             fs.append(".f2pcs = { %s }" % ", ".join(str(r.f2pcs.get(k, 0)) for k in F2.F2PCS_FIELDS))
             fs.append(".lay = { %s }" % ", ".join(str(r.lay.get(k, 0)) for k in F2.LAY_FIELDS))
+            if r.rej_flags:
+                fs.append(".rej_flags = %d" % r.rej_flags)
             if r.ext:
                 fs.append(".n_ext = %d, .ext = { %s }" % (len(r.ext), ", ".join("{ %d, %d }" % (p, k) for p, k in r.ext)))
             P(",\n      ".join(fs) + " },")

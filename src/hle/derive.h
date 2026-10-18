@@ -20,7 +20,7 @@ extern "C" {
 #endif
 
 /* bump when the derivation's decisions change (the cache is keyed with it) */
-#define DERIVE_TOOL_VERSION 3
+#define DERIVE_TOOL_VERSION 6
 
 enum { DERIVE_NONE = 0, DERIVE_NEAR = 1, DERIVE_EXACT = 2 };
 enum { DERIVE_F3DEX2 = 0, DERIVE_F3DEX1 = 1, DERIVE_F3D = 2, DERIVE_AUTO = -1 };
@@ -37,6 +37,8 @@ struct derive_in {
     int full;                       /* nonzero: always compute every family (the test); else the F3DEX2 family alone when it explains the text well (>= 0.95 aligned) */
 };
 
+enum { DERIVE_REG_INIT = 0, DERIVE_REG_VTX, DERIVE_REG_TRI, DERIVE_REG_CLIP, DERIVE_REG_LIGHT, DERIVE_REG_OTHER, DERIVE_NREG };
+
 struct derive_result {
     int family;                     /* of the best explanation */
     int verdict;                    /* DERIVE_NONE / NEAR / EXACT (a statement about the code: docs/ucode-derive.md "Verdicts") */
@@ -45,6 +47,8 @@ struct derive_result {
     unsigned n_x;                   /* unexplained words */
     unsigned n_near[4];             /* near-class words: init, light-positional, light-small, geom-guarded (F3DEX 1.x) */
     unsigned n_xr[3];               /* reference-only words: init, extra, deleted */
+    unsigned n_x_reg[DERIVE_NREG];  /* n_x by the region of the unknown's image (first of light, clip, init, vtx, tri, else other; F3DEX 1.x and F3D: all other); sums to n_x */
+    unsigned n_xr_reg[DERIVE_NREG]; /* n_xr[deleted] by the region of the nearest aligned word; sums to n_xr[2] */
     int primary;                    /* index in derive_refs */
     int n_contrib;
     struct {

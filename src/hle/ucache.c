@@ -76,6 +76,12 @@ uint32_t ucache_tool_version(void)
 
 static uint32_t entry_crc(const struct ucache_entry *e) { return ucache_crc32(e, offsetof(struct ucache_entry, crc)); }
 
+/* the key: text id, data id and the tier (the loose section is not the strict one) */
+static int same_key(const struct ucache_entry *a, uint64_t text_id, uint64_t data_id, unsigned tier)
+{
+    return a->text_id == text_id && a->data_id == data_id && UMUT(454, a->tier == tier, 1);
+}
+
 /* two versions of one key: the newer (seq) wins, but a permanent unlatch and the strikes are kept from either */
 static void merge(struct ucache_entry *keep, const struct ucache_entry *other)
 {
@@ -112,7 +118,7 @@ static void load_file(void)
         if ((UMUT(345, e.crc != entry_crc(&e), 0)) || UMUT(347, e.tool != ucache_tool_version(), 0))
             continue;                                      /* damaged, or made by another version of the tool */
         for (q = 0; q < U.n; q++)
-            if (U.e[q].text_id == e.text_id && U.e[q].data_id == e.data_id)
+            if (same_key(&U.e[q], e.text_id, e.data_id, e.tier))
                 break;
         if (q < U.n) {
             merge(&U.e[q], &e);
@@ -158,12 +164,12 @@ void ucache_close(void)
     pthread_mutex_unlock(&l_mu);
 }
 
-int ucache_get(uint64_t text_id, uint64_t data_id, struct ucache_entry *out)
+int ucache_get_t(uint64_t text_id, uint64_t data_id, unsigned tier, struct ucache_entry *out)
 {
     const struct ucache_entry *e;
     int rc = -1;
     pthread_mutex_lock(&l_mu);
-    e = ucache_find(text_id, data_id);
+    e = ucache_find_t(text_id, data_id, tier);
     if (e) {
         *out = *e;
         rc = 0;
@@ -172,14 +178,18 @@ int ucache_get(uint64_t text_id, uint64_t data_id, struct ucache_entry *out)
     return rc;
 }
 
-const struct ucache_entry *ucache_find(uint64_t text_id, uint64_t data_id)
+int ucache_get(uint64_t text_id, uint64_t data_id, struct ucache_entry *out) { return ucache_get_t(text_id, data_id, UC_TIER_STRICT, out); }
+
+const struct ucache_entry *ucache_find_t(uint64_t text_id, uint64_t data_id, unsigned tier)
 {
     unsigned i;
     for (i = 0; i < U.n; i++)
-        if (U.e[i].text_id == text_id && U.e[i].data_id == data_id)
+        if (same_key(&U.e[i], text_id, data_id, tier))
             return &U.e[i];
     return NULL;
 }
+
+const struct ucache_entry *ucache_find(uint64_t text_id, uint64_t data_id) { return ucache_find_t(text_id, data_id, UC_TIER_STRICT); }
 
 static int write_file(void)
 {
@@ -253,7 +263,7 @@ static int store_locked(const struct ucache_entry *src)
     e.tool = ucache_tool_version();
     e.seq = ++U.seq;
     for (i = 0; i < U.n; i++)
-        if (U.e[i].text_id == e.text_id && U.e[i].data_id == e.data_id) {
+        if (same_key(&U.e[i], e.text_id, e.data_id, e.tier)) {
             q = i;
             break;
         }
@@ -290,7 +300,9 @@ void ucache_from_rec(struct ucache_entry *e, const struct derive_rec *r)
     memcpy(e->f2pcs, r->f2pcs, sizeof(e->f2pcs));
     memcpy(e->lay, r->lay, sizeof(e->lay));
     e->reject_mask = r->reject_mask;
+    e->rej_flags = r->rej_flags;
     e->gen204 = r->gen204;
+    e->clip204 = r->clip204;
     e->zex = r->zex;
     e->bz_z = r->bz_z;
     e->load_key = r->load_key;
@@ -318,7 +330,9 @@ void ucache_to_rec(const struct ucache_entry *e, struct derive_rec *r)
     memcpy(r->f2pcs, e->f2pcs, sizeof(r->f2pcs));
     memcpy(r->lay, e->lay, sizeof(r->lay));
     r->reject_mask = e->reject_mask;
+    r->rej_flags = e->rej_flags;
     r->gen204 = e->gen204;
+    r->clip204 = UMUT(460, e->clip204, 0);
     r->zex = e->zex;
     r->bz_z = e->bz_z;
     r->load_key = e->load_key;

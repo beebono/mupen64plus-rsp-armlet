@@ -172,3 +172,18 @@ tools/f3dex/build_fxn.sh fxn_vtx a64                     # NEON-vs-scalar tests 
 SPEC_ONLY=fxvtx tools/native-f3dex/build_rt_test.sh x86 <dir>; <dir>/rt_test --ucode <ucode>/<build> --routine spec.f3dex.fxvtx --cases 20000
 ```
 Environment of the front-end: `F3DEX_EXACT=1` (the microcode's own DMA reads and one flush per command, DMEM as the microcode leaves it), `F3DEX_TRACE=1`, `F3DEX_PROF=1`, `F3DEX_SCALAR=1` (the scalar functions).
+
+## 7. Tasks that start with the XBUS transport
+
+Glover runs a third of its F3DEX 1.21 tasks with `DPC_STATUS.XBUS` set at the start, and they were refused ("not eligible"). The F3DEX 1.x texts have no XBUS transport of their own:
+there is no ring in DMEM, `outbuf` (0xce0) is only the staging buffer of the FIFO flush, and every list goes to the RDRAM FIFO (section 3, `flush_`). What the game leaves behind is the previous
+task's: the bit is left set by an earlier task (presumably Glover's F3D 2.0H text `9d0d`, which uses the XBUS transport). The microcode decides nothing per task: its start (`docs/ucode-f3dex/dl.md` 1.3, step 5 and 6;
+`rdp.md` 8) takes the XBUS branch of the RDP-state test whenever bit 0 is set, waits for START_VALID to clear, writes `DPC_STATUS <- 1` (clear XBUS) and sets `DPC_START = DPC_END = fifo_end`, exactly as
+for a task that finds the RDP idle. A resumed task (`flags & 1`) skips this code, which is on the interpreter in any case.
+
+So the front-end needs nothing new: the task start runs on the interpreter up to the first command fetch (the same code the JIT runs, with the DPC write events recorded), `enter` finds XBUS clear,
+and the rest is the FIFO path. The decision per task is `enter` declining when bit 0 is still set at the loop (a text whose start does not clear it, e.g. a derived build; none of the registered
+ones). The builds carry `HLE_F_XBUS_OK` (the `U(...)` macro) so that `armlet_hle_run` accepts the task; the derived F3DEX 1.x builds inherit the primary's flags in `dbuild.c` (`make_f1`), so a derived build
+has the flag too, and the probe's canned tasks run with `DPC_STATUS.XBUS` set for them: a derived text that does not clear it ends the canned task differently (or `enter` declines) and fails the probe.
+
+Mutation 490 (`--hmut=490`): `enter` leaves XBUS set after the start; verify reports the `DPC_STATUS` difference on Glover (testing.md, "XBUS-start tasks").

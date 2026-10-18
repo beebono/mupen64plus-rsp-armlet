@@ -891,7 +891,8 @@ static int pairing_make(struct pairing *P, int ref, const struct dimg *U, int nk
             vr = R->opd[i];
             vu = U->opd[j];
             lit = (R->flg[i] & 1) && (vr & 3) == 0 && (vu & 3) == 0 && (vr >> 12) == (vu >> 12) && (vr >> 12) != 0;
-            ev[nev].kind = lit && pc_ok(P, U, vr, vu, R->seg[i], U->seg[j]) ? EV_PC : EV_IMM;
+            /* (the builds differ in where the re-entry of the start-up code returns to: 0x80 up to the 2.04 generation, 0x84 behind the `vxor v0` after it) */
+            ev[nev].kind = lit && (pc_ok(P, U, vr, vu, R->seg[i], U->seg[j]) || (vr == 0x1080 && vu == 0x1084) || (vr == 0x1084 && vu == 0x1080)) ? EV_PC : EV_IMM;
             ev[nev].vr = vr;
             ev[nev].vu = vu;
         } else if (c == C_MEM || c == C_VMEM) {
@@ -1447,7 +1448,7 @@ static void overlay_words(const struct dimg *im, const uint8_t *data, size_t len
 struct f2work {
     int verdict;
     int n_x, nx_total;
-    unsigned n_near[4], n_xr[3];
+    unsigned n_near[4], n_xr[3], n_x_reg[DERIVE_NREG], n_xr_reg[DERIVE_NREG];
     int primary;
     int n_contrib;
     int contrib[DERIVE_MAXREFS];
@@ -1494,6 +1495,22 @@ static int refs_of(const struct derive_in *in, int fam, int *list)
     return n;
 }
 
+/* The Rej dialect (docs/ucode-rej.md, "Rej as a derivation family"): the variant bits of rej_flags (rej_fx.h: REJ_YQ 1, REJ_FLAT_A 2, REJ_LIT_FLX 4, REJ_LIT_LX 8) own the code of some regions of the
+ * image: the vertex pipeline (YQ, the lightings), the triangle setup (YQ, FLAT_A) and the lighting overlay (the lightings) */
+#define REJ_NBITS 4
+static unsigned rej_own(int region)
+{
+    return region == DERIVE_REG_VTX ? 0xdu : region == DERIVE_REG_TRI ? 0x3u : region == DERIVE_REG_LIGHT ? 0xcu : 0u;
+}
+static int rec_is_rej(const struct derive_rec *r)
+{
+    unsigned k;
+    for (k = 0; k < r->n_ext; k++)
+        if (r->ext[k].kind >= DERIVE_K_REJ)
+            return 1;
+    return 0;
+}
+
 static int derive_f2(const struct derive_in *in, struct dimg *U, const struct dctx *X, const int *refs, int nrefs, struct f2work *out)
 {
     struct pairing *prs = (struct pairing *)calloc((size_t)nrefs, sizeof(struct pairing));
@@ -1502,12 +1519,12 @@ static int derive_f2(const struct derive_in *in, struct dimg *U, const struct dc
     struct derive_rec *rec = &out->rec;
     struct pairing *prim;
     uint8_t *expl[DERIVE_MAXREFS];
-    uint8_t *cur = NULL, *gen_own = NULL, *zex_own = NULL, *tmp = NULL;
+    uint8_t *cur = NULL, *gen_own = NULL, *clip_own = NULL, *zex_own = NULL, *xbus_own = NULL, *tmp = NULL, *reg = NULL;
     uint8_t *sets[10], *xrs[2] = { NULL, NULL };
     int tab[256], tabR[256], i, k, j, rc = -1, ndone = 0, head;
     struct conv cv;
     const uint32_t *lay;
-    int nex = 0;
+    int nex = 0, prim_rej = 0;
 
     memset(expl, 0, sizeof(expl));
     memset(sets, 0, sizeof(sets));
@@ -1625,26 +1642,43 @@ static int derive_f2(const struct derive_in *in, struct dimg *U, const struct dc
                 reach(U, &e, 1, stop, 3, blk, sets[roles[r].idx]);
             }
         }
-        /* flags: gen_own = vtx | clip; zex_own = (tri1 | tri2) - gen_own - light */
+        /* flags: clip_own = the vector computation words of the clip overlay (the clipper's reciprocal), gen_own = (vtx | clip) - clip_own, zex_own = (tri1 | tri2) - vtx - clip - light */
         gen_own = (uint8_t *)malloc((size_t)U->n);
+        clip_own = (uint8_t *)malloc((size_t)U->n);
         zex_own = (uint8_t *)malloc((size_t)U->n);
-        if (!gen_own || !zex_own) {
+        xbus_own = (uint8_t *)malloc((size_t)U->n);
+        if (!gen_own || !clip_own || !zex_own || !xbus_own) {
             free(clip); free(light); free(blk);
             goto done;
         }
         for (j = 0; j < U->n; j++) {
-            gen_own[j] = sets[0][j] | clip[j];
-            zex_own[j] = (uint8_t)((sets[1][j] | sets[2][j]) && !gen_own[j] && !light[j]);
+            /* xbus_own: the transport's code: the start-up (DPC_STATUS / DPC_START / s7 set), the flush routine behind the `ed` handler (the room check and the DPC_END write of the ring, or the
+             * fifo's DMA), and the exit code below 0x80 (docs/design.md "XBUS": the xbus texts differ from their fifo siblings in those three places and nowhere else) */
+            int ed = valid_pc(rec->pc[PC_ED]) ? rec->pc[PC_ED] : -1;
+            clip_own[j] = clip[j] && (U->w[j] >> 26) == 0x12 && ((U->w[j] >> 25) & 1);
+            gen_own[j] = (sets[0][j] || clip[j]) && !clip_own[j];
+            zex_own[j] = (uint8_t)((sets[1][j] | sets[2][j]) && !sets[0][j] && !clip[j] && !light[j]);
+            xbus_own[j] = (uint8_t)(U->seg[j] == 0 && !clip[j] && !light[j] && !sets[0][j] && !sets[1][j] && !sets[2][j] &&
+                                    ((int)U->pc[j] < head || (ed >= 0 && (int)U->pc[j] >= ed && (int)U->pc[j] < ed + 0x80)));
         }
+        reg = (uint8_t *)malloc((size_t)U->n);
+        if (!reg) {
+            free(clip); free(light); free(blk);
+            goto done;
+        }
+        for (j = 0; j < U->n; j++)        /* first of: light, clip, init, vtx, tri */
+            reg[j] = light[j] ? DERIVE_REG_LIGHT : clip[j] ? DERIVE_REG_CLIP : (U->pc[j] >= 0x80 && (int)U->pc[j] < head && U->seg[j] == 0) ? DERIVE_REG_INIT :
+                     sets[0][j] ? DERIVE_REG_VTX : (sets[1][j] || sets[2][j]) ? DERIVE_REG_TRI : DERIVE_REG_OTHER;
         lightset = light;
         bzset = sets[3];
-        for (r = 0; r < 2; r++) {                              /* zex first, then gen204 */
-            const uint8_t *own = r == 0 ? zex_own : gen_own;
+        for (r = 0; r < 4; r++) {                              /* zex first, then gen204 (vertex pipeline), clip204 (clipper), xbus (the transport) */
+            const uint8_t *own = r == 0 ? zex_own : r == 1 ? gen_own : r == 2 ? clip_own : xbus_own;
             int ev1 = 0, ev0 = 0, v;
             for (j = 0; j < U->n; j++) {
                 int in1 = 0, in0 = 0;
                 for (i = 0; i < nrefs; i++) {
-                    int fv = r == 0 ? derive_recs[derive_refs[order[i]->ref].rec].zex : derive_recs[derive_refs[order[i]->ref].rec].gen204;
+                    const struct derive_rec *fr = &derive_recs[derive_refs[order[i]->ref].rec];
+                    int fv = r == 0 ? fr->zex : r == 1 ? fr->gen204 : r == 2 ? fr->clip204 : (int)fr->lay[LY_XBUS];
                     if (expl[i][j] && own[j]) {
                         if (fv)
                             in1 = 1;
@@ -1658,13 +1692,66 @@ static int derive_f2(const struct derive_in *in, struct dimg *U, const struct dc
                     ev0++;
             }
             if (ev1 == ev0)
-                v = r == 0 ? prim->rec->zex : prim->rec->gen204;
+                v = r == 0 ? prim->rec->zex : r == 1 ? prim->rec->gen204 : r == 2 ? prim->rec->clip204 : (int)prim->rec->lay[LY_XBUS];
             else
                 v = ev1 > ev0;
             if (r == 0)
                 rec->zex = (uint8_t)v;
-            else
+            else if (r == 1)
                 rec->gen204 = (uint8_t)v;
+            else if (r == 2)
+                rec->clip204 = (uint8_t)v;
+            else
+                rec->lay[LY_XBUS] = (uint32_t)v;
+        }
+        if (rec->lay[LY_XBUS] && !rec->lay[LY_RING_START]) {
+            /* the ring's start is a knob of the xbus references only; under a fifo primary it is read from the start-up's `addi s7, zero, ring_start` (0xba8 in the F3DEX2 xbus texts, 0x9f8 in the Rej ones, 0x4c0 in S2DEX's) */
+            for (j = 0; j < U->n; j++) {
+                uint32_t w = U->w[j];
+                if (U->seg[j] == 0 && (int)U->pc[j] < head && ((w >> 26) == 8 || (w >> 26) == 9) && ((w >> 21) & 31) == 0 && ((w >> 16) & 31) == 23 && (w & 0xffff) >= 0x400 && (w & 0xffff) < 0xf00) {
+                    rec->lay[LY_RING_START] = w & 0xffff;
+                    break;
+                }
+            }
+        }
+        /* the Rej dialect's variant bits: voted among the Rej references over the words of the regions each bit owns; none without a Rej primary reference */
+        prim_rej = rec_is_rej(prim->rec);
+        rec->rej_flags = 0;
+        if (prim_rej)
+            for (r = 0; r < REJ_NBITS; r++) {
+                int ev1 = 0, ev0 = 0, v;
+                for (j = 0; j < U->n; j++) {
+                    int in1 = 0, in0 = 0;
+                    if (!(rej_own(reg[j]) >> r & 1))
+                        continue;
+                    for (i = 0; i < nrefs; i++) {
+                        const struct derive_rec *fr = &derive_recs[derive_refs[order[i]->ref].rec];
+                        if (expl[i][j] && rec_is_rej(fr)) {
+                            if (fr->rej_flags >> r & 1)
+                                in1 = 1;
+                            else
+                                in0 = 1;
+                        }
+                    }
+                    if (in1 && !in0)
+                        ev1++;
+                    if (in0 && !in1)
+                        ev0++;
+                }
+                v = ev1 == ev0 ? prim->rec->rej_flags >> r & 1 : ev1 > ev0;
+                rec->rej_flags |= (uint8_t)(v << r);
+            }
+        /* the scale of the light setup is a lane of the constant vector at const30 (no operand names it): the lane that holds 0x0100 (the generations lay the vector out differently: lane 3 in the 2.08
+         * texts, lane 7 in the 2.03 .. 2.06 ones), when exactly one does and no aligned code anchors the knob */
+        if (prim_rej && !mg.has[LY_LIGHT_SCALE]) {
+            unsigned c30 = rec->lay[LY_CONST30], nl = 0, at = 0, q;
+            for (q = 0; q < 8; q++)
+                if (c30 + 2 * q + 2 <= in->data_len && ((unsigned)in->data[c30 + 2 * q] << 8 | in->data[c30 + 2 * q + 1]) == 0x0100) {
+                    nl++;
+                    at = c30 + 2 * q;
+                }
+            if (nl == 1)
+                rec->lay[LY_LIGHT_SCALE] = at;
         }
         /* the composite */
         cur = (uint8_t *)malloc((size_t)U->n);
@@ -1695,6 +1782,14 @@ static int derive_f2(const struct derive_in *in, struct dimg *U, const struct dc
                         usable = 0;
                     if (gen_own[j] && rr->gen204 != rec->gen204)
                         usable = 0;
+                    if (clip_own[j] && rr->clip204 != rec->clip204)
+                        usable = 0;
+                    if (xbus_own[j] && rr->lay[LY_XBUS] != rec->lay[LY_XBUS])
+                        usable = 0;
+                    if (reg[j] == DERIVE_REG_VTX || reg[j] == DERIVE_REG_TRI || reg[j] == DERIVE_REG_LIGHT || reg[j] == DERIVE_REG_CLIP) {
+                        if (rec_is_rej(rr) != prim_rej || ((rr->rej_flags ^ rec->rej_flags) & rej_own(reg[j])))
+                            usable = 0;
+                    }
                     okby[i][j] = expl[i][j] && usable;
                 }
                 pool[npool++] = i;
@@ -1795,8 +1890,10 @@ static int derive_f2(const struct derive_in *in, struct dimg *U, const struct dc
                 }
             free(near);
         }
-        for (j = 0; j < U->n; j++)
+        for (j = 0; j < U->n; j++) {
             out->n_x += cur[j];
+            out->n_x_reg[reg[j]] += cur[j];
+        }
         /* ref_sets: the reference's optional handlers (G_SPECIAL_1, G_TRI4) that the unknown has no command for */
         {
             const struct derive_ref *pr = &derive_refs[prim->ref];
@@ -1855,22 +1952,45 @@ static int derive_f2(const struct derive_in *in, struct dimg *U, const struct dc
             }
             {
                 int s0 = 0;
+                unsigned pb = (unsigned)(prim->rec->rej_flags ^ rec->rej_flags);
                 while (s0 < R->n) {
                     if (cat[s0] == 2) {
                         int e = s0;
                         while (e < R->n && cat[e] == 2)
                             e++;
                         if (e - s0 < 16)
-                            for (i0 = s0; i0 < e; i0++)
-                                cat[i0] = 3;
+                            for (i0 = s0; i0 < e; i0++) {
+                                int flagged = 0;
+                                if (pb) {                   /* in a region whose Rej variant bit the primary reference has and the unknown has not: the variant's code, a feature the unknown lacks */
+                                    int k = i0, u;
+                                    while (k >= 0 && prim->pr[k] < 0)
+                                        k--;
+                                    for (u = i0; k < 0 && u < R->n; u++)
+                                        if (prim->pr[u] >= 0)
+                                            k = u;
+                                    flagged = k >= 0 && (rej_own(reg[prim->pr[k]]) & pb) != 0;
+                                }
+                                if (!flagged)
+                                    cat[i0] = 3;
+                            }
                         s0 = e;
                     } else
                         s0++;
                 }
             }
             for (i0 = 0; i0 < R->n; i0++)
-                if (cat[i0])
+                if (cat[i0]) {
                     out->n_xr[cat[i0] - 1]++;
+                    if (cat[i0] == 3) {       /* the region of the nearest aligned word before it (else after) */
+                        int k = i0, u;
+                        while (k >= 0 && prim->pr[k] < 0)
+                            k--;
+                        for (u = i0; k < 0 && u < R->n; u++)
+                            if (prim->pr[u] >= 0)
+                                k = u;
+                        out->n_xr_reg[k >= 0 ? reg[prim->pr[k]] : DERIVE_REG_OTHER]++;
+                    }
+                }
             free(cat);
         }
         free(clip); free(light); free(blk);
@@ -1895,7 +2015,7 @@ done:
     for (i = 0; i < 10; i++)
         free(sets[i]);
     free(xrs[0]); free(xrs[1]);
-    free(cur); free(tmp); free(gen_own); free(zex_own);
+    free(cur); free(tmp); free(gen_own); free(clip_own); free(zex_own); free(xbus_own); free(reg);
     for (i = 0; i < ndone; i++)
         pairing_free(&prs[i]);
     free(prs);
@@ -2297,6 +2417,7 @@ static int derive_f1(const struct derive_in *in, struct dimg *U, const struct dc
     }
     for (j = 0; j < U->n; j++)
         out->n_x += cur[j];
+    out->n_x_reg[DERIVE_REG_OTHER] = out->n_x;       /* no code regions in this family */
     {
         int nxr = 0, s0 = 0, i0;
         for (i0 = 0; i0 < prim->R.n; i0++)
@@ -2317,6 +2438,8 @@ static int derive_f1(const struct derive_in *in, struct dimg *U, const struct dc
         for (i0 = 0; i0 < prim->R.n; i0++)
             if (cat[i0]) {
                 out->n_xr[cat[i0] - 1]++;
+                if (cat[i0] == 3)
+                    out->n_xr_reg[DERIVE_REG_OTHER]++;
                 nxr++;
             }
         out->trouble = prim->any_trouble;
@@ -2669,6 +2792,7 @@ static int f3_derive(const struct derive_in *in, struct dimg *U, const struct dc
     rec->load_key = derive_fnv_words(in->text, 0xf48 / 4);
     for (j = 0; j < U->n; j++)
         out->n_x += cur[j];
+    out->n_x_reg[DERIVE_REG_OTHER] = out->n_x;       /* no code regions in this family */
     cat = (uint8_t *)calloc((size_t)prim->R.n + 1, 1);
     if (!cat)
         goto done;
@@ -2692,6 +2816,8 @@ static int f3_derive(const struct derive_in *in, struct dimg *U, const struct dc
         for (i0 = 0; i0 < prim->R.n; i0++)
             if (cat[i0]) {
                 out->n_xr[cat[i0] - 1]++;
+                if (cat[i0] == 3)
+                    out->n_xr_reg[DERIVE_REG_OTHER]++;
                 nxr++;
             }
         out->trouble = prim->any_trouble;
@@ -2834,6 +2960,10 @@ int derive_run(const struct derive_in *in, struct derive_result *out)
             out->n_near[i] = b->n_near[i];
         for (i = 0; i < 3; i++)
             out->n_xr[i] = b->n_xr[i];
+        for (i = 0; i < DERIVE_NREG; i++) {
+            out->n_x_reg[i] = b->n_x_reg[i];
+            out->n_xr_reg[i] = b->n_xr_reg[i];
+        }
         out->primary = b->primary;
         out->n_contrib = b->n_contrib;
         for (i = 0; i < b->n_contrib; i++) {
@@ -2859,7 +2989,8 @@ static const char *const pc_names[DERIVE_NPC] = { "head", "copy", "sync", "segco
 static const char *const f2pcs_names[DERIVE_NF2PCS] = { "dl", "texture", "texrect", "half1", "moveword", "popmtx", "movemem", "omh", "oml" };
 static const char *const lay_names[DERIVE_NLAY] = { "mv", "p", "mvp", "persp_norm", "viewport_scale", "viewport_trans", "clip_ratio", "const31", "const30", "fog_mul", "fog_ofs", "texture",
     "tex_scale_s", "tex_scale_t", "geom", "mvp_valid", "lights_valid", "lights_size", "light_raw", "light_base", "tg", "light_scale", "light_scale_zex", "vtab", "clipmask", "culltab", "in",
-    "in_end", "jump_table", "movemem_tab", "moveword_adj", "desc_light", "desc_clip", "clip_planes", "clip_masks", "out_toggle", "geom_def", "mw_max", "out_bytes", "pipe_sync", "no_lit", "lit_vtx" };
+    "in_end", "jump_table", "movemem_tab", "moveword_adj", "desc_light", "desc_clip", "clip_planes", "clip_masks", "out_toggle", "ring_start", "geom_def", "mw_max", "out_bytes", "pipe_sync", "no_lit", "lit_vtx",
+    "xbus" };
 
 static const char *const f1_lay_names[DERIVE_NF1LAY] = { "jt0", "jt2", "half1", "persp", "geom", "omh", "oml", "texture", "rdp_wp", "lights", "mtx_sp", "mtx_lim", "depth", "fifo", "segs",
     "light", "mm_tab", "mw_tab", "vtab", "viewport", "fog", "retstack", "mv", "proj", "mvp", "vbuf", "window", "operand", "outbuf", "lim", "tgbias", "vsign", "clip_k", "planes", "tg", "plane_masks" };
@@ -2926,8 +3057,10 @@ void derive_rec_fields(const struct derive_rec *r, void (*f)(const char *name, u
         f(nm, r->lay[k], arg);
     }
     f("gen204", r->gen204, arg);
+    f("clip204", r->clip204, arg);
     f("zex", r->zex, arg);
     f("bz_z", r->bz_z, arg);
     f("reject_mask", r->reject_mask, arg);
     f("load_key", r->load_key, arg);
+    f("lay.rej_flags", r->rej_flags, arg);
 }

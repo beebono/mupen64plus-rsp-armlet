@@ -47,6 +47,9 @@ struct probe_summary {
     int rec_equal_registered;       /* ARMLET_PROBE_FORCE: the derived record equals the registered one (1), differs (0), or not asked (-1) */
     const char *first_diff;         /* the first field that differs, or NULL */
     unsigned n_tasks, n_equal, n_tol, n_declined, n_mismatch, n_inconclusive;
+    int tier;                       /* UC_TIER_*: a loose-tier pair */
+    int default_rec;                /* the loose tier's default-record arm */
+    unsigned n_numeric;             /* validated real tasks that differed within the loose tolerance (all sessions) */
     double derive_ms, probe_ms;
     char note[200];
 };

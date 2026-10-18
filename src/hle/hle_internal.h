@@ -109,8 +109,9 @@ int armlet_hle_harness_jit(const struct hle_ucode *uc, const PrspNativeSnap *bef
 /* The probe (probe.c): a pair run of a build's front-end and the JIT on a canned task, compared. */
 struct hle_probe_opts {
     int tol;                                    /* near-match tolerance for the RDP stream: shade coefficients only, 2 levels / 1/128 level per pixel (hle_core.c, stream_tolerable) */
-    /* a DMEM byte (address addr, native value na, JIT value nb) that the tolerance admits: nonzero; dmem is the native end state */
-    int (*dmem_ok)(const struct hle_ucode *u, const uint32_t *dmem, unsigned addr, unsigned na, unsigned nb);
+    int loose_levels;                           /* armlet_hle_dx_compare with a latch_diff: a difference inside this many colour levels (shade coefficients, vertex colours) is NUMERIC, not structural; 0: none */
+    /* a DMEM byte (address addr, native value na, JIT value nb) that a tolerance of `lim` colour levels admits: nonzero; dmem is the native end state */
+    int (*dmem_ok)(const struct hle_ucode *u, const uint32_t *dmem, unsigned addr, unsigned na, unsigned nb, int lim);
     void (*perturb)(const struct hle_ucode *u, uint32_t *native_dmem);   /* test builds only: changes the native end state before the compare (mutations 352, 353) */
 };
 enum { HLE_PROBE_EQUAL = 0, HLE_PROBE_DECLINED, HLE_PROBE_MISMATCH, HLE_PROBE_INCONCLUSIVE, HLE_PROBE_TOLERANT };
@@ -167,8 +168,10 @@ struct hle_dx_jit {
     const uint8_t *wr_bytes;
 };
 /* Compares the replay's end state with the JIT's as the verify compare does (external effects; the probe's near-match tolerance when opts->tol). Returns the number of differences
- * (0: equal); *tol_used: equal only within the tolerance. The first ones are described in rep. */
-unsigned armlet_hle_dx_compare(const struct hle_dx *dx, const struct hle_ucode *uc, const struct hle_dx_jit *j, const struct hle_probe_opts *opts, char *rep, size_t repsz, int *tol_used);
+ * (0: equal); *tol_used: equal only within the tolerance. The first ones are described in rep. diff (or NULL): the classes of the differences for latch_grade (a loose build: HARD the task
+ * ended otherwise, NUMERIC inside opts->loose_levels in the shade coefficients or vertex colours, structural the rest). */
+unsigned armlet_hle_dx_compare(const struct hle_dx *dx, const struct hle_ucode *uc, const struct hle_dx_jit *j, const struct hle_probe_opts *opts, char *rep, size_t repsz, int *tol_used,
+                               struct latch_diff *diff);
 /* the front-end lock: the validator takes it around a replay; the emulation thread only tries it (the JIT runs the task when it is taken) */
 void armlet_hle_fe_enable(int on);              /* off: no locking at all (no validator) */
 int armlet_hle_fe_trylock(void);                /* 0: taken (or locking is off) */

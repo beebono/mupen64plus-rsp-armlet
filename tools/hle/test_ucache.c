@@ -288,6 +288,37 @@ int main(void)
         unlink(p2);
     }
 
+    {   /* the loose section (format 6): the tier is part of the key; a strict lookup never sees a loose entry, nor the other way round, and each is replaced only by its own */
+        struct ucache_entry g;
+        unlink(path);
+        ucache_open(path);
+        e = mk(11, 11, 1);
+        CHECK(ucache_store(&e) == 0, "store a strict entry");
+        e = mk(11, 11, 2);
+        e.tier = UC_TIER_LOOSE;
+        e.verdict = 0;
+        e.n_x = 5;
+        e.latch = UC_LATCH_LATCHED;
+        e.numeric = 7;
+        CHECK(ucache_store(&e) == 0, "store a loose entry of the same text and data");
+        f = ucache_find(11, 11);
+        CHECK(f && f->tier == UC_TIER_STRICT && f->pc[0] == 1 && f->latch == UC_LATCH_NONE, "the strict lookup finds the strict entry, not the loose latch");
+        f = ucache_find_t(11, 11, UC_TIER_LOOSE);
+        CHECK(f && f->tier == UC_TIER_LOOSE && f->pc[0] == 2 && f->latch == UC_LATCH_LATCHED && f->n_x == 5 && f->numeric == 7, "the loose lookup finds the loose entry");
+        CHECK(ucache_get_t(11, 11, UC_TIER_LOOSE, &g) == 0 && g.tier == UC_TIER_LOOSE && ucache_get(11, 11, &g) == 0 && g.tier == UC_TIER_STRICT, "ucache_get the same");
+        ucache_close();
+        CHECK(ucache_open(path) == 2, "two entries in the file: one per section");
+        e = mk(11, 11, 3);
+        e.tier = UC_TIER_LOOSE;
+        e.latch = UC_LATCH_DEAD;
+        CHECK(ucache_store(&e) == 0 && ucache_open(path) == 2, "a loose store replaces the loose entry only");
+        f = ucache_find(11, 11);
+        CHECK(f && f->pc[0] == 1 && f->latch == UC_LATCH_NONE, "the strict entry is untouched by the loose unlatch");
+        f = ucache_find_t(11, 11, UC_TIER_LOOSE);
+        CHECK(f && f->pc[0] == 3 && f->latch == UC_LATCH_DEAD, "the loose entry is replaced");
+        ucache_close();
+    }
+
     /* an unwritable directory, and a disabled cache */
     ucache_open("/proc/no/such/dir/armlet.cache");
     e = mk(5, 5, 5);
@@ -335,6 +366,18 @@ int main(void)
         ucache_to_rec(&x, &back);
         CHECK(back.fam == DERIVE_F3DEX1 && back.f1pc[23] == 0x58 + 92 && back.lay[35] == 0x100 + 70 && back.non == 1 && back.dlx == 1 && back.culldl_off == 1 && back.reject_mask == 0x7030,
               "an F3DEX 1.x record round-trips through an entry");
+    }
+    {                                                   /* the F3DEX2 flags (gen204, clip204, zex) survive the entry independently */
+        struct derive_rec r, back;
+        struct ucache_entry x;
+        memset(&r, 0, sizeof(r));
+        memset(&x, 0, sizeof(x));
+        r.gen204 = 0;
+        r.clip204 = 1;
+        r.zex = 1;
+        ucache_from_rec(&x, &r);
+        ucache_to_rec(&x, &back);
+        CHECK(back.gen204 == 0 && back.clip204 == 1 && back.zex == 1, "gen204 / clip204 / zex round-trip through an entry");
     }
     {                                                   /* the record of an F3D build (handler pcs, layout, masks, the attributes) survives the entry, with its family */
         struct derive_rec r, back;

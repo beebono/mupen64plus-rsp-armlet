@@ -134,6 +134,10 @@ def compute(root):
     return games, rows, hl, ng, reg
 
 
+def setlabel(st):
+    return "not-coded" if st.startswith("not-coded") else "test" if st.startswith("test") else "unseen"
+
+
 def main():
     root = sys.argv[1]
     md = "--md" in sys.argv
@@ -145,6 +149,11 @@ def main():
     P("%d games, %d graphics tasks offered, %d native (%.1f%%)" % (ng, tt, tn, 100.0 * tn / tt))
     P("mean per-game task share native: %.1f%%; mean share of graphics RSP time left on the JIT: %.1f%%" % (
         sum(100.0 * r[3] / r[2] for r in rows if r[2]) / ng, sum(r[6] for r in rows) / ng))
+    for lb in ("test", "unseen", "not-coded"):
+        rr = [r for r in rows if setlabel(r[0]) == lb]
+        if rr:
+            P("  %s (%d games): %d tasks, %d native; mean native share %.1f%%; mean JIT share %.1f%%" % (
+                lb, len(rr), sum(r[2] for r in rr), sum(r[3] for r in rr), sum(100.0 * r[3] / r[2] for r in rr if r[2]) / len(rr), sum(r[6] for r in rr) / len(rr)))
     P("")
     if md:
         P("| set | game | gfx tasks | native | declined | no handler | graphics RSP time on the JIT | ucodes (task share, state) |")
@@ -156,7 +165,7 @@ def main():
             lbl = "%s `%s` %d%% %s" % (short(u["name"]), u["text"][:4], round(100.0 * u["tasks"] / t) if t else 0, {"native": "N", "no handler": "-", "handler, always declines": "D", "partly native": "P"}[k])
             parts.append(lbl)
         if md:
-            P("| %s | %s | %d | %d | %d | %d | %.0f%% | %s |" % ("test" if st.startswith("test") else "unseen", g, t, nat, dec, nh, share, "; ".join(parts)))
+            P("| %s | %s | %d | %d | %d | %d | %.0f%% | %s |" % (setlabel(st), g, t, nat, dec, nh, share, "; ".join(parts)))
         else:
             P("%-45s %7d %7d %6d %6d %5.1f%%  %s" % (g, t, nat, dec, nh, share, "; ".join(parts)))
     P("")

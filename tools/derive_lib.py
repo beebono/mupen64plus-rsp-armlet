@@ -71,14 +71,21 @@ class CTables:
         self.vars = {}      # name -> (type, fields dict or list)
         self.ucodes = []    # HLE_UCODE entries
         self.text = ""
-        for fn in ("hle_f3dex2_int.h", "f3dex2_dmem.h", "hle.h", "hle_f3dex2.c", "hle_f3dex2_dialects.c", "hle_s2dex2.c", "f3dex.c", "f3d.c", "f3d_dmem.h", "f3dex_vtx_fx.c", "f3d_fx_int.h", "f3d_fx.h"):
+        for fn in ("hle_f3dex2_int.h", "f3dex2_dmem.h", "hle.h", "hle_f3dex2.c", "hle_f3dex2_dialects.c", "hle_s2dex2.c", "f3dex.c", "f3d.c", "f3d_dmem.h", "f3dex_vtx_fx.c", "f3d_fx_int.h", "f3d_fx.h", "rej_fx.h", "rej_dmem.h", "hle_rej.c"):
             p = os.path.join(srcdir, fn)
             if os.path.exists(p):
                 self.text += strip_comments(open(p).read()) + "\n"
+        self._initialiser_macros()
         self._defines()
         self._enums()
         self._structs()
         self._ucodes()
+
+    def _initialiser_macros(self):
+        """object-like macros whose body is designated initialisers (hle_rej.c's REJ_FIFO_FRONT) are substituted where a table uses them"""
+        for m in re.finditer(r"^[ \t]*#define[ \t]+(\w+)[ \t]+(\.\w+[ \t]*=[^\n]*)$", self.text, flags=re.M):
+            body = m.group(2).strip()
+            self.text = re.sub(r"(?<![\w#])" + m.group(1) + r"\b(?=\s*,)", body.replace("\\", "\\\\"), self.text.replace(m.group(0), ""))
 
     def ev(self, e):
         e = e.strip()
@@ -128,7 +135,7 @@ class CTables:
                     self.consts[n] = cur
 
     def _structs(self):
-        for m in re.finditer(r"(?:static\s+)?const\s+(?:struct\s+(\w+)|uint\d+_t)\s+(\w+)((?:\[[^\]]*\])*)\s*=\s*\{", self.text):
+        for m in re.finditer(r"(?:static\s+)?const\s+(?:struct\s+(\w+)|uint\d+_t)\s+(\w+)((?:\[[^\]]*\])*)(?:\s*__attribute__\(\(\w+\)\))?\s*=\s*\{", self.text):
             typ, name, dims = m.group(1), m.group(2), m.group(3)
             i = self.text.index("{", m.end() - 1)
             j = match_brace(self.text, i)

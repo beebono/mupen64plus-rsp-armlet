@@ -12,8 +12,8 @@
 
 #define DERIVE_NPC 20           /* PC_FIELDS of tools/derive_f2.py */
 #define DERIVE_NF2PCS 9
-#define DERIVE_NLAY 42          /* LAY_ADDR (36) then LAY_OTHER (6) */
-#define DERIVE_NLAY_ADDR 36
+#define DERIVE_NLAY 44          /* LAY_ADDR (37: with ring_start, the XBUS ring's start, a knob) then LAY_OTHER (7: with xbus, the transport flag) */
+#define DERIVE_NLAY_ADDR 37
 #define DERIVE_MAXSEG 4
 #define DERIVE_MAXEXT 16
 #define DERIVE_NF1PC 24         /* F1_PC_FIELDS of tools/derive_f1d.py (F3DEX_PC_FIELDS of f3dex_bld.h) */
@@ -21,6 +21,7 @@
 #define DERIVE_NF1KNOB 29       /* the first of them that are addresses the code names (F1_LAY_NKNOB) */
 #define DERIVE_NF3PC 23         /* F3_PC_FIELDS of tools/derive_f3d.py (F3D_PC_FIELDS of f3d_bld.h) */
 #define DERIVE_NF3LAY 36        /* F3_LAY_FIELDS (F3D_LAY_FIELDS of f3d_dmem.h), in lay[] of an F3D record */
+#define DERIVE_K_REJ 0x60       /* the ext kinds of the Rej dialect start here (rej_dmem.h: K_REJ_BASE); the S2DEX dialect's are below */
 #define DERIVE_NF3KNOB 26       /* the first of them that are addresses the code names (F3_LAY_NKNOB); then jt0, jt2 (read from the dispatchers), tri4_tab (from G_TRI4's handler), then constants */
 
 /* indices into pc[] and f2pcs[] and lay[] (the order of the Python tool's lists) */
@@ -28,16 +29,17 @@ enum { PC_HEAD, PC_COPY, PC_SYNC, PC_SEGCOPY, PC_EF, PC_ED, PC_TRI1, PC_TRI2, PC
 enum { P2_DL, P2_TEXTURE, P2_TEXRECT, P2_HALF1, P2_MOVEWORD, P2_POPMTX, P2_MOVEMEM, P2_OMH, P2_OML };
 enum { LY_MV, LY_P, LY_MVP, LY_PERSP_NORM, LY_VIEWPORT_SCALE, LY_VIEWPORT_TRANS, LY_CLIP_RATIO, LY_CONST31, LY_CONST30, LY_FOG_MUL, LY_FOG_OFS, LY_TEXTURE, LY_TEX_SCALE_S, LY_TEX_SCALE_T,
        LY_GEOM, LY_MVP_VALID, LY_LIGHTS_VALID, LY_LIGHTS_SIZE, LY_LIGHT_RAW, LY_LIGHT_BASE, LY_TG, LY_LIGHT_SCALE, LY_LIGHT_SCALE_ZEX, LY_VTAB, LY_CLIPMASK, LY_CULLTAB, LY_IN, LY_IN_END,
-       LY_JUMP_TABLE, LY_MOVEMEM_TAB, LY_MOVEWORD_ADJ, LY_DESC_LIGHT, LY_DESC_CLIP, LY_CLIP_PLANES, LY_CLIP_MASKS, LY_OUT_TOGGLE,
-       LY_GEOM_DEF, LY_MW_MAX, LY_OUT_BYTES, LY_PIPE_SYNC, LY_NO_LIT, LY_LIT_VTX };
+       LY_JUMP_TABLE, LY_MOVEMEM_TAB, LY_MOVEWORD_ADJ, LY_DESC_LIGHT, LY_DESC_CLIP, LY_CLIP_PLANES, LY_CLIP_MASKS, LY_OUT_TOGGLE, LY_RING_START,
+       LY_GEOM_DEF, LY_MW_MAX, LY_OUT_BYTES, LY_PIPE_SYNC, LY_NO_LIT, LY_LIT_VTX, LY_XBUS };
 
 /* a normalised build record: the F3DEX2 / S2DEX family's (fam 0: pc, f2pcs, lay, flags), the F3DEX 1.x family's (fam 1: lay[0 .. DERIVE_NF1LAY) = F1_LAY_FIELDS, f1pc, non / dlx / culldl_off,
  * reject_mask, load_key), or the F3D family's (fam 2: lay[0 .. DERIVE_NF3LAY) = F3_LAY_FIELDS, f3pc, reject_mask, clip_mask, culldl_mask, the attributes f3[], load_key) */
 struct derive_rec {
     const char *name;
     uint8_t fam;
-    uint8_t gen204, zex, bz_z;
+    uint8_t gen204, clip204, zex, bz_z;
     uint8_t n_ext;
+    uint8_t rej_flags;          /* f2_layout.rej_flags: the Rej dialect's variant bits (REJ_YQ ...; derived by vote among the Rej references, else 0) */
     uint32_t reject_mask;
     uint64_t load_key;
     int32_t pc[DERIVE_NPC];

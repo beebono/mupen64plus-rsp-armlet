@@ -167,3 +167,10 @@ Donkey Kong 64's own entry (`48c7e653a6adcda8`) is also Rocket's text: the id co
 
 Evidence: [ucode-derive.md](ucode-derive.md#registered-2026-10-16) (3700-frame gates against the reference pairing, `ARMLET_HLE_VERIFY=1` for 12 000 frames, poison runs, replays, synthetic and fuzzed tasks). The one thing a 3700-frame run did not see is `bz_z`: the F3DEX 2.06 text is the only build so far in which
 the triangle code (`zex`) and the branch (`G_BRANCH_Z`) come from different generations, which the synthetic `misc` case found.
+
+## 7. F3DEX fifo 2.05: the 2.04 reciprocal under the 2.06 vertex pipeline (2026-10-17)
+
+Chameleon Twist 2's text (`97989ee9c10ef7ad`, "F3DEX fifo 2.05", the 2.04 pcs plus F3DZEX's triangle code) differs from F3DEX 2.06 in two words of the clip overlay only: `vrcph v29, v8, v11[11]` (0x394) and `vabs v29, v11, v25[11]` (0x3a0), the 2.04 form of the intersection's reciprocal (section 5.2 row 2: `VABS` of the integer part itself, a difference below 1.0 gives scale 0), where 2.06 has the `VOR` / `(int | 1)` form. Everything else the 2.04 clipper
+differs in is the 2.06 form in this text: the new vertices' stores (`slv` / `ssv` at 0x46c / 0x47c, not `SDV`), the fan (`lhu` / `addi` at 0x4bc / 0x4dc) and the vertex pipeline. So the 2.04 differences are not one generation here, and the single `gen204` could not say it: the derivation was NONE and the probe failed the `clip` case (4 of 28 canned tasks).
+
+The build record has a second flag, **`clip204`**: it selects the clipper's reciprocal (`fx2_clip_ctx.sign0`); `gen204` keeps the vertex pipeline's z, the clipper's new-vertex stores and the fan (`fan_l0`), the lighting's linear texgen. Every registered build has `clip204 == gen204` (the records of F3DEX2 2.03, 2.04, 2.04H and Rej set both). The text is not registered: the derivation produces `gen204 = 0, zex = 1, clip204 = 1`, EXACT, and the probe and latch take it from there.

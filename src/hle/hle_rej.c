@@ -23,7 +23,7 @@
 #endif
 
 
-enum { K_REJ_VTX = K_EXT, K_REJ_TRI1, K_REJ_TRI2, K_REJ_MODVTX, K_REJ_CULLDL, K_REJ_BRANCHZ, K_REJ_DMAIO };
+enum { K_REJ_VTX = K_REJ_BASE, K_REJ_TRI1, K_REJ_TRI2, K_REJ_MODVTX, K_REJ_CULLDL, K_REJ_BRANCHZ, K_REJ_DMAIO };
 
 int f3_flush_xbus(struct f3 *f)
 {
@@ -162,7 +162,7 @@ static const struct f2_layout l_lay_ex2_xbus = {
     .fog_mul = 0x1e0, .fog_ofs = 0x1e2, .texture = 0x1e4, .tex_scale_s = 0x1e8, .tex_scale_t = 0x1ea, .geom = 0x1ec, .mvp_valid = 0x1d9, .lights_valid = 0x1dc, .lights_size = 0x1dd,
     .light_raw = 0x1f8, .light_base = 0x200, .tg = 0x1d0, .light_scale = 0x1c6, .light_scale_zex = 0x1ce, .vtab = 0x380, .clipmask = 0x3cc, .culltab = 0x3c2, .in = 0x920, .in_end = 0x9c8,
     .jump_table = 0x36e, .mw_max = 14, .geom_def = F2_GEOM_DEF, .movemem_tab = 0x2f0, .moveword_adj = 10238, .desc_light = 0x410, .desc_clip = 0x418, .clip_planes = 0x180, .clip_masks = 0x3f8,
-    .xbus = 1, .ring_start = 0xba8 };
+    .xbus = 1, .ring_start = 0xba8, .ring_end = 0xf10, .ring_gap = 176 };
 static const struct f3dex2_build l_b_ex2_208n_xbus = {
     .head = 0x194, .copy = 0x210, .sync = 0x214, .segcopy = 0x220, .ef = 0x240, .ed = 0x24c, .tri1 = 0x794, .tri2 = 0x78c, .vtx = 0x4d0,
     .mtx = 0x0f0, .geom = 0x1d8, .enddl = 0x1ec, .half2 = 0x200, .modvtx = 0xc58, .culldl = 0xc18, .branchz = 0xc40, .reject_mask = 0x70b0, .lay = &l_lay_ex2_xbus, .load_key = 0xf649a08381045b6bull };
@@ -174,7 +174,7 @@ HLE_UCODE(l_ex2_xbus_f649) = { .id = 0xf649a08381045b6bull, .name = "F3DEX.NoN x
 /* F-Zero X's first text, F3DEX 2.03 (key d02467ac...): the F3DEX2 front-end's own vertex, triangle and clipping code with the 2.04 generation's pcs (docs/ucode-f3dex2-dialects.md, section 1); the G_LOAD_UCODE it ends with loads the F3DFLX.Rej text */
 static const struct f3dex2_build l_b_ex2_203 = {
     .head = 0x18c, .copy = 0x208, .sync = 0x20c, .segcopy = 0x218, .ef = 0x238, .ed = 0x244, .tri1 = 0x794, .tri2 = 0x78c, .vtx = 0x4e8,
-    .mtx = 0x0f0, .geom = 0x1d0, .enddl = 0x1e4, .half2 = 0x1f8, .modvtx = 0xc54, .culldl = 0xc14, .branchz = 0xc3c, .zex = 1, .gen204 = 1, .reject_mask = 0x7070, .load_key = 0xd02467acf66d7396ull };
+    .mtx = 0x0f0, .geom = 0x1d0, .enddl = 0x1e4, .half2 = 0x1f8, .modvtx = 0xc54, .culldl = 0xc14, .branchz = 0xc3c, .zex = 1, .gen204 = 1, .clip204 = 1, .reject_mask = 0x7070, .load_key = 0xd02467acf66d7396ull };
 /* the tasks end in the F3DFLX.Rej text they load: its scratch is dead too (the equivalence shim masks by the ucode a task starts with) */
 static const struct hle_dead_range l_dead_203[] = { F3DEX2_DEAD_RANGES, { 0x250, 0x260 }, { 0x266, 0x268 }, { 0x26e, 0x270 }, { 0x276, 0x278 }, { 0x27e, 0x280 } };
 HLE_UCODE(l_ex2_33dc) = { .id = 0x33dc705a5e4d39aeull, .name = "F3DEX fifo 2.03 (F-Zero X)", .fam = &f3dex2_fam, .fam_data = &l_b_ex2_203, .flags = HLE_F_NEAR_CLIP, .ring_off = 0xfe8, .dead = l_dead_203, .n_dead = F3DEX2_N_DEAD_OUT + 5 };

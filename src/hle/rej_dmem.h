@@ -19,13 +19,16 @@
 #endif
 #endif
 
+/* the ext kinds of the Rej commands start here (the S2DEX dialect's from K_EXT): the derivation tells a Rej record from an S2DEX one by it (derive_int.h: DERIVE_K_REJ) */
+#define K_REJ_BASE 0x60
+
 /* The DMEM layout of the Rej builds with the XBUS transport (Excitebike 64): the F3DEX2 state where F3DEX2 keeps it (the matrices, the viewport, the geometry mode, the lights), the display list input buffer
  * ends at 0x9f8 (where the RDP list ring begins), the slot address table has the stride 20, the cull table is at 0x402 (docs/ucode-rej.md, section 1). */
 static const struct f2_layout l_lay_rej_xbus __attribute__((unused)) = {
     .mv = 0x00, .p = 0x40, .mvp = 0x80, .persp_norm = 0xdc, .viewport_scale = 0xe0, .viewport_trans = 0xe8, .clip_ratio = 0x186, .const31 = 0x1b0, .const30 = 0x1c0,
     .fog_mul = 0x1e0, .fog_ofs = 0x1e2, .texture = 0x1e4, .tex_scale_s = 0x1e8, .tex_scale_t = 0x1ea, .geom = 0x1ec, .mvp_valid = 0x1d9, .lights_valid = 0x1dc, .lights_size = 0x1dd,
     .light_raw = 0x1f8, .light_base = 0x200, .tg = 0x1d0, .light_scale = 0x1c6, .light_scale_zex = 0x1ce, .vtab = 0x380, .clipmask = 0, .culltab = 0x402, .in = 0x950, .in_end = 0x9f8,
-    .jump_table = 0x36e, .mw_max = 14, .geom_def = F2_GEOM_DEF, .movemem_tab = 0x2f0, .moveword_adj = 10238, .desc_light = 0x2e0, .desc_clip = 0x2e8, .xbus = 1, .ring_start = 0x9f8, .rej_flags = REJ_YQ };
+    .jump_table = 0x36e, .mw_max = 14, .geom_def = F2_GEOM_DEF, .movemem_tab = 0x2f0, .moveword_adj = 10238, .desc_light = 0x2e0, .desc_clip = 0x2e8, .xbus = 1, .ring_start = 0x9f8, .ring_end = 0xf10, .ring_gap = 176, .rej_flags = REJ_YQ };
 /* the fifo texts (F-Zero X's F3DLX.Rej 2.03, Resident Evil 2's F3DEX.Rej 2.06): the display list buffer ends at 0x9b8, two RDP output buffers of 592 bytes 0x300 apart */
 /* F-Zero X's F3DLX.Rej 2.03: the lighting loop has the unsigned multiply-accumulates (REJ_LIT_LX), the scale of the light setup is the other lane of the constant vector */
 static const struct f2_layout l_lay_rej_fifo203 __attribute__((unused)) = {
@@ -201,15 +204,15 @@ static inline void rej_vtx_run(struct hle_task *t, uint32_t w0, const struct fx2
 
 
 /* ---- the RDP list ring (XBUS) --------------------------------------------------------------------------------------------------------------------------------------------- */
-enum { REJ_RING_LIMIT = 0xf10 };
 
-/* The flush routine (0x258 / 0x25c), run after every command that wrote to the ring: DPC_END = the output pointer; when the pointer passed 0xf10 the ring wraps to its start (after waiting for START_VALID
- * / END_VALID to clear and for the RDP to leave the start); then the routine waits while the RDP stands within 176 bytes ahead of the pointer. With the video plugin synchronous (it has taken every
+/* The flush routine (0x258 / 0x25c in the Rej texts; 0x648 in S2DEX's), run after every command that wrote to the ring: DPC_END = the output pointer; when the pointer passed ring_end the ring wraps to its start (after waiting for START_VALID
+ * / END_VALID to clear and for the RDP to leave the start); then the routine waits while the RDP stands within ring_gap bytes ahead of the pointer. With the video plugin synchronous (it has taken every
  * list when DPC_END is written) the waits never happen, and a state in which they would (it would hang the JIT too) declines. */
 static inline const char *rej_flush(struct hle_task *t, uint32_t *s7)
 {
     int32_t d;
-    int wrap = (int32_t)(*s7 - MUT(366, REJ_RING_LIMIT, REJ_RING_LIMIT + 8)) > 0;
+    unsigned end = f2L->ring_end ? f2L->ring_end : 0xf10, gap = f2L->ring_gap ? f2L->ring_gap : 176;     /* (a derived build's layout has neither: the Rej / F3DEX2 xbus texts' values) */
+    int wrap = (int32_t)(*s7 - MUT(366, end, end + 8)) > 0;
     hle_mtc0(t, 9, *s7);
     if (wrap) {
         if (*t->cr[11] & 0x600)
@@ -221,7 +224,7 @@ static inline const char *rej_flush(struct hle_task *t, uint32_t *s7)
         hle_mtc0(t, 9, *s7);
     }
     d = (int32_t)(*t->cr[10] - *s7);
-    if (d > 0 && d - 176 <= 0)
+    if (d > 0 && d - (int32_t)gap <= 0)
         return "the RDP stands just ahead of the ring pointer";
     return NULL;
 }

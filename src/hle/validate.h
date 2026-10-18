@@ -27,6 +27,7 @@ enum { VAL_MATCH, VAL_MISMATCH, VAL_DECLINED, VAL_INCONCLUSIVE, VAL_IRRELEVANT }
 struct val_result {
     int outcome;                        /* VAL_*: equal (tol: within the near-match tolerance); different; the build declined the task; nothing to compare; a loaded build that the task did not load */
     int tol;
+    int grade;                          /* a mismatch: LATCH_G_* (latch_grade of the compare's classes for a loose target; STRUCTURAL otherwise) */
     uint64_t fp;                        /* the task's fingerprint (latch_fingerprint) */
     const uint32_t *hist;               /* its command kinds, counted (LATCH_NKINDS) */
     const char *why;                    /* declined / inconclusive: why */
@@ -40,7 +41,8 @@ struct val_target {
     void *owner;
     const struct hle_ucode *cand, *run;
     int tol;
-    int (*dmem_ok)(const struct hle_ucode *u, const uint32_t *dmem, unsigned addr, unsigned na, unsigned nb);
+    int loose_levels;                   /* a loose build: the colour levels of the NUMERIC grade (0: a strict build, every mismatch STRUCTURAL) */
+    int (*dmem_ok)(const struct hle_ucode *u, const uint32_t *dmem, unsigned addr, unsigned na, unsigned nb, int lim);
 };
 typedef void (*val_result_fn)(void *owner, const struct val_result *r);
 

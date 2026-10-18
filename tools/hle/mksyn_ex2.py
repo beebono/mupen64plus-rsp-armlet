@@ -17,6 +17,7 @@
          lit     lit vertices (1 to 5 lights, look-at vectors, texture generation linear or not, fog), the triangles between them
          mtx     matrices whose halfwords are random 16-bit values (any integer and fraction part, the saturating corners of the product): G_MTX load, multiply and push, modelview and projection, then vertices
          s2      a task that starts with S2DEX (Resident Evil 2's; MKSYN_S2DATA = its data address + 0x180): the S2DEX commands of the stage below, then G_ENDDL
+         s2ring  a task that starts with S2DEX: 60 .. 119 sprite rectangles, more than the ring of an XBUS text holds (StarCraft 64's)
          load    a task that loads another microcode in the middle and back (Kirby 64's: F3DEX2 2.04H -> S2DEX 2.08 -> F3DEX2 2.04H): triangles, G_RDPHALF_1 + G_LOAD_UCODE, S2DEX commands (scissor, render mode, sprite
                  rectangles, backgrounds in 1-cycle and COPY mode, texture loads, display list selection), G_LOAD_UCODE back, triangles again. The addresses of the texts and data in RDRAM are the game's
                  (MKSYN_S2TEXT, MKSYN_S2DATA, MKSYN_F2TEXT, MKSYN_F2DATA override them; a data address is that of the data row, the one G_LOAD_UCODE copies to DMEM 0x180); the snapshot must hold those rows (any captured Kirby 64 task does)
@@ -396,6 +397,13 @@ def case(name, seed):
         d.cmd(0xda380007, BASE + 0x540)
         d.cmd(0xda380003, BASE + 0x700)
         f2_stage(d)
+        d.cmd(0xdf000000, 0)
+    elif name == "s2ring":
+        d = DL()                                                # 60 .. 119 sprite rectangles (about 30 bytes of RDP list each): more than the DMEM ring of an XBUS S2DEX text holds (ring wrap, DPC_START / DPC_END)
+        d.cmd(0xed000000 | (r.randrange(0, 40) << 14) | r.randrange(0, 40) * 4, ((1280 - r.randrange(0, 40) * 4) << 12) | (960 - r.randrange(0, 40) * 4))
+        for i in range(60 + r.randrange(60)):
+            data[0x2000 + 0x40 * i] = tame_sprite(r) if r.random() < 0.8 else sprite(r)
+            d.cmd(0x01000000, BASE + 0x2000 + 0x40 * i)
         d.cmd(0xdf000000, 0)
     elif name == "s2":
         import os

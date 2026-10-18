@@ -70,8 +70,13 @@ struct pair {
     unsigned tick;                      /* (emulation thread) the sampling count */
     struct latch_state ls;              /* under P.pl, on the validator thread */
     uint64_t t_cand;                    /* when it became a candidate (ns) */
-    unsigned stored_strikes, prior_matches, prior_mismatches;
+    unsigned stored_strikes, prior_matches, prior_mismatches, prior_numeric;
     int near, open;
+    int loose;                          /* the loose tier (docs/design.md, "The loose tier"): a NONE derivation admitted by the word bound; its cache entries are in the loose section */
+    unsigned xreg;                      /* bit DERIVE_REG_* per code region with unexplained or missing words: the region gate (LIGHT: lit tasks never run natively; CLIP: clipped ones) */
+    int deflt;                          /* (loose) the default-record arm: a NONE derivation outside the word bound, probed with the family's record as derived */
+    int sig;                            /* did is the static data signature (data_sig), not the hash of the whole image: set once the record is known */
+    uint64_t last_fd;                   /* the last whole-image hash that matched this pair (the signature is not recomputed for it) */
 };
 
 static struct {
@@ -86,6 +91,10 @@ static struct {
     struct latch_cfg lc;                                    /* GfxLatchPolicy */
     int validator;                                          /* the validator thread runs (the latch policy decides; else ARMLET_PROBE_LATCH latches a pass at once) */
     int latch_now, tol, ltrace;
+    int loose, loose_force;                                 /* GfxProbe = loose; ARMLET_PROBE_LOOSE_FORCE (tests: every derived build is loose tier) */
+    int deflt;                                              /* the default-record arm is on */
+    unsigned force_xreg;                                    /* ARMLET_PROBE_LOOSE_FORCE=<regions> (tests): pretend these regions have unexplained words */
+    unsigned loose_words, loose_levels;                     /* GfxProbeLooseWords, GfxProbeLooseShade */
     unsigned loaded_rr;                                     /* (round robin over the loaded candidates) */
 } P;
 
@@ -139,15 +148,29 @@ void armlet_probe_init(struct armlet_ctx *c)
     P.lc = c->cfg.latch;
     P.latch_now = c->cfg.probe_latch;
     P.tol = c->cfg.probe_tol;
+    P.loose = c->cfg.probe_loose;
+    P.loose_force = c->cfg.probe_loose_force;
+    P.deflt = c->cfg.probe_default;
+    if (P.loose_force && (e = getenv("ARMLET_PROBE_LOOSE_FORCE")) != NULL) {   /* "1", or a list of regions whose gate is to be tested: light, clip */
+        if (strstr(e, "light"))
+            P.force_xreg |= 1u << DERIVE_REG_LIGHT;
+        if (strstr(e, "clip"))
+            P.force_xreg |= 1u << DERIVE_REG_CLIP;
+    }
+    P.loose_words = c->cfg.probe_loose_words;
+    P.loose_levels = c->cfg.probe_loose_shade;
     P.ltrace = (e = getenv("ARMLET_LATCH_TRACE")) && *e && *e != '0';
     if (!P.latch_now)
         P.validator = armlet_valid_start(&P.lc, pol_result) == 0;
-    armlet_log(M64MSG_INFO, "probe on: unknown graphics ucodes are derived and probed (cache %s%s%s%s)", ucache_path()[0] ? ucache_path() : "off",
+    armlet_log(M64MSG_INFO, "probe on: unknown graphics ucodes are derived and probed (cache %s%s%s%s%s)", ucache_path()[0] ? ucache_path() : "off",
                c->cfg.probe_latch ? ", latching a pass at once (ARMLET_PROBE_LATCH)" : P.validator ? ", latching after background validation" : ", no validator: nothing latches",
-               c->cfg.probe_force ? ", also the registered ucodes" : "", c->cfg.probe_tol ? ", near-match tolerance" : "");
+               c->cfg.probe_force ? ", also the registered ucodes" : "", c->cfg.probe_tol ? ", near-match tolerance" : "", P.loose ? ", the loose tier" : "");
+    if (P.loose)
+        armlet_log(M64MSG_INFO, "loose tier: a NONE derivation with at most %u unexplained + missing words is probed%s; a latched loose build's shade and vertex colours may differ by %u levels without a strike",
+                   P.loose_words, P.deflt ? ", one beyond that with the family's record as derived (the default-record arm)" : "", P.loose_levels);
     if (P.validator)
-        armlet_log(M64MSG_INFO, "latch policy: evidence %.1f, %u distinct (NEAR x %.2f), %u strikes, sampling 1/%u .. 1/%u (halving every %u), %u capture slots", P.lc.evidence, P.lc.distinct,
-                   P.lc.near_mul, P.lc.strikes, P.lc.sample_first, P.lc.sample_last, P.lc.sample_decay, P.lc.queue);
+        armlet_log(M64MSG_INFO, "latch policy: evidence %.1f, %u distinct (NEAR x %.2f, loose x %.2f, default record x %.2f), %u strikes, sampling 1/%u .. 1/%u (halving every %u), %u capture slots", P.lc.evidence,
+                   P.lc.distinct, P.lc.near_mul, P.lc.loose_mul, P.lc.default_mul, P.lc.strikes, P.lc.sample_first, P.lc.sample_last, P.lc.sample_decay, P.lc.queue);
 }
 
 static void store_pol(struct pair *p);
@@ -164,8 +187,9 @@ void armlet_probe_reset(void)
             p->open = 0;                            /* (a clean end) */
             if (atomic_load(&p->lstate) != LATCH_DEAD && !P.latch_now && (!p->force || P.force_cache))
                 store_pol(p);                       /* (the evidence and the kinds validated this session) */
-            armlet_log(M64MSG_INFO, "latch: ucode %016" PRIx64 " data %016" PRIx64 ": %s, %u tasks equal, %u different, evidence %.2f, %u distinct, %u strikes", p->tid, p->did,
-                       p->ls.state == LATCH_LATCHED ? "latched" : p->ls.state == LATCH_DEAD ? "unlatched for good" : "candidate", p->ls.matches, p->ls.mismatches, p->ls.evidence, p->ls.distinct, p->ls.strikes);
+            armlet_log(M64MSG_INFO, "latch: ucode %016" PRIx64 " data %016" PRIx64 ": %s%s, %u tasks equal, %u different (%u numeric), evidence %.2f, %u distinct, %u strikes", p->tid, p->did,
+                       p->ls.state == LATCH_LATCHED ? "latched" : p->ls.state == LATCH_DEAD ? "unlatched for good" : "candidate", p->loose ? " (loose)" : "", p->ls.matches, p->ls.mismatches, p->ls.numeric,
+                       p->ls.evidence, p->ls.distinct, p->ls.strikes);
             latch_free(&p->ls);
         }
         if (p->latched && p->b)
@@ -176,16 +200,76 @@ void armlet_probe_reset(void)
     ucache_close();
 }
 
-/* ---- the pair table ---------------------------------------------------------------------------------------------------------------------------------------------------------- */
-static struct pair *find_pair(uint64_t tid, uint64_t did)
+/* ---- the static data signature (docs/design.md, "The probe and the ucode cache": the pair key) -------------------------------------------------------------------------------------
+ * A game's ucode_data buffer may be a saved DMEM image that it rewrites every task (Twisted Edge: 1082 data hashes in 1082 tasks; Gauntlet Legends: 256 in 55 s): keyed by the hash of the
+ * whole image no pair ever got its canned tasks. What the derivation reads of the data, and so what can change the record, is the jump table (the whole signed-opcode range) and the overlay
+ * descriptors (F3DEX2), or the two handler tables (F3DEX 1.x, F3D): the signature hashes those bytes of the image, as the record of the text's first pair names them. */
+static uint64_t fnv_bytes(uint64_t h, const uint8_t *p, unsigned n)
 {
     unsigned i;
+    for (i = 0; i < n; i++)
+        h = (h ^ p[i]) * 0x100000001b3ull;
+    return h;
+}
+
+static uint64_t fnv_range(uint64_t h, const uint8_t *data, unsigned len, long lo, long n)
+{
+    if (lo < 0) {
+        n += lo;
+        lo = 0;
+    }
+    if (lo >= (long)len || n <= 0)
+        return h;
+    if (lo + n > (long)len)
+        n = (long)len - lo;
+    h = (h ^ (uint64_t)lo) * 0x100000001b3ull;
+    return fnv_bytes(h, data + lo, (unsigned)n);
+}
+
+static uint64_t data_sig(const uint8_t *data, unsigned len, const struct derive_rec *rec, int fam)
+{
+    uint64_t h = 0xcbf29ce484222325ull ^ (uint64_t)(fam + 1) * 0x9e3779b97f4a7c15ull;
+    if (fam == DERIVE_F3DEX2) {
+        long jt = rec->lay[LY_JUMP_TABLE];
+        h = fnv_range(h, data, len, jt - 0x100, 0x140);      /* opcodes -128 .. 0x1f: the table's own range (the F3DEX2 opcodes are 0xd7 .. 0xff and 0x00 .. 0x0f); the halfwords of 0x20 .. 0x7f lie over other DMEM state (Twisted Edge rewrites 0x422 .. 0x57f every task) */
+        h = fnv_range(h, data, len, rec->lay[LY_DESC_LIGHT], 8);
+        h = fnv_range(h, data, len, rec->lay[LY_DESC_CLIP], 8);
+    } else if (fam == DERIVE_F3DEX1) {
+        h = fnv_range(h, data, len, rec->lay[0], 2 * 0x40);  /* class-0 opcodes 0 .. 0x3f, class-2 0xaf .. 0xbf by op & 0x7f */
+        h = fnv_range(h, data, len, rec->lay[1], 2 * 0x40);
+    } else {
+        h = fnv_range(h, data, len, rec->lay[DERIVE_NF3KNOB], 2 * 0x40);
+        h = fnv_range(h, data, len, rec->lay[DERIVE_NF3KNOB + 1], 2 * 0x40);
+    }
+    return h ? h : 1;
+}
+
+/* The pair of a task's (text, data image): by the whole-image hash fd, or by the signature of the image under a pair of the text that has its record. The image is read when needed. */
+static struct pair *task_pair(const struct armlet_ctx *c, uint64_t tid, uint64_t fd, uint32_t da, unsigned ds)
+{
+    static uint8_t img[0x1000];
+    int have = 0;
+    unsigned i;
     for (i = 0; i < PAIR_MAX; i++)
-        if (P.pairs[i].tid == tid && P.pairs[i].did == did && P.pairs[i].state)
+        if (P.pairs[i].state && !P.pairs[i].loaded && P.pairs[i].tid == tid && (P.pairs[i].did == fd || P.pairs[i].last_fd == fd))
             return &P.pairs[i];
+    for (i = 0; i < PAIR_MAX; i++) {
+        struct pair *p = &P.pairs[i];
+        if (!p->state || p->loaded || p->tid != tid || !p->sig)
+            continue;
+        if (!have) {
+            rd_bytes(c, da, img, ds > sizeof(img) ? sizeof(img) : ds);
+            have = 1;
+        }
+        if (data_sig(img, ds > sizeof(img) ? sizeof(img) : ds, &p->dr.rec, p->dr.family) == p->did) {
+            p->last_fd = fd;
+            return p;
+        }
+    }
     return NULL;
 }
 
+/* ---- the pair table ---------------------------------------------------------------------------------------------------------------------------------------------------------- */
 static struct pair *new_pair(uint64_t tid, uint64_t did)
 {
     unsigned i;
@@ -217,6 +301,9 @@ int armlet_probe_summary(uint64_t text_id, struct probe_summary *o)
             o->first_diff = p->first_diff;
             o->n_tasks = p->total;
             o->n_equal = p->n_equal; o->n_tol = p->n_tol; o->n_declined = p->n_declined; o->n_mismatch = p->n_mismatch; o->n_inconclusive = p->n_inconclusive;
+            o->tier = p->loose;
+            o->default_rec = p->deflt;
+            o->n_numeric = p->prior_numeric + p->ls.numeric;
             o->derive_ms = p->derive_ms;
             o->probe_ms = p->probe_ms;
             snprintf(o->note, sizeof(o->note), "%s", p->note);
@@ -287,7 +374,7 @@ static void schedule(struct pair *p, unsigned seeds)
 {
     static const unsigned random_kinds[] = { PROBE_CLIP, PROBE_ZNEG, PROBE_TRI, PROBE_MIX, PROBE_WILD, PROBE_MISC, PROBE_LIT, PROBE_MTX };
     static const unsigned s2_kinds[] = { PROBE_S2RECT, PROBE_S2LDTX, PROBE_S2BG, PROBE_S2COPY, PROBE_S2MISC };
-    const int s2 = p->b && p->b->uc.fam == &f3dex2_fam && p->b->uc.fam_data && ((const struct f3dex2_build *)p->b->uc.fam_data)->ext;    /* a build with dialect commands (S2DEX 2.x): its own cases; it has no vertex or triangle code */
+    const int s2 = p->b && p->b->uc.fam == &f3dex2_fam && p->b->uc.fam_data && ((const struct f3dex2_build *)p->b->uc.fam_data)->ext && ((const struct f3dex2_build *)p->b->uc.fam_data)->ext[0][1] < DERIVE_K_REJ;    /* a build with dialect commands (S2DEX 2.x; the Rej dialect has vertex and triangle code): its own cases; it has no vertex or triangle code */
     const unsigned *kinds = s2 ? s2_kinds : random_kinds, nk = s2 ? 5 : 8;
     unsigned k, s, n = 0;
     for (s = 0; s < (s2 ? 2 * seeds : seeds); s++)
@@ -309,12 +396,12 @@ static void schedule(struct pair *p, unsigned seeds)
 }
 
 /* the near-match tolerance's DMEM part: the colour word of a vertex record (+0x10 .. +0x13 of the slot the table at lay.vtab names) may differ by 2 levels */
-static int near_dmem_ok(const struct hle_ucode *u, const uint32_t *dmem, unsigned addr, unsigned na, unsigned nb)
+static int near_dmem_ok(const struct hle_ucode *u, const uint32_t *dmem, unsigned addr, unsigned na, unsigned nb, int lim)
 {
     const struct f3dex2_build *b;
     unsigned i;
     int d = (int)na - (int)nb;
-    if (u->fam != &f3dex2_fam || d > 2 || d < -2 || !u->fam_data)
+    if (u->fam != &f3dex2_fam || d > lim || d < -lim || !u->fam_data)
         return 0;
     b = (const struct f3dex2_build *)u->fam_data;
     if (!b->lay)
@@ -385,7 +472,7 @@ static int run_canned(struct armlet_ctx *c, struct pair *p, unsigned kind, unsig
         if (guard)
             memcpy(guard, c->rsp.RDRAM, 0x800000);
     }
-    if (g_real.cr[11] & 1) {
+    if ((g_real.cr[11] & 1) && !(p->b->uc.flags & HLE_F_XBUS_OK)) {   /* (an XBUS build's canned tasks run in that state: its own start-up sets the bit; a fifo build's cannot) */
         out->status = HLE_PROBE_INCONCLUSIVE;
         out->why = "the RDP reads its lists from DMEM (XBUS)";
         return out->status;
@@ -448,7 +535,7 @@ static int run_canned(struct armlet_ctx *c, struct pair *p, unsigned kind, unsig
     memset(g_pb.mfc0_count, 0, sizeof(g_pb.mfc0_count));
     memset(&opts, 0, sizeof(opts));
     opts.tol = c->cfg.probe_tol;
-    opts.dmem_ok = c->cfg.probe_tol ? near_dmem_ok : NULL;
+    opts.dmem_ok = c->cfg.probe_tol ? near_dmem_ok : NULL;       /* (the probe itself is as strict for a loose pair as for any other) */
 #ifdef ARMLET_HLE_MUTATE
     if (ARMLET_HLE_MUTATE == 352 || ARMLET_HLE_MUTATE == 353)
         opts.perturb = perturb_dmem;
@@ -525,6 +612,15 @@ static void probe_steps(struct armlet_ctx *c, struct pair *p, unsigned max)
         finish(c, p);
 }
 
+static int no_lit_build(const struct pair *p)
+{
+    const struct f3dex2_build *b;
+    if (!p->b || p->b->uc.fam != &f3dex2_fam || !p->b->uc.fam_data)
+        return 0;
+    b = (const struct f3dex2_build *)p->b->uc.fam_data;
+    return b->lay && b->lay->no_lit && !b->lay->lit_vtx;
+}
+
 /* the pass rule (docs/design.md, "The probe"): no task differs; most of the conclusive ones completed natively; every case kind completed at least once; the two targeted cases completed in every variant */
 static int evaluate(struct pair *p, char *why, size_t whysz)
 {
@@ -543,6 +639,8 @@ static int evaluate(struct pair *p, char *why, size_t whysz)
     }
     for (k = 0; k < PROBE_NCASES; k++) {
         unsigned need = (k == PROBE_REJ || k == PROBE_BZ) ? p->need_kind[k] : 1;
+        if (k == PROBE_LIT && no_lit_build(p))      /* (a build whose lighting is not modelled declines every lit vertex command: F3DEX.Rej 2.06 and what derives from it) */
+            continue;
         if (p->need_kind[k] && p->done_kind[k] < need) {
             snprintf(why, whysz, "no canned task of the case \"%s\" completed natively", probe_case_names[k]);
             return PROBE_OUT_FAIL;
@@ -552,19 +650,34 @@ static int evaluate(struct pair *p, char *why, size_t whysz)
     return p->n_tol ? PROBE_OUT_PASS_TOL : PROBE_OUT_PASS;
 }
 
-static void store_entry(struct pair *p, int probe_result)
+/* tier: the section the entry goes to (UC_TIER_*; a loose pair's entries, and the "not admissible" mark of a NONE text in loose mode, go to the loose one) */
+static void store_entry(struct pair *p, int probe_result, unsigned tier)
 {
     struct ucache_entry e;
     memset(&e, 0, sizeof(e));
     e.text_id = p->tid;
     e.data_id = p->did;
+    e.tier = (uint8_t)tier;
     e.verdict = (uint8_t)p->dr.verdict;
     e.family = (uint8_t)p->dr.family;
     e.probe = (uint8_t)probe_result;
     e.primary = (uint16_t)p->dr.primary;
     e.n_equal = (uint16_t)p->n_equal; e.n_tol = (uint16_t)p->n_tol; e.n_declined = (uint16_t)p->n_declined; e.n_mismatch = (uint16_t)p->n_mismatch; e.n_inconclusive = (uint16_t)p->n_inconclusive;
+    e.n_x = (uint16_t)(p->dr.n_x > 0xffff ? 0xffff : p->dr.n_x);
+    e.xreg = (uint8_t)p->xreg;
+    e.uflags = p->deflt ? UC_FL_DEFAULT : 0;
     ucache_from_rec(&e, &p->dr.rec);
     (void)ucache_store(&e);
+}
+
+/* the code regions with unexplained or missing words, as bits (after a derivation) */
+static unsigned xreg_of(const struct derive_result *dr)
+{
+    unsigned m = 0, r;
+    for (r = 0; r < DERIVE_NREG; r++)
+        if (dr->n_x_reg[r] || dr->n_xr_reg[r])
+            m |= 1u << r;
+    return m;
 }
 
 /* ---- the latch policy (docs/design.md, "The background validator and the latch policy") ------------------------------------------------------------------------------------------ */
@@ -576,11 +689,15 @@ static void store_pol(struct pair *p)
     memset(&e, 0, sizeof(e));
     e.text_id = p->tid;
     e.data_id = p->did;
+    e.tier = (uint8_t)p->loose;
     e.verdict = (uint8_t)p->dr.verdict;
     e.family = (uint8_t)p->dr.family;
     e.probe = (uint8_t)(p->outcome == PROBE_OUT_PASS_TOL ? UC_PROBE_PASS_TOL : UC_PROBE_PASS);
     e.primary = (uint16_t)p->dr.primary;
     e.n_equal = (uint16_t)p->n_equal; e.n_tol = (uint16_t)p->n_tol; e.n_declined = (uint16_t)p->n_declined; e.n_mismatch = (uint16_t)p->n_mismatch; e.n_inconclusive = (uint16_t)p->n_inconclusive;
+    e.n_x = (uint16_t)(p->dr.n_x > 0xffff ? 0xffff : p->dr.n_x);
+    e.xreg = (uint8_t)p->xreg;
+    e.uflags = p->deflt ? UC_FL_DEFAULT : 0;
     ucache_from_rec(&e, &p->dr.rec);
     e.latch = (uint8_t)(p->ls.state == LATCH_LATCHED ? UC_LATCH_LATCHED : p->ls.state == LATCH_DEAD ? UC_LATCH_DEAD : UC_LATCH_NONE);
     e.strikes = (uint8_t)(p->ls.strikes > 255 ? 255 : p->ls.strikes);
@@ -588,6 +705,7 @@ static void store_pol(struct pair *p)
     e.open = (uint8_t)p->open;
     e.matches = p->prior_matches + p->ls.matches;
     e.mismatches = p->prior_mismatches + p->ls.mismatches;
+    e.numeric = p->prior_numeric + p->ls.numeric;
     e.evidence_milli = (uint32_t)(p->ls.evidence * 1000.0);
     e.distinct = p->ls.distinct;
     for (k = 0; k < LATCH_KWORDS && k < 5; k++)
@@ -633,15 +751,37 @@ static void pol_start(struct pair *p, const struct ucache_entry *ce)
     }
     if (!P.latch_now && !P.validator)
         return;
-    if (latch_init(&p->ls, &P.lc, p->near, ce ? ce->strikes : 0))
+    if (latch_init(&p->ls, &P.lc, p->near, p->loose, ce ? ce->strikes : 0))
         return;
     p->stored_strikes = ce ? ce->strikes : 0;
     p->prior_matches = ce ? ce->matches : 0;
     p->prior_mismatches = ce ? ce->mismatches : 0;
+    p->prior_numeric = ce ? ce->numeric : 0;
+    p->ls.deflt = p->deflt;
+    if (p->loose) {
+        /* the region gate (docs/design.md, "The loose tier"): a kind whose code the derivation could not explain never runs natively (its tasks decline at the gate and go to the JIT, which
+         * also validates them); the vertex, triangle and other regions have no kind of their own, there the graded validator is the only safety */
+        unsigned x = p->xreg | P.force_xreg;
+        if (x & 1u << DERIVE_REG_LIGHT)
+            latch_never(&p->ls, LATCH_K_LIT);
+        if (x & 1u << DERIVE_REG_CLIP) {
+            latch_never(&p->ls, LATCH_K_CLIP);
+            latch_never(&p->ls, LATCH_K_NEARCLIP);
+        }
+        if (x)
+            armlet_log(M64MSG_INFO, "latch: ucode %016" PRIx64 " data %016" PRIx64 ": unexplained words in the%s%s%s%s%s%s region%s; %s", p->tid, p->did,
+                       x & 1u << DERIVE_REG_INIT ? " init" : "", x & 1u << DERIVE_REG_VTX ? " vertex" : "", x & 1u << DERIVE_REG_TRI ? " triangle" : "", x & 1u << DERIVE_REG_CLIP ? " clip" : "",
+                       x & 1u << DERIVE_REG_LIGHT ? " light" : "", x & 1u << DERIVE_REG_OTHER ? " other" : "", (x & (x - 1)) ? "s" : "",
+                       x & (1u << DERIVE_REG_LIGHT | 1u << DERIVE_REG_CLIP) ? "the tasks of those kinds stay on the JIT" : "no kind gate covers them");
+    }
     p->b->uc.gate = &p->gate;
     if (P.latch_now) {                              /* ARMLET_PROBE_LATCH=1 (tests): latched at once, every command kind, never sampled */
         p->ls.state = LATCH_LATCHED;
         atomic_store(&p->gate.open, 1);
+    } else if (ce && ce->latch == UC_LATCH_LATCHED && p->loose && ce->open) {
+        /* a loose build that was latched when the last session ended without closing the ROM (a crash it may have caused, or a killed run: the two cannot be told apart): a candidate again,
+         * it has to earn its evidence once more rather than run at once */
+        armlet_log(M64MSG_WARNING, "latch: ucode %016" PRIx64 " data %016" PRIx64 ": a loose build latched when the last session ended uncleanly; validating it again before it runs", p->tid, p->did);
     } else if (ce && ce->latch == UC_LATCH_LATCHED) {
         p->ls.state = LATCH_LATCHED;                /* (latched in an earlier session: native at once, under the gate and the sampling, which starts again at its first rate) */
         p->ls.evidence = ce->evidence_milli / 1000.0;
@@ -669,9 +809,9 @@ static void pol_start(struct pair *p, const struct ucache_entry *ce)
         m[n] = 0;
         armlet_log(M64MSG_INFO, "latch: masks %016" PRIx64 ":%s", p->b->uc.id, m);
     }
-    armlet_log(M64MSG_INFO, "latch: ucode %016" PRIx64 " data %016" PRIx64 " \"%s\": %s", p->tid, p->did, p->b->name,
+    armlet_log(M64MSG_INFO, "latch: ucode %016" PRIx64 " data %016" PRIx64 " \"%s\": %s%s", p->tid, p->did, p->b->name,
                P.latch_now ? "latched at once (ARMLET_PROBE_LATCH)" : p->ls.state == LATCH_LATCHED ? "latched in an earlier session: native under the gate, sampled" :
-               p->near ? "a NEAR candidate: validating real tasks" : "a candidate: validating real tasks");
+               p->near ? "a NEAR candidate: validating real tasks" : "a candidate: validating real tasks", p->deflt ? " (loose tier, default record)" : p->loose ? " (loose tier)" : "");
 }
 
 /* the validator's outcome for a pair (validator thread) */
@@ -694,9 +834,14 @@ static void pol_result(void *owner, const struct val_result *r)
             armlet_log(M64MSG_INFO, "latch: ucode %016" PRIx64 " data %016" PRIx64 " LATCHED after %u equal tasks (evidence %.2f, %u distinct) in %.2f s, %u graphics tasks of the pair", p->tid, p->did,
                        p->ls.matches, p->ls.evidence, p->ls.distinct, (double)(now_ns() - p->t_cand) / 1e9, atomic_load(&p->tasks));
     } else if (r->outcome == VAL_MISMATCH) {
-        ev = latch_mismatch(&p->ls, &P.lc);
-        armlet_log(M64MSG_WARNING, "latch: ucode %016" PRIx64 " data %016" PRIx64 ": a real task differs (strike %u): %s\n%.700s", p->tid, p->did, p->ls.strikes,
-                   ev == LATCH_EV_DEAD ? "UNLATCHED for good" : "suspended, validating again", r->report ? r->report : "");
+        ev = latch_mismatch(&p->ls, &P.lc, r->grade);
+        if (ev == LATCH_EV_NONE && r->grade == LATCH_G_NUMERIC)
+            armlet_log(M64MSG_INFO, "latch: ucode %016" PRIx64 " data %016" PRIx64 ": a real task differs within the loose tolerance (%u so far): kept\n%.700s", p->tid, p->did,
+                       p->prior_numeric + p->ls.numeric, P.ltrace && r->report ? r->report : "");
+        else
+            armlet_log(M64MSG_WARNING, "latch: ucode %016" PRIx64 " data %016" PRIx64 ": a real task differs%s (strike %u): %s\n%.700s", p->tid, p->did,
+                       r->grade == LATCH_G_HARD ? " (a hard failure: the task ended otherwise)" : "", p->ls.strikes,
+                       ev == LATCH_EV_DEAD ? "UNLATCHED for good" : "suspended, validating again", r->report ? r->report : "");
     } else if (r->outcome == VAL_IRRELEVANT && p->ls.state == LATCH_LATCHED) {
         p->ls.post++;                               /* (a loaded build's sampling decays on the tasks that did not load it too) */
     }
@@ -706,7 +851,7 @@ static void pol_result(void *owner, const struct val_result *r)
     pthread_mutex_unlock(&l_pl);
 }
 
-static int near_dmem_ok(const struct hle_ucode *u, const uint32_t *dmem, unsigned addr, unsigned na, unsigned nb);
+static int near_dmem_ok(const struct hle_ucode *u, const uint32_t *dmem, unsigned addr, unsigned na, unsigned nb, int lim);
 
 /* arms a capture of the next JIT run for pair p (cand); run: the build the task starts with */
 static int pol_arm(struct pair *p, const struct hle_ucode *run)
@@ -717,6 +862,7 @@ static int pol_arm(struct pair *p, const struct hle_ucode *run)
     t.cand = &p->b->uc;
     t.run = run;
     t.tol = P.tol && p->near;
+    t.loose_levels = p->loose ? (int)P.loose_levels : 0;
     t.dmem_ok = near_dmem_ok;
     return armlet_valid_arm(&t);                    /* (-1: no free slot, counted) */
 }
@@ -735,7 +881,7 @@ static void finish(struct armlet_ctx *c, struct pair *p)
         armlet_log(M64MSG_INFO, "probe: first difference, case %s", p->first_report);
     pr = out == PROBE_OUT_PASS ? UC_PROBE_PASS : out == PROBE_OUT_PASS_TOL ? UC_PROBE_PASS_TOL : out == PROBE_OUT_FAIL ? UC_PROBE_FAIL : UC_PROBE_NONE;
     if ((!p->force || P.force_cache) && !p->experiment && out != PROBE_OUT_INCONCLUSIVE)
-        store_entry(p, pr);
+        store_entry(p, pr, (unsigned)p->loose);
 #ifdef ARMLET_HLE_MUTATE
     if ((ARMLET_HLE_MUTATE == 440 || ARMLET_HLE_MUTATE == 441 || ARMLET_HLE_MUTATE == 443) && (out == PROBE_OUT_PASS || out == PROBE_OUT_PASS_TOL)) {
         /* test builds: a record that is wrong in a way the probe did not see (the build is remade from it after the probe passed): the validator must catch it on real tasks.
@@ -780,8 +926,8 @@ static void start_probe(struct armlet_ctx *c, struct pair *p, const char *src)
         f3_ops(c, p);
     schedule(p, seeds);
     p->state = PS_PROBING;
-    armlet_log(M64MSG_INFO, "probe: ucode %016" PRIx64 " data %016" PRIx64 ": derived %s (%s, primary %s, %.1f ms), probing with %u canned tasks, %u per graphics task", p->tid, p->did,
-               derive_verdict_name(p->dr.verdict), src, derive_refs[p->dr.primary].name, p->derive_ms, p->total, P.step);
+    armlet_log(M64MSG_INFO, "probe: ucode %016" PRIx64 " data %016" PRIx64 ": derived %s%s (%s, primary %s, %.1f ms), probing with %u canned tasks, %u per graphics task", p->tid, p->did,
+               derive_verdict_name(p->dr.verdict), p->deflt ? " (loose tier, default record)" : p->loose ? " (loose tier)" : "", src, derive_refs[p->dr.primary].name, p->derive_ms, p->total, P.step);
 }
 
 static void first_sight(struct armlet_ctx *c, struct pair *p, const struct armlet_ucode_id *u, uint64_t did, uint32_t da, unsigned ds)
@@ -793,24 +939,93 @@ static void first_sight(struct armlet_ctx *c, struct pair *p, const struct armle
     const struct ucache_entry *ce = ucache_get(p->tid, did, &ce_copy) == 0 ? &ce_copy : NULL;
     uint64_t t0;
     const char *why = NULL;
+    int derived = 0;
 
     (void)u;
     for (i = 0; i < 1024; i++)
         text[i] = *(const uint32_t *)((const uint8_t *)c->rsp.RDRAM + ((ta + 4 * i) & 0x7ffffc));
-    p->dr.family = DERIVE_F3DEX2;
+    if (!ce || (p->force && !P.force_cache)) {
+        /* not known under the hash of the whole image: derive now (the first pair of a text also tells which bytes of the image matter), and look the pair up again under the static data
+         * signature, the key every pair ends with; a game that rewrites its data image per task finds its pair here from the second task on (task_pair) */
+        rd_bytes(c, da, data, ds);
+        if (p->loaded)
+            memset(data, 0, 0x180);                         /* a loaded text: DMEM below 0x180 is not loaded; zeros, as in the canned tasks */
+        {
+            size_t el = 0x2000;
+            if (ta + 0x3000 > 0x800000)
+                el = ta + 0x1000 < 0x800000 ? 0x800000 - (ta + 0x1000) : 0;
+            rd_bytes(c, ta + 0x1000, ext, el);
+            memset(&in, 0, sizeof(in));
+            in.text = text;
+            in.data = data;
+            in.data_len = ds;
+            in.ext = ext;
+            in.ext_len = el;
+            in.family = DERIVE_AUTO;
+            if (p->force && !P.force_self) {                /* leave the registered build's own record out of the references: its record must come out as derived */
+                uint64_t lk = derive_fnv_words(text, 0xf48 / 4);
+                unsigned r;
+                for (r = 0; r < derive_n_recs; r++)
+                    if (derive_recs[r].load_key == lk)
+                        in.exclude_recs |= 1ull << r;
+            }
+            t0 = now_ns();
+            if (derive_run(&in, &p->dr)) {
+                p->state = PS_DONE;
+                p->outcome = PROBE_OUT_NO_CANDIDATE;
+                snprintf(p->note, sizeof(p->note), "the derivation failed (no memory?)");
+                return;
+            }
+            p->derive_ms = (double)(now_ns() - t0) / 1e6;
+            p->xreg = xreg_of(&p->dr);
+            derived = 1;
+        }
+        if (p->dr.primary >= 0) {                       /* (a loaded text too: its data image's loaded part is hashed otherwise, and it changes between sessions in NBA Jam 2000) */
+            uint64_t sig = data_sig(data, ds, &p->dr.rec, p->dr.family);
+            p->sig = 1;
+            p->last_fd = did;
+            if (sig != did) {
+                struct pair *q;
+                p->did = did = sig;
+                for (q = P.pairs; q < P.pairs + PAIR_MAX; q++)   /* (a pair of this text under the same signature exists: this image is one of its; the new pair is dropped) */
+                    if (q != p && q->state && !q->loaded && q->tid == p->tid && q->did == sig) {
+                        q->last_fd = p->last_fd;
+                        memset(p, 0, sizeof(*p));
+                        return;
+                    }
+                if (!p->force || P.force_cache)
+                    ce = ucache_get(p->tid, did, &ce_copy) == 0 ? &ce_copy : NULL;
+            }
+        }
+    }
+    if (P.loose_force) {                                /* (tests: the pair lives in the loose section whatever it derives) */
+        p->loose = 1;
+        ce = ucache_get_t(p->tid, did, UC_TIER_LOOSE, &ce_copy) == 0 ? &ce_copy : NULL;
+    } else if (P.loose && ce && ce->verdict == DERIVE_NONE) {
+        /* the strict section knows the text as NONE: the loose section may hold its admission (a probed loose pair, or the "not admissible" mark); without one the text is derived again */
+        if (ucache_get_t(p->tid, did, UC_TIER_LOOSE, &ce_copy) == 0)
+            p->loose = 1;
+        else
+            ce = NULL;
+    }
+    if (!derived)
+        p->dr.family = DERIVE_F3DEX2;
     if (ce && (!p->force || P.force_cache)) {
         /* seen before (this tool version, these references): the verdict and the probe's result are in the cache */
         p->from_cache = 1;
         p->dr.verdict = ce->verdict;
         p->dr.family = ce->family;
         p->dr.primary = ce->primary;
+        p->dr.n_x = ce->n_x;
+        p->xreg = ce->xreg;
+        p->deflt = (ce->uflags & UC_FL_DEFAULT) != 0;
         ucache_to_rec(ce, &p->dr.rec);
         p->n_equal = ce->n_equal; p->n_tol = ce->n_tol; p->n_declined = ce->n_declined; p->n_mismatch = ce->n_mismatch; p->n_inconclusive = ce->n_inconclusive;
         p->total = (unsigned)(ce->n_equal + ce->n_tol + ce->n_declined + ce->n_mismatch + ce->n_inconclusive);
-        if (ce->verdict == DERIVE_NONE) {
+        if (ce->verdict == DERIVE_NONE && !(p->loose && ce->probe != UC_PROBE_NONE)) {
             p->state = PS_DONE;
             p->outcome = PROBE_OUT_NO_CANDIDATE;
-            snprintf(p->note, sizeof(p->note), "cached: the derivation says %s (%s)", derive_verdict_name(ce->verdict), derive_family_name(ce->family));
+            snprintf(p->note, sizeof(p->note), "cached: the derivation says %s (%s)%s", derive_verdict_name(ce->verdict), derive_family_name(ce->family), p->loose ? ", not admitted to the loose tier" : "");
             armlet_log(M64MSG_INFO, "probe: ucode %016" PRIx64 " data %016" PRIx64 ": %s", p->tid, p->did, p->note);
             return;
         }
@@ -853,49 +1068,70 @@ static void first_sight(struct armlet_ctx *c, struct pair *p, const struct armle
         start_probe(c, p, "from the cache");
         return;
     }
-
-    rd_bytes(c, da, data, ds);
-    if (p->loaded)
-        memset(data, 0, 0x180);                         /* a loaded text: DMEM below 0x180 is not loaded; zeros, as in the canned tasks */
-    {
-        size_t el = 0x2000;
-        if (ta + 0x3000 > 0x800000)
-            el = ta + 0x1000 < 0x800000 ? 0x800000 - (ta + 0x1000) : 0;
-        rd_bytes(c, ta + 0x1000, ext, el);
-        memset(&in, 0, sizeof(in));
-        in.text = text;
-        in.data = data;
-        in.data_len = ds;
-        in.ext = ext;
-        in.ext_len = el;
-        in.family = DERIVE_AUTO;
-        if (p->force && !P.force_self) {                /* leave the registered build's own record out of the references: its record must come out as derived */
-            uint64_t lk = derive_fnv_words(text, 0xf48 / 4);
-            unsigned r;
-            for (r = 0; r < derive_n_recs; r++)
-                if (derive_recs[r].load_key == lk)
-                    in.exclude_recs |= 1ull << r;
+    if (!derived) {                                     /* (a forced pair that takes nothing from the cache: derived now) */
+        rd_bytes(c, da, data, ds);
+        if (p->loaded)
+            memset(data, 0, 0x180);
+        {
+            size_t el = 0x2000;
+            if (ta + 0x3000 > 0x800000)
+                el = ta + 0x1000 < 0x800000 ? 0x800000 - (ta + 0x1000) : 0;
+            rd_bytes(c, ta + 0x1000, ext, el);
+            memset(&in, 0, sizeof(in));
+            in.text = text;
+            in.data = data;
+            in.data_len = ds;
+            in.ext = ext;
+            in.ext_len = el;
+            in.family = DERIVE_AUTO;
+            if (p->force && !P.force_self) {
+                uint64_t lk = derive_fnv_words(text, 0xf48 / 4);
+                unsigned r;
+                for (r = 0; r < derive_n_recs; r++)
+                    if (derive_recs[r].load_key == lk)
+                        in.exclude_recs |= 1ull << r;
+            }
+            t0 = now_ns();
+            if (derive_run(&in, &p->dr)) {
+                p->state = PS_DONE;
+                p->outcome = PROBE_OUT_NO_CANDIDATE;
+                snprintf(p->note, sizeof(p->note), "the derivation failed (no memory?)");
+                return;
+            }
+            p->derive_ms = (double)(now_ns() - t0) / 1e6;
+            p->xreg = xreg_of(&p->dr);
         }
-        t0 = now_ns();
-        if (derive_run(&in, &p->dr)) {
-            p->state = PS_DONE;
-            p->outcome = PROBE_OUT_NO_CANDIDATE;
-            snprintf(p->note, sizeof(p->note), "the derivation failed (no memory?)");
-            return;
-        }
-        p->derive_ms = (double)(now_ns() - t0) / 1e6;
     }
     if (p->dr.verdict == DERIVE_NONE && c->cfg.probe_none_x && p->dr.n_x + p->dr.n_xr[2] <= c->cfg.probe_none_x) {
         p->experiment = 1;                              /* an experiment (ARMLET_PROBE_NONE_X): the record is as derived, the verdict stays NONE, nothing is cached */
         armlet_log(M64MSG_INFO, "probe: ucode %016" PRIx64 ": the derivation says NONE (%u unexplained, %u missing words); probing it anyway (ARMLET_PROBE_NONE_X)", p->tid, p->dr.n_x, p->dr.n_xr[2]);
+    } else if (p->dr.verdict == DERIVE_NONE && P.loose && p->dr.primary >= 0 && !p->dr.knob_trouble &&
+               PMUT(456, p->dr.n_x + p->dr.n_xr[2] <= P.loose_words && p->dr.aligned_num * 2 >= p->dr.aligned_den, 1)) {
+        /* the loose tier (docs/design.md, "The loose tier"): a NONE derivation that is close (few unexplained or missing words; the family explains at least half of the image, the
+         * derivation's own floor: overlay slack, padding and reference features the text lacks are unaligned too, Chameleon Twist 2's 2.05 is 82 % aligned with 2 unexplained words;
+         * no conflicting constant) is probed and validated like a NEAR one; the verdict stays NONE and everything about the pair goes to the loose section of the cache */
+        p->loose = 1;
+        armlet_log(M64MSG_INFO, "probe: ucode %016" PRIx64 " data %016" PRIx64 ": the derivation says NONE (%u unexplained, %u missing words, %u of %u aligned): admitted to the loose tier", p->tid, p->did,
+                   p->dr.n_x, p->dr.n_xr[2], p->dr.aligned_num, p->dr.aligned_den);
+    } else if (p->dr.verdict == DERIVE_NONE && P.loose && P.deflt && p->dr.primary >= 0 && !p->dr.knob_trouble && PMUT(459, p->dr.aligned_num * 2 >= p->dr.aligned_den, 1)) {
+        /* the default-record arm (docs/design.md, "The loose tier"): the derivation always yields a record (the handler pcs mapped by opcode through the text's own jump table, the layout knobs
+         * the aligned code confirms, the primary reference's for the rest) however many words it cannot explain; when the family explains at least half of the image that record is tried as it
+         * is: the probe decides (another microcode fails every canned task: Blast Corps' 2f41, 26 of 26), a pass latches at default_mul times the evidence, under the region gate */
+        p->loose = 1;
+        p->deflt = 1;
+        armlet_log(M64MSG_INFO, "probe: ucode %016" PRIx64 " data %016" PRIx64 ": the derivation says NONE (%u unexplained, %u missing words, %u of %u aligned): beyond the loose bound, trying the %s record as derived (default-record arm)",
+                   p->tid, p->did, p->dr.n_x, p->dr.n_xr[2], p->dr.aligned_num, p->dr.aligned_den, derive_family_name(p->dr.family));
     } else if (p->dr.verdict == DERIVE_NONE) {
         p->state = PS_DONE;
         p->outcome = PROBE_OUT_NO_CANDIDATE;
-        snprintf(p->note, sizeof(p->note), "the derivation says %s (%s family, %u of %u words aligned)", derive_verdict_name(p->dr.verdict), derive_family_name(p->dr.family), p->dr.aligned_num, p->dr.aligned_den);
+        snprintf(p->note, sizeof(p->note), "the derivation says %s (%s family, %u of %u words aligned%s)", derive_verdict_name(p->dr.verdict), derive_family_name(p->dr.family), p->dr.aligned_num, p->dr.aligned_den,
+                 P.loose ? "; not admitted to the loose tier" : "");
         armlet_log(M64MSG_INFO, "probe: ucode %016" PRIx64 " data %016" PRIx64 ": %s (%.1f ms); no probe", p->tid, p->did, p->note, p->derive_ms);
         if (!p->force || P.force_cache) {
             p->dr.primary = p->dr.primary < 0 ? 0 : p->dr.primary;
-            store_entry(p, UC_PROBE_NONE);
+            store_entry(p, UC_PROBE_NONE, UC_TIER_STRICT);
+            if (P.loose)
+                store_entry(p, UC_PROBE_NONE, UC_TIER_LOOSE);   /* (the mark: not admissible, no derivation next time either) */
         }
         return;
     }
@@ -956,13 +1192,15 @@ static void first_sight(struct armlet_ctx *c, struct pair *p, const struct armle
             snprintf(p->note, sizeof(p->note), "derived %s, but no build can be made of it: %s", derive_verdict_name(p->dr.verdict), why);
             armlet_log(M64MSG_INFO, "probe: ucode %016" PRIx64 " data %016" PRIx64 ": %s; no probe", p->tid, p->did, p->note);
             if ((!p->force || P.force_cache) && !p->experiment)
-                store_entry(p, UC_PROBE_UNSUPPORTED);
+                store_entry(p, UC_PROBE_UNSUPPORTED, (unsigned)p->loose);
             return;
         }
         p->b = b;
     }
     start_probe(c, p, "derived");
 }
+
+static pthread_mutex_t l_note = PTHREAD_MUTEX_INITIALIZER;  /* the notes: written by the front-ends on the emulation thread and from the validator's replays, read by offer_locked */
 
 void armlet_probe_note_load(uint32_t text, uint32_t data, uint32_t len)
 {
@@ -971,14 +1209,32 @@ void armlet_probe_note_load(uint32_t text, uint32_t data, uint32_t len)
         return;
     text &= 0x7ffff8;
     data &= 0x7ffff8;
+    pthread_mutex_lock(&l_note);
     for (i = 0; i < P.n_note; i++)
         if (P.note[i].text == text && P.note[i].data == data)
-            return;
-    if (P.n_note < sizeof(P.note) / sizeof(P.note[0])) {
+            break;
+    if (i == P.n_note && P.n_note < sizeof(P.note) / sizeof(P.note[0])) {
         P.note[P.n_note].text = text;
         P.note[P.n_note].data = data;
         P.note[P.n_note++].len = len;
     }
+    pthread_mutex_unlock(&l_note);
+}
+
+/* takes one note out (the last), or returns 0 */
+static int take_note(uint32_t *text, uint32_t *data, uint32_t *len)
+{
+    int got = 0;
+    pthread_mutex_lock(&l_note);
+    if (P.n_note) {
+        P.n_note--;
+        *text = P.note[P.n_note].text;
+        *data = P.note[P.n_note].data;
+        *len = P.note[P.n_note].len;
+        got = 1;
+    }
+    pthread_mutex_unlock(&l_note);
+    return got;
 }
 
 /* A text loaded by G_LOAD_UCODE (armlet_probe_note_load): a pair of its own, keyed by its load key (the identity loaded_build looks a build up by) and its data image. Registered: only with ARMLET_PROBE_FORCE.
@@ -1037,12 +1293,15 @@ static void offer_locked(struct armlet_ctx *c, const struct armlet_ucode_id *u)
     int registered;
     unsigned i;
 
-    while (P.n_note) {                                  /* (one derivation per graphics task; the notes of the same texts come again with the next tasks) */
-        P.n_note--;
-        if (offer_loaded(c, P.note[P.n_note].text, P.note[P.n_note].data, P.note[P.n_note].len)) {
-            P.n_note = 0;
-            return;
-        }
+    {   /* (one derivation per graphics task; the notes of the same texts come again with the next tasks) */
+        uint32_t nt, nd, nl;
+        while (take_note(&nt, &nd, &nl))
+            if (offer_loaded(c, nt, nd, nl)) {
+                pthread_mutex_lock(&l_note);
+                P.n_note = 0;
+                pthread_mutex_unlock(&l_note);
+                return;
+            }
     }
     for (i = 0; i < PAIR_MAX; i++)                      /* the loaded texts' canned tasks run on whatever graphics task comes, before the task's own */
         if (P.pairs[i].loaded && P.pairs[i].state == PS_PROBING && P.step) {
@@ -1060,7 +1319,7 @@ static void offer_locked(struct armlet_ctx *c, const struct armlet_ucode_id *u)
     if (da + ds > 0x800000)
         return;
     did = armlet_ucode_hash((const unsigned char *)c->rsp.RDRAM, da, ds);
-    p = find_pair(u->id, did);
+    p = task_pair(c, u->id, did, da, ds);
     if (!p) {
         p = new_pair(u->id, did);
         if (!p)
@@ -1107,16 +1366,20 @@ int armlet_probe_run_registered(struct armlet_ctx *c, const struct hle_ucode *u)
     return (int)bad;
 }
 
-static uint64_t task_did(struct armlet_ctx *c, int *ok)
+/* the pair of the task in DMEM (task_pair), or NULL */
+static struct pair *task_pair_now(struct armlet_ctx *c, uint64_t tid)
 {
     uint32_t da, ds;
+    uint64_t fd;
     ds = armlet_dmem32(c, ARMLET_TASK_UCODE_DATA_SIZE);
     if (!ds || ds > 0x1000)
         ds = ds ? 0x1000 : 0x800;
     ds = (ds + 3) & ~3u;
     da = armlet_dmem32(c, ARMLET_TASK_UCODE_DATA) & 0x7ffffc;
-    *ok = da + ds <= 0x800000;
-    return *ok ? armlet_ucode_hash((const unsigned char *)c->rsp.RDRAM, da, ds) : 0;
+    if (da + ds > 0x800000)
+        return NULL;
+    fd = armlet_ucode_hash((const unsigned char *)c->rsp.RDRAM, da, ds);
+    return task_pair(c, tid, fd, da, ds);
 }
 
 /* a loaded text's pair in the given latch state (round robin), or NULL */
@@ -1145,19 +1408,15 @@ static const struct hle_ucode *host_build(const struct armlet_ucode_id *u)
 bool armlet_probe_gate(struct armlet_ctx *c, const struct armlet_ucode_id *u)
 {
     unsigned i;
-    uint64_t did;
     struct pair *p = NULL, *lp;
-    int ok, st;
+    int st;
     if (!P.init)
         return true;
     for (i = 0; i < PAIR_MAX; i++)
         if (P.pairs[i].state && !P.pairs[i].loaded && P.pairs[i].tid == u->id && (P.pairs[i].pol || P.pairs[i].force))
             break;
     if (i < PAIR_MAX) {
-        did = task_did(c, &ok);
-        for (i = 0; i < PAIR_MAX && !p; i++)
-            if (P.pairs[i].state && !P.pairs[i].loaded && P.pairs[i].tid == u->id && P.pairs[i].did == did && ok)
-                p = &P.pairs[i];
+        p = task_pair_now(c, u->id);
         if (!p || !p->pol)
             return false;                           /* (another data image, or a forced ucode before its build is a candidate: as an unknown ucode, the JIT) */
         atomic_fetch_add_explicit(&p->tasks, 1, memory_order_relaxed);

@@ -686,6 +686,18 @@ static void load_note(const struct f3dex_task *f)
     }
 }
 
+/* the load of these pointers ran through (the loaded text has a build now): the pointers start afresh, or load_known would decline them 63 tasks in 64 for as long as the old loads outnumber the runs */
+static void load_took(const struct f3dex_task *f)
+{
+    unsigned i;
+    for (i = 0; i < l_nloads; i++)
+        if (l_loads[i].uc == f->p_uc && l_loads[i].data == f->p_data) {
+            l_loads[i].loads = 0;
+            l_loads[i].runs = 1;
+            l_loads[i].skip = 0;
+        }
+}
+
 /* The build a G_LOAD_UCODE loads: the one whose text is the first 0xf48 bytes at `src` (f3dex1_build.load_key; a build the probe latched for this text has the key as its id: probe.c, and comes first, as in the
  * F3DEX2 front-end's loaded_build). Only a build of this front-end can be taken over. The keys of the last two texts are remembered (compared with memcmp against RDRAM). NULL: not a registered (or latched) build. */
 static const struct hle_ucode *loaded_build(const struct hle_task *t, uint32_t src)
@@ -744,6 +756,9 @@ static int enter(struct f3dex_task *f, const struct hle_cpu *c)
     f->fend = hle_dm32(t, L->fifo + 4);
     if (f->wp & 7)
         return hle_decline(t, "RDP write pointer not 8-byte aligned");
+    if (*t->cr[11] & 1)                                 /* (the microcode's start clears XBUS with DPC_STATUS <- 1: the lists are the FIFO's whatever the previous task left) */
+        return hle_decline(t, "XBUS still set after the start of the task");
+    *t->cr[11] |= MUT(490, 0, 1);
     if ((f->k0 & 7) || c->r[27] != L->window || c->r[28] != L->operand || c->r[23] != L->outbuf)
         return hle_decline(t, "unusual state at the command loop");
     make_kinds(f);
@@ -776,7 +791,7 @@ static int load_ucode(struct f3dex_task *f, struct hle_cpu *c, uint32_t w0, uint
     }
     if (memcmp(t->rdram + src, t->rdram + cur, 0x1000)) {
         const struct hle_ucode *nu = loaded_build(t, src);
-        if (!t->dx && MUT(463, 1, 0))                             /* (the probe derives a loaded text too: the data image is what DMA fills DMEM 0 with, `size` bytes) */
+        if (MUT(463, 1, 0))                             /* (the probe derives a loaded text too, from a replay as well: the data image is what DMA fills DMEM 0 with, `size` bytes) */
             armlet_probe_note_load(src, hle_dm32(t, L->half1), (w0 & 0xfff) + 1);
         if (f->trace)
             fprintf(stderr, "F3DEX G_LOAD_UCODE text %08x key %016llx data %08x -> %s\n", src, (unsigned long long)armlet_ucode_hash(t->rdram, src, 0xf48), hle_dm32(t, L->half1), nu ? nu->name : "(not registered)");
@@ -787,6 +802,8 @@ static int load_ucode(struct f3dex_task *f, struct hle_cpu *c, uint32_t w0, uint
         }
         if (hle_cmd(t, LATCH_K_LOAD))                   /* (the latch policy: a ucode load is a risky path of the host build) */
             return HLE_DECLINE;
+        if (!t->dx)
+            load_took(f);
         f->nu = nu;
         if (MUT(464, memcmp(t->rdram + src + 0xf18, t->rdram + cur + 0xf18, 0x1000 - 0xf18), 0)) {
             if (!t->dx)
@@ -1183,7 +1200,7 @@ static const struct hle_dead_range l_dead[] = {
     { 0x2e3, 0x2e4 }, { 0x2e7, 0x2e8 },
 };
 
-#define U(var, uid, nm, bld) HLE_UCODE(var) = { .id = (uid), .name = (nm), .fam = &f3dex1_fam, .fam_data = &(bld), .dead = l_dead, .n_dead = sizeof(l_dead) / sizeof(l_dead[0]), .ring_off = 0xfe8 }
+#define U(var, uid, nm, bld) HLE_UCODE(var) = { .id = (uid), .name = (nm), .fam = &f3dex1_fam, .fam_data = &(bld), .dead = l_dead, .n_dead = sizeof(l_dead) / sizeof(l_dead[0]), .ring_off = 0xfe8, .flags = HLE_F_XBUS_OK }
 U(l_bk, 0x208a567e9aead5eaull, "F3DEX 1.21 (Banjo-Kazooie, Glover, Bomberman Hero, Quest 64)", l_b_121);
 U(l_sf, 0xfd5a31ccf6d40b62ull, "F3DEX.NoN 1.22 (Star Fox 64, Quake, Wetrix)", l_b_non122);
 U(l_ts_ex, 0x047252e810e35d56ull, "F3DEX 1.23 (Toy Story 2, Earthworm Jim 3D, Mystical Ninja, SpaceStation, Pokemon Puzzle League)", l_b_123);

@@ -155,3 +155,30 @@ Excitebike 64, F-Zero X and Resident Evil 2 run 100 % of their graphics tasks na
 
 **Not done: L3DEX 2.08** (WinBack, the line microcode, `cd32d8e5555c1bfc`). It is the same F3DEX2 skeleton with a vertex stage like F3DEX2's (at 0x310) and a triangle command that draws the edges as lines through `G_LINE3D` (pc 0x618, about 270 instructions: its own clip and reciprocal code). It is 0.07 points of the 19.2 left on the JIT (half the tasks of one game, and short ones), so a
 third kernel with its oracle, synthetic tasks, mutations and gates was not built; the text stays on the JIT. Nothing found so far makes it unprovable.
+
+## 10. Rej as a derivation family (2026-10-18)
+
+The Rej builds are references of the derivation now ([ucode-derive.md](ucode-derive.md), "Rej as a derivation family"), so a Rej text that no hand-written record covers can be derived, probed and latched. `tools/derive_lib.py` reads
+`hle_rej.c`, `rej_dmem.h` and `rej_fx.h` with the other tables (the four Rej builds, F3DEX 2.03 and the F3DEX.NoN xbus 2.08 text Excitebike loads become references: 20 F3DEX2-family references, 35 in all, with their dumps).
+
+**What a Rej record is.** An F3DEX2-family record whose vertex, triangle and cull handlers are in the extension table (`ext`, kinds from `K_REJ_BASE` = 0x60, which the derivation tells from S2DEX's 0x40 ..: `rej_dmem.h`), with the
+layout of section 3 (the slots, the cull table, the display list and the output buffers) and the variant bits `f2_layout.rej_flags`. The pcs of the extension table are mapped from the primary reference exactly like S2DEX's (the handler
+the reference's jump table sends an opcode to is looked up in the unknown's table); the layout addresses are knobs as before. What is new:
+
+| field | how it is derived |
+|---|---|
+| `ext` (7 handlers: vertex, `G_TRI1`, `G_TRI2`, `G_MODIFYVTX`, `G_CULLDL`, `G_BRANCH_Z`, `G_DMA_IO`) | the primary reference's table, each pc mapped through the jump tables (S2DEX's mechanism) |
+| `rej_flags` (`REJ_YQ`, `REJ_FLAT_A`, `REJ_LIT_FLX`, `REJ_LIT_LX`) | one vote per bit among the Rej references, over the words of the regions the bit owns (YQ: the vertex pipeline and the triangle setup; FLAT_A: the triangle setup; the lightings: the vertex pipeline and the lighting overlay); the references that have the bit and the ones that lack it, the words only the one side explains; no evidence (a tie, or a value no reference shows): the primary reference's bit |
+| the composite | a reference of the other class (Rej or not) explains no word of the vertex, triangle, lighting or clip code, and a Rej reference only those whose `rej_flags` agree with the derived bits on the regions each bit owns |
+| reference-only words | short runs (under 16 words) of the primary reference's vertex / triangle / lighting code that the unknown lacks, in a region of a bit the primary has and the derived record has not, are "a feature the unknown lacks" (`extra`, NEAR), not "an instruction missing" (`deleted`, NONE): the variant's code |
+| `light_scale` | a lane of the constant vector at `const30` (the code names no address): the lane that holds 0x0100, when exactly one does (lane 3 = 0x1c6 in the 2.08 texts, lane 7 = 0x1ce in the 2.03 .. 2.06 ones); an operand that anchors the knob wins |
+| `xbus`, `ring_start`, the dead ranges, the ring | **not derived**: the primary reference's (`dbuild_make`); the flush code that depends on them is aligned, so another transport shows as unexplained words (verdict NONE) |
+| `no_lit` | the primary reference's (a front-end decision: the lighting of F3DEX.Rej 2.06 is not modelled) |
+
+`dbuild_make` gives such a record the primary reference's `rej_ext_cmd` and the layout with the derived `rej_flags`. The re-entry address of the start-up code (`addi ra, zero, 0x1080` up to the 2.04 generation, `0x1084` behind the `vxor v0` after it) is a
+relocation of the derivation, not a layout field (it had made the knob "mvp" ambiguous).
+
+**What the recount's Rej texts derive to** (docs/ucode-derive.md, "Rej as a derivation family", has the numbers): Mario Party 3's F3DLX.Rej fifo 2.08 (`9332f30c`) and the F3DLX.Rej fifo 2.05 text of NBA Jam 2000 and NFL Blitz (`36f10dc3`, loaded by
+`G_LOAD_UCODE`) derive **NEAR** from F3DLX.Rej 2.03 with the 2.08 xbus text supplying the lighting words (`rej_flags` = `REJ_YQ`), probe 28 of 28 and latch. ECW's F3DEX.Rej fifo 2.08 (`23cb9e85`) is **NONE** (22 words of the triangle setup that
+no reference has: another lane layout of the constant vector; the probe finds 7 of 28 canned tasks different), and Air Boarder 64's and ISS 64's F3DLX.Rej 1.21 (`3c51d836`) is of the **F3DEX 1.x** generation (425 of 1024 words align with F3DEX 1.21, 25 with F3DLX 1.21;
+nothing aligns with the F3DEX2 skeleton): the Rej extension exists in the F3DEX2 front-end only.

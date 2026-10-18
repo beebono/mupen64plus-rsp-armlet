@@ -162,3 +162,35 @@ The front-end (`s2_ext_cmd` in `hle_s2dex2.c`) does not test which S2DEX build i
 Not in the record: the DMEM addresses of the S2DEX state (the object buffers 0x3a8 / 0x3b0 / 0x3c0, the render-mode words and tables, the scissor fields, the sync state at 0x2ae, the loaded-texture words at 0x2b0, the `G_OBJ_MOVEMEM` table
 at 0x388) and the vector constants. They are the same in the three texts, and the kernels (`s2dex2_rect.c`, `s2dex2_bg.c`) are written against them; an unknown text that moved one has instructions whose operand is no field of the record,
 so its derivation says NONE and no build is made. The `ldtx_*` fields were `handler + 0x20` of the sprite and rectangle commands before; they are the same values in the three builds, now derived from the text (the aligned instruction) rather than assumed.
+
+## 9. The XBUS build: S2DEX xbus 2.08 (StarCraft 64, 2026-10-18)
+
+StarCraft 64's graphics tasks start with `3ee636569037de5b` (banner "S2DEX xbus 2.08 .. | S2DEX 1.07": the 1.07 is a second banner in the data, the code is 2.08). It is [Worms' 2.08](#1-layout-208) with the XBUS transport of the Rej and F3DEX2.NoN xbus
+texts ([design.md](design.md) "XBUS"): the RDP list is not DMA'd to a FIFO in RDRAM but written to a ring in DMEM that the RDP reads (`DPC_STATUS.XBUS`). Registered by hand (`hle_s2dex2.c`, `l_b_s2_xbus`, `HLE_F_XBUS_OK`) because the
+derivation could not explain the transport words (108 unexplained, 48 of them in "other") before the xbus references existed; it is a reference now (`derive_refs.c`) and the Rej / F3DEX2 xbus derivations use it as a composite.
+
+What differs from the 2.08 record (the handlers and the S2DEX kernels are the same; the overlays, constants and DMEM state are the 2.08's):
+
+| field | Worms 2.08 | StarCraft 64 xbus 2.08 |
+|---|---|---|
+| `head` | 0x1ac | 0x1ac |
+| `ext` | `G_OBJ_LOADTXTR` 0x558, `G_BG_1CYC` 0xb7c, rectangle 0xb88, sprite 0x6c8 | 0x558, 0xb54, 0xb60, 0x6a0 (the code behind the flush routine at 0x648 is 0x28 shorter); `G_BG_COPY` 0x210, `G_SETSCISSOR` 0x1d8, `G_RENDERMODE` 0x0e8 unchanged |
+| `ldtx_spr`, `ldtx_rect` | 0x6e8, 0xba8 | 0x6c0, 0xb80 |
+| `lay.xbus`, `lay.ring_start` | 0, - | 1, 0x4c0 (the start-up's `addi s7, zero, 1216`; DPC_START / DPC_END are set to it, `DPC_STATUS` is set to XBUS by `mtc0 2, c0_11`) |
+| `lay.ring_end`, `lay.ring_gap` | - | 0xee0, 224: the flush routine (0x648, entered by `j 0x648` after every command that writes; the BG kernels call it too) wraps `s7` to `ring_start` when `s7 - 0xee0 > 0` and waits while the RDP is within 224 bytes ahead of `s7` (the Rej texts: 0xf10, 176) |
+| `lay.out_bytes`, `lay.out_toggle` | 800, 0xc00 | 0, 0 (no output buffers; `s6` is not used) |
+
+The transport is `f3_flush_xbus` (`hle_rej.c`, `rej_flush` in `rej_dmem.h`) as for the Rej builds: `DPC_END = s7`; when `s7` passed the end the ring wraps (the wait for START_VALID / END_VALID and for the RDP to leave the start; a state in which the
+microcode would wait forever declines); then the check that the RDP is not just ahead of the pointer. The three constants are layout fields now (`ring_start`, `ring_end`, `ring_gap`; 0 = the Rej / F3DEX2.NoN values, which a derived build has since its
+record has no such fields). The commands themselves are the S2DEX ones (`after_emit` calls the flush of the layout), so nothing else changed. Dead ranges: the input buffer and the ring with its slack, 0x418 .. 0xf90 (and 0xfc8).
+
+**Gates** (desktop, 3700 frames vs `ref`, `ARMLET_PROBE=on ARMLET_HLE_VERIFY=1 ARMLET_HLE_STATS=1`): StarCraft 64: the text is registered (no probe, no latch), 1535 of 1536 tasks native in the verify window, 0 differences, hash (1448),
+state (1490), 6 screenshots and audio identical. Regressions identical: Worms Armageddon (S2DEX fifo 2.08), Kirby 64 (loads S2DEX 2.06), Excitebike 64 (Rej xbus, F3DEX2.NoN xbus), Command & Conquer.
+**The game's tasks never wrap the ring** (the mutants 366 and 367 below pass the 3700-frame verify run with 0 differences): the wrap is tested by synthetic tasks (`mksyn_ex2.py s2ring`: 60 .. 119 sprite rectangles on a captured task; `tools/hle/synth_ex2.sh`): 12 of 12 seeds
+equal to the JIT; mutations 366 (the end of the ring + 8) and 367 (the wrapped pointer + 8) differ in 10 of 12. The room check (`ring_gap`) is not observable with a synchronous video plugin (the RDP has taken the list when DPC_END is written): the
+state in which it matters declines, as for the Rej builds.
+
+**Command & Conquer's second text.** The F3DEX.NoN / L3DEX xbus 2.06 text (`65ad…`) loads `b2b01e17177e5881` ("S2DEX xbus 2.06 .. | F3DEX.NoN ..") with `G_LOAD_UCODE`. It is StarCraft's text with Kirby's differences (one `vadd v1` and one `nop` less in the
+start-up, the handlers 8 bytes lower: `head` 0x1a4, sprite 0x698, `ldtx_spr` 0x6b8, `ldtx_rect` 0xb78). With `l_b_s2_xbus` as a reference the derivation has **0 unexplained words** (1423 of 1612 aligned) but says NONE: seven words of the primary's
+overlay head (`jal 0x154 .. j 0xfb4` at 0x6a0, the sprite code's entry) have no counterpart in the image, probably because the loaded data holds a second overlay descriptor (`0x1198 -> 0x2a8`, 130 words, F3DEX.NoN's) next to the S2DEX one (`0x11a8 -> 0x698`); the sprite overlay's
+first words lie in both segments and the aligner takes the first, and 320 words of the primary's second overlay segment have nothing to align with. `docs/ucode-derive.md` "Verdicts": a short run of missing words is NONE.

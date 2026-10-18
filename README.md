@@ -31,7 +31,8 @@ mupen64plus --gfx mupen64plus-rdp-foir.so --rsp mupen64plus-rsp-armlet.so --audi
 ```
 
 No other setting is needed. The config section `Rsp-Armlet` has `GfxMode` (`hle`, the default: native graphics where a front-end exists; `lle`:
-everything on the JIT), `GfxHleUcodes` (limit native graphics to some ucode ids) and `GfxProbe` (`on`, the default; `off` disables the probe and latch).
+everything on the JIT), `GfxHleUcodes` (limit native graphics to some ucode ids) and `GfxProbe` (`on`, the default; `off` disables the probe and latch; `loose` adds the
+[loose tier](docs/design.md#the-loose-tier): close NONE derivations are probed too and, latched, keep running through small shade / colour differences).
 Native graphics needs foir as the video plugin, behind the coalescing path. `RdpCoalesce` (`auto`: on with foir) and `RdpCoalesceBytes` control the list coalescing ([docs/options.md](docs/options.md)).
 
 ## Building
