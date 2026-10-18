@@ -949,6 +949,7 @@ static int native_run(struct armlet_ctx *c, const struct hle_ucode *uc, int reco
     g_n_undo = g_n_uarena = 0;
     K.why = NULL;
     K.broke = 0;
+    prsp_poll_task_begin(t.start_pc);
     prsp_native_save(K.s0);
     if (MUT(316, K.s0->sp_status_timeout != PRSP_TIMEOUT_INIT, 0)) {
         K.why = "the JIT's status poll timeout has dropped (an earlier task waited for the CPU)";

@@ -515,6 +515,8 @@ void f3_do_dl(struct f3 *f, uint32_t w0, uint32_t w1)
         hle_st32(t, DL_STACK + d, ret);
         hle_st8(t, DL_DEPTH, (uint8_t)(d + 4));
     }
+    if ((int32_t)(w0 << 15) < 0 && target == ret - 8)  /* a branch to the command itself: the microcode spins on it until the CPU patches the list (Gauntlet Legends), 32767 polls of the JIT; the JIT gets the task now */
+        f->bad = "the display list branches to itself (a wait for the CPU)";
     f->k0 = target;
     if (MUT(240, target & 7, 0))                        /* the refill DMA rounds the address down to 8 and the list starts at the rounded address; the lean mode reads from the address itself */
         f->bad = "unaligned display list address";
