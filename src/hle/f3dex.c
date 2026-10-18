@@ -140,6 +140,7 @@ struct f3dex_task {
     const struct hle_ucode *nu;         /* the hle_ucode of the build a G_LOAD_UCODE switches to (its gate: hle_bind) */
 };
 
+static inline int f1_vidx_bad(uint32_t w) { return ((w & 0xfff) > 0x3e) | (w & 1); }       /* (the vertex pointer table has 32 entries of 2 bytes) */
 static inline void st32u(struct hle_task *t, unsigned a, uint32_t v)       /* unaligned big-endian word, wrapping at 4 KiB */
 {
     hle_st8(t, a, (uint8_t)(v >> 24)); hle_st8(t, a + 1, (uint8_t)(v >> 16)); hle_st8(t, a + 2, (uint8_t)(v >> 8)); hle_st8(t, a + 3, (uint8_t)v);
@@ -957,6 +958,8 @@ static int f3dex_run(struct hle_task *t, const struct hle_ucode *u)
                 break;
             }
             case K1_BRANCHZ: {
+                if (MUT(472, f1_vidx_bad(w0), 0))      /* (as G_MODIFYVTX: the slot address of an offset past the table is staged data the lean mode does not have) */
+                    return hle_decline(t, "G_BRANCH_Z vertex out of range");
                 unsigned va = hle_dm16(t, L->vtab + (w0 & 0xfff));
                 uint32_t vz = hle_dm32(t, va + 0x1c);
                 if ((int32_t)(vz - w1) <= 0 && hle_cmd(t, LATCH_K_BRZ))
@@ -970,6 +973,8 @@ static int f3dex_run(struct hle_task *t, const struct hle_ucode *u)
                     return HLE_DECLINE;
                 break;
             case K1_MODVTX: {
+                if (MUT(471, f1_vidx_bad(w0) || ((w0 >> 16) & 0xff) >= 0x28 || ((w0 >> 16) & 3), 0))      /* a vertex outside the 32 slots, an odd number, or a field outside the record: the slot address is read from, and the store goes to, anywhere in DMEM (Toy Story 2 perturbed: 0x800 read the staging area the lean mode does not fill) */
+                    return hle_decline(t, "G_MODIFYVTX out of range");
                 unsigned va = hle_dm16(t, L->vtab + (w0 & 0xfff));
                 st32u(t, ((w0 >> 16) & 0xff) + va, w1);
                 break;
