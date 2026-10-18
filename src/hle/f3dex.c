@@ -958,6 +958,8 @@ static int f3dex_run(struct hle_task *t, const struct hle_ucode *u)
                 break;
             }
             case K1_BRANCHZ: {
+                if (MUT(472, f1_vidx_bad(w0), 0))      /* (as G_MODIFYVTX: the slot address of an offset past the table is staged data the lean mode does not have) */
+                    return hle_decline(t, "G_BRANCH_Z vertex out of range");
                 unsigned va = hle_dm16(t, L->vtab + (w0 & 0xfff));
                 uint32_t vz = hle_dm32(t, va + 0x1c);
                 if ((int32_t)(vz - w1) <= 0 && hle_cmd(t, LATCH_K_BRZ))
