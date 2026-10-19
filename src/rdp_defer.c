@@ -152,11 +152,17 @@ void prsp_rdp_defer_dma_write(uint32_t dram, uint32_t length, uint32_t skip, uns
     }
 }
 
+/* pow2 bundle: foir is linked into the same executable under this name, so dladdr would name the executable */
+void foir_ProcessRDPList(void);
+#pragma weak foir_ProcessRDPList
+
 /* auto: the argument above is about foir's ProcessRDPList, so it is on only when that is the module behind the core's callback */
 static int video_is_foir(void (*process_rdp_list)(void))
 {
     Dl_info di;
 
+    if (process_rdp_list && process_rdp_list == foir_ProcessRDPList)
+        return 1;
     return process_rdp_list && dladdr((void *)process_rdp_list, &di) && di.dli_fname && strstr(di.dli_fname, "foir");
 }
 
