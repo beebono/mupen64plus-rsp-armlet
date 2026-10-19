@@ -2,7 +2,7 @@
 # Builds mupen64plus-rsp-armlet.so from a copy of the sources (work/<name>/), so a tree that is being edited does not matter.
 #   scripts/build.sh native|aarch64|rg35xxsp [--prof|--prof3] [--shadow]  -> out/<target>[-prof|-prof3][-shadow]/mupen64plus-rsp-armlet.so
 #   scripts/build.sh ref native|aarch64|rg35xxsp                  -> out/<target>/ref/{mupen64plus-rsp-hle,mupen64plus-rsp-parallel}.so
-# native: host compiler; aarch64: aarch64-linux-gnu-* (the rgdsplus' glibc); rg35xxsp: $RG35_TOOLCHAIN (default ../toolchains/rg35xxsp:
+# native: host compiler; aarch64: aarch64-linux-gnu-* (the rgdsplus' glibc); rg35xxsp: $RG35_TOOLCHAIN (default ../../../resources/toolchains/rg35xxsp:
 # glibc 2.31 sysroot, C with the host GCC 13, C++ with the host g++-12 and a dynamic libstdc++), whose output runs on both devices.
 # --prof: the arMLEt profiler, levels 1-2 (-DARMLET_PROFILE, parallel-rsp built with the PRSP_HOOKS observation hooks); --prof3: the same plus
 # parallel-rsp's per-instruction profiling hook (-DPRSP_PROFILE) for the level-3 site counts (4-5x slower: counts only).
@@ -13,11 +13,11 @@
 #   --gmut=N: a deliberate error N in the F3D family's struct-level functions (F3D_FX_MUTATE: f3d_vtx_fx.c, f3d_tri_fx.c, f3d_clip_fx.c); --scalar: src/hle without NEON on aarch64;
 #   --hmut=N / --fmut=N: a deliberate error N in the task-level path / in its fixed-point library (tools/hle/mutcheck.sh)
 # ref is the equivalence-test reference: rsp-hle (Makefile, -O3, same compiler) with RspFallback = parallel-rsp from the same submodules.
-# M64P_API_INCLUDE_DIR may point at the directory holding m64p_types.h (default ../mupen64plus-core/src/api).
+# M64P_API_INCLUDE_DIR may point at the directory holding m64p_types.h (default ../mupen64plus-core-dento/src/api).
 set -e
 R=$(cd "$(dirname "$0")/.." && pwd)
-API=${M64P_API_INCLUDE_DIR:-$R/../mupen64plus-core/src/api}
-RG35=${RG35_TOOLCHAIN:-$R/../toolchains/rg35xxsp}
+API=${M64P_API_INCLUDE_DIR:-$R/../mupen64plus-core-dento/src/api}
+RG35=${RG35_TOOLCHAIN:-$R/../../../resources/toolchains/rg35xxsp}
 ref=0; [ "$1" = ref ] && { ref=1; shift; }
 target=$1; shift || true
 prof=0; prof3=0; shadow=0; mutate=0; tools=0; nmut=0; hmut=0; fmut=0; gmut=0; scalar=0

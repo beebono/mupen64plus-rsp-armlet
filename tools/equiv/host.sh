@@ -2,7 +2,7 @@
 # HOST. One session on a device under its lock: deploy (md5-checked), run, fetch to test-output/equiv/<dev>/, clear the device's out/.
 #   tools/equiv/host.sh DEV LABEL RUN...      RUN = TAG|BUILD|ROM|KIND|LAST (see device/runner.sh); LABEL names the session in session.<LABEL>.info
 # Env: EQUIV_X (the device's work dir, required), EQUIV_FLAVOUR (rgdsplus | rg35xxsp, default DEV), PIN=1 (pin the clocks and restore them),
-#      EQUIV_FOIR (the foir .so, default ../toolchains/rg35xxsp/out/mupen64plus-rdp-foir.so, which runs on both devices),
+#      EQUIV_FOIR (the foir .so, default ../../../resources/toolchains/rg35xxsp/out/mupen64plus-rdp-foir.so, which runs on both devices),
 #      EQUIV_ROMS (newline-separated local ROM files copied to <X>/roms/ for runs that name them as @file; never committed, remove them afterwards),
 #      EQUIV_LOCKDIR (default /tmp/n64-plugins-locks), EQUIV_WAIT (seconds the session may take, default 300).
 # Keep a session to about 5 minutes. Needs scripts/build.sh and tools/equiv/build-tools.sh for rg35xxsp (and ref) first.
@@ -11,8 +11,8 @@ R=$(cd "$(dirname "$0")/../.." && pwd)
 DEV=$1; LABEL=$2; shift 2
 : "${EQUIV_X:?set EQUIV_X to the work dir on the device}"
 FLAVOUR=${EQUIV_FLAVOUR:-$DEV}; WAIT=${EQUIV_WAIT:-300}; LOCKDIR=${EQUIV_LOCKDIR:-/tmp/n64-plugins-locks}
-FOIR=${EQUIV_FOIR:-$R/../toolchains/rg35xxsp/out/mupen64plus-rdp-foir.so}
-RG35=${RG35_TOOLCHAIN:-$R/../toolchains/rg35xxsp}
+FOIR=${EQUIV_FOIR:-$R/../../../resources/toolchains/rg35xxsp/out/mupen64plus-rdp-foir.so}
+RG35=${RG35_TOOLCHAIN:-$R/../../../resources/toolchains/rg35xxsp}
 "$R/tools/equiv/stamp.sh" check "$R/out/rg35xxsp/tools" || exit 1
 L=$R/test-output/equiv/$DEV; mkdir -p "$L" "$LOCKDIR"
 export R DEV LABEL EQUIV_X FLAVOUR WAIT FOIR RG35 L PIN EQUIV_ROMS

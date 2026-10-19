@@ -117,7 +117,7 @@ profiler runs are identical to those of the normal module (see Testing).
 ## Results
 
 All numbers are per VI frame. rgdsplus: ROCKNIX, RK3566 (4x Cortex-A55), performance governor (1992 MHz reported, about 1.58 GHz real), foir `devel` at 88d1722 with three
-worker threads, the module and the profiler built with the `toolchains/rg35xxsp` toolchain (which runs on both devices); `Core[RandomizeInterrupt] = False`, the deterministic
+worker threads, the module and the profiler built with the `resources/toolchains/rg35xxsp` toolchain (which runs on both devices); `Core[RandomizeInterrupt] = False`, the deterministic
 pad script, no save file. The profiler's own window is the difference of two screenshots' marks.
 
 ### Scenes

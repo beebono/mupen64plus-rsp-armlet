@@ -11,7 +11,7 @@ O=${3:-$H/out-$T}
 case $T in
  host) CC=gcc; CXX=g++;;
  a64) CC=aarch64-linux-gnu-gcc; CXX=aarch64-linux-gnu-g++;;
- rg35) TC=$R/../toolchains/rg35xxsp/bin; CC=$TC/rg35-gcc; CXX=$TC/rg35-g++;;
+ rg35) TC=$R/../../../resources/toolchains/rg35xxsp/bin; CC=$TC/rg35-gcc; CXX=$TC/rg35-g++;;
 esac
 mkdir -p "$O/obj-$N"
 OBJ=

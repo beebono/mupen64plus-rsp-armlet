@@ -4,8 +4,8 @@
 # audio-adump.so is mupen64plus-rdp-foir's tools/prsp/adump.c (FOIR_TOOLS, default ../mupen64plus-rdp-foir/tools/prsp).
 set -e
 R=$(cd "$(dirname "$0")/../.." && pwd)
-API=${M64P_API_INCLUDE_DIR:-$R/../mupen64plus-core/src/api}
-RG35=${RG35_TOOLCHAIN:-$R/../toolchains/rg35xxsp}
+API=${M64P_API_INCLUDE_DIR:-$R/../mupen64plus-core-dento/src/api}
+RG35=${RG35_TOOLCHAIN:-$R/../../../resources/toolchains/rg35xxsp}
 FT=${FOIR_TOOLS:-$R/../mupen64plus-rdp-foir/tools/prsp}
 case $1 in
 native)   CC=cc ;;

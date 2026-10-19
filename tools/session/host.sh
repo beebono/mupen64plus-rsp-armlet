@@ -2,7 +2,7 @@
 # HOST. One profiling session on a device under its lock: deploy (md5-checked), run, fetch to test-output/session/<dev>/, clear the device's out/.
 #   tools/session/host.sh DEV LABEL RUN...      RUN = TAG|ROM|SO|FRAMES|ENV (see runner.sh); LABEL names the session in session.<LABEL>.info
 # Env: SESSION_X (the device's work dir, required), SESSION_FLAVOUR (rgdsplus | rg35xxsp, default DEV), PIN=1 (pin the clocks and restore them),
-#      SESSION_FOIR (the foir .so, default ../toolchains/rg35xxsp/out/mupen64plus-rdp-foir.so, which runs on both devices),
+#      SESSION_FOIR (the foir .so, default ../../../resources/toolchains/rg35xxsp/out/mupen64plus-rdp-foir.so, which runs on both devices),
 #      SESSION_WAIT (seconds the session may take, default 300), SESSION_LOCKDIR (default /tmp/n64-plugins-locks),
 #      SESSION_KEEP (a glob, relative to out/, of files to leave on the device; default none: everything is fetched and removed).
 # Keep a session to about 5 minutes. Needs scripts/build.sh rg35xxsp [--prof|--prof3] and tools/equiv/build-tools.sh rg35xxsp first; the builds
@@ -13,8 +13,8 @@ R=$(cd "$(dirname "$0")/../.." && pwd)
 DEV=$1; LABEL=$2; shift 2
 : "${SESSION_X:?set SESSION_X to the work dir on the device}"
 FLAVOUR=${SESSION_FLAVOUR:-$DEV}; WAIT=${SESSION_WAIT:-300}; LOCKDIR=${SESSION_LOCKDIR:-/tmp/n64-plugins-locks}
-FOIR=${SESSION_FOIR:-$R/../toolchains/rg35xxsp/out/mupen64plus-rdp-foir.so}
-RG35=${RG35_TOOLCHAIN:-$R/../toolchains/rg35xxsp}
+FOIR=${SESSION_FOIR:-$R/../../../resources/toolchains/rg35xxsp/out/mupen64plus-rdp-foir.so}
+RG35=${RG35_TOOLCHAIN:-$R/../../../resources/toolchains/rg35xxsp}
 "$R/tools/equiv/stamp.sh" check "$R/out/rg35xxsp/tools" || exit 1
 L=$R/test-output/session/$DEV; mkdir -p "$L" "$LOCKDIR"
 export R DEV LABEL SESSION_X FLAVOUR WAIT FOIR RG35 L PIN

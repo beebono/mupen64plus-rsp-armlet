@@ -155,9 +155,9 @@ the vertex stores, the clipper and the lighting overlay, which is not in the 4 K
 
 ```
 # needs a built x86_64 mupen64plus-core, console, foir (NEON=0) and the parallel-rsp plugin (out/native/ref); see tools/equiv/desk.sh for the pieces
-cc -O2 -shared -fPIC -I../mupen64plus-core/src/api -o udump.so tools/ucode_dump_shim.c -ldl
+cc -O2 -shared -fPIC -I../mupen64plus-core-dento/src/api -o udump.so tools/ucode_dump_shim.c -ldl
 UD_SO=udump.so CORE_DIR=... CONSOLE=... FOIR_SO=... PRSP_SO=out/native/ref/mupen64plus-rsp-parallel.so INPUT_SO=out/native/tools/input-det.so \
-  tools/ucode_dump_run.sh "../test-romset/Super Mario 64.z64" runs/test-romset/"Super Mario 64" 55      # once per ROM, 6 at a time
+  tools/ucode_dump_run.sh "../../../resources/romsets/test-romset/Super Mario 64.z64" runs/test-romset/"Super Mario 64" 55      # once per ROM, 6 at a time
 python3 -I tools/ucode_survey.py --selftest
 python3 -I tools/ucode_survey.py runs --handlers      # all tables above, about 2 min
 ```

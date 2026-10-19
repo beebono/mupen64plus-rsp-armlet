@@ -35,7 +35,7 @@ esac
 EOS
 scp -q /tmp/dev_replay_run.sh $DEV:$X/replay/run.sh
 if [ "$DEV" = rg35xxsp ]; then
-    scp -q $R/../toolchains/rg35xxsp/scripts/cpu_perf.sh $DEV:$X/replay/cpu_perf.sh
+    scp -q $R/../../../resources/toolchains/rg35xxsp/scripts/cpu_perf.sh $DEV:$X/replay/cpu_perf.sh
     ssh -tt $DEV "sh $X/replay/cpu_perf.sh on >/dev/null 2>&1; LD_LIBRARY_PATH=/mnt/SDCARD/spruce/flip/lib:/usr/lib sh $X/replay/run.sh > $X/replay/out.txt 2>&1; sh $X/replay/cpu_perf.sh off >/dev/null 2>&1"
 else
     ssh -tt $DEV "for g in /sys/devices/system/cpu/cpu[0-3]/cpufreq/scaling_governor; do echo performance > \$g; done; sh $X/replay/run.sh > $X/replay/out.txt 2>&1; for g in /sys/devices/system/cpu/cpu[0-3]/cpufreq/scaling_governor; do echo schedutil > \$g; done"

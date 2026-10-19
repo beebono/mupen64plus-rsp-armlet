@@ -1,7 +1,7 @@
 # builds the F3D routine tests: needs the fork's objects (built by ../../scripts? no: see $(OBJDIR))
 R=$(abspath ../..)
 P=$(R)/ext/parallel-rsp
-API=$(R)/../mupen64plus-core/src/api
+API=$(R)/../mupen64plus-core-dento/src/api
 NATIVE_H=$(or $(NATIVE_INC),$(R)/src/native)
 APRSP=$(or $(NATIVE_PRSP),$(R)/ext/parallel-rsp)
 OBJDIR?=$(R)/test-output/f3d/obj$(TRACE)

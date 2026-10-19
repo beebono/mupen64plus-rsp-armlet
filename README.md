@@ -44,7 +44,7 @@ scripts/build.sh aarch64                  # aarch64-linux-gnu-* cross toolchain 
 scripts/build.sh rg35xxsp                 # glibc 2.31 sysroot, host GCC 13 / g++-12 (runs on glibc >= 2.17 devices)
 ```
 
-CMake and Ninja; the build runs on a copy of the sources (`work/`). The Mupen64Plus API headers are taken from `../mupen64plus-core/src/api`
+CMake and Ninja; the build runs on a copy of the sources (`work/`). The Mupen64Plus API headers are taken from `../mupen64plus-core-dento/src/api`
 (`M64P_API_INCLUDE_DIR`). The module exports only the six plugin API functions. `-O3`, generic armv8-a, no LTO. `--prof` and `--prof3` build
 the profiler (`src/prof`, [docs/profiling.md](docs/profiling.md)): levels 1-2, and also the per-instruction counts of level 3; `--shadow`
 builds parallel-rsp's shadow-verification variant; `--tools` also builds the native-routine harness. The profiler is not in the normal module (it is a different `.so`). `scripts/build.sh ref <target>`

@@ -81,7 +81,7 @@ There is nothing to set for the rest of the pairing: `hle_gfx` and `hle_aud` are
 
 | Option | Effect |
 |---|---|
-| `M64P_API_INCLUDE_DIR` | directory with `m64p_types.h` (default `../mupen64plus-core/src/api`) |
+| `M64P_API_INCLUDE_DIR` | directory with `m64p_types.h` (default `../mupen64plus-core-dento/src/api`) |
 | `ARMLET_PROFILE` / `build.sh --prof` | the profiler, levels 1 and 2 (`-DARMLET_PROFILE`; parallel-rsp is built with its `PRSP_HOOKS` observation hooks) |
 | `ARMLET_PRSP_PROFILE` (with `ARMLET_PROFILE`) / `build.sh --prof3` | also parallel-rsp's per-instruction hook (`-DPRSP_PROFILE`) for the level-3 counts; 4-10x slower, counts only |
 | `ARMLET_RDP_DEFER` (default `ON`) | the RDP-list coalescing: the module defines the fork's `prsp_rdp_defer.h` hooks (`-DPRSP_RDP_DEFER` for parallel-rsp, `-DARMLET_RDP_DEFER` for arMLEt). `OFF` builds a module without it (and without the hooks in parallel-rsp) |

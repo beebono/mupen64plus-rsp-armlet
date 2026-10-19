@@ -13,7 +13,7 @@ set(CMAKE_CXX_STANDARD 14)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
-set(M64P_API_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../mupen64plus-core/src/api" CACHE PATH
+set(M64P_API_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../mupen64plus-core-dento/src/api" CACHE PATH
     "Directory with m64p_types.h / m64p_plugin.h")
 option(ARMLET_PRSP_PROFILE "parallel-rsp dynamic instruction-mix profiling (-DPRSP_PROFILE)" OFF)
 option(ARMLET_PROFILE "the profiler (src/prof, docs/profiling.md): per-task stats, the JIT address map; with ARMLET_PRSP_PROFILE also per-site counts" OFF)
@@ -28,7 +28,7 @@ set(ARMLET_HLE_FX_MUTATE 0 CACHE STRING "test builds only: a deliberate error N 
 option(ARMLET_PRSP_SHADOW "parallel-rsp shadow verification: every task is replayed on a second JIT (-DPRSP_SHADOW)" OFF)
 
 option(ARMLET_STATIC "build libarmlet.a (with Lightning merged in) for the static single-binary bundle: symbols prefixed armlet_ by the rename header, no version script" OFF)
-set(ARMLET_BUNDLE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../mupen64plus-pow2/bundle" CACHE PATH "directory with rename-armlet.h (ARMLET_STATIC)")
+set(ARMLET_BUNDLE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../bundle" CACHE PATH "directory with rename-armlet.h (ARMLET_STATIC)")
 
 set(ARMLET_PRSP_DIR "${CMAKE_CURRENT_SOURCE_DIR}/ext/parallel-rsp")
 set(ARMLET_HLE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/ext/mupen64plus-rsp-hle")

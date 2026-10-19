@@ -1,6 +1,6 @@
 #!/bin/bash
 # Builds the standalone differential test (rt_test) of src/native/f3dex.c against the fork's JIT.
-#   build_rt_test.sh x86|a64|rg35 [outdir]    (rg35: the toolchains/rg35xxsp compilers; the binary runs on both devices)       needs a build of the fork's static library for that target:
+#   build_rt_test.sh x86|a64|rg35 [outdir]    (rg35: the resources/toolchains/rg35xxsp compilers; the binary runs on both devices)       needs a build of the fork's static library for that target:
 #       x86:  cmake <repo>/ext/parallel-rsp -DPARALLEL_RSP_DEBUG_JIT=OFF -DPARALLEL_RSP_TESTS=OFF -DCMAKE_BUILD_TYPE=Release && make parallel-rsp lightning
 #       a64:  the same with -DCMAKE_TOOLCHAIN_FILE=<repo>/ext/parallel-rsp/toolchain-aarch64-linux-gnu.cmake
 #   PRSP_LIBDIR=<dir with libparallel-rsp.a liblightning.a>  NATIVE_H_DIR=<dir with native.h>  PRSP_NATIVE_H_DIR=<dir with prsp_native.h>
@@ -15,7 +15,7 @@ O=${2:-$H/out-$T}
 FORK=$R/ext/parallel-rsp
 NH=${NATIVE_H_DIR:-$R/src/native}
 PH=${PRSP_NATIVE_H_DIR:-$FORK}
-TC=$R/../toolchains/rg35xxsp/bin
+TC=$R/../../../resources/toolchains/rg35xxsp/bin
 case $T in x86) CC=gcc; CXX=g++; EXTRA=;; a64) CC=aarch64-linux-gnu-gcc; CXX=aarch64-linux-gnu-g++; EXTRA=;; rg35) CC=$TC/rg35-gcc; CXX=$TC/rg35-g++; EXTRA=;; esac
 mkdir -p "$O"
 CF="-O2 -g -std=gnu11 -DARMLET_NATIVE_TEST -I$NH -I$PH -I$R/src/native -I$R/src/hle"

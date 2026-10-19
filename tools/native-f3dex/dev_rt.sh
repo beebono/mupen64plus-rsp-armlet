@@ -13,7 +13,7 @@ scp -qC $R/tools/native-f3dex/out-rg35/rt_test $DEV:$X/rt/rt_test
 scp -qC $UCD/*.text $UCD/*.data $DEV:$X/rt/uc/
 CMD="cd $X/rt; export RT_NOJIT=$RT_NOJIT; timeout 280 $RT_PREFIX ./rt_test $ARGS"
 if [ "$DEV" = rg35xxsp ]; then
-    scp -q $R/../toolchains/rg35xxsp/scripts/cpu_perf.sh $DEV:$X/rt/cpu_perf.sh
+    scp -q $R/../../../resources/toolchains/rg35xxsp/scripts/cpu_perf.sh $DEV:$X/rt/cpu_perf.sh
     ssh -tt $DEV "sh $X/rt/cpu_perf.sh on >/dev/null 2>&1; LD_LIBRARY_PATH=/mnt/SDCARD/spruce/flip/lib:/usr/lib sh -c \"$CMD\"; sh $X/rt/cpu_perf.sh off >/dev/null 2>&1"
 else
     ssh -tt $DEV "for g in /sys/devices/system/cpu/cpu[0-3]/cpufreq/scaling_governor; do echo performance > \$g; done; sh -c \"$CMD\"; for g in /sys/devices/system/cpu/cpu[0-3]/cpufreq/scaling_governor; do echo schedutil > \$g; done"

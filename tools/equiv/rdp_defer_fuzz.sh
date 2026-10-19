@@ -4,7 +4,7 @@
 #   tools/equiv/rdp_defer_fuzz.sh [streams]       (default 300; the normal build is also run with 1000)
 set -e
 R=$(cd "$(dirname "$0")/../.." && pwd)
-API=${M64P_API_INCLUDE_DIR:-$R/../mupen64plus-core/src/api}
+API=${M64P_API_INCLUDE_DIR:-$R/../mupen64plus-core-dento/src/api}
 N=${1:-300}
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
 cc_() { cc -O1 -g -Wall -Wextra -Wno-unused-parameter -DARMLET_RDP_DEFER "$@" -I"$R/src" -I"$R/ext/mupen64plus-rsp-hle/src" -I"$API" \
