@@ -27,6 +27,9 @@ set(ARMLET_F3D_MUTATE 0 CACHE STRING "test builds only: a deliberate error N in 
 set(ARMLET_HLE_FX_MUTATE 0 CACHE STRING "test builds only: a deliberate error N in the shared fixed-point library (HLE_FX_MUT in src/hle/hle_fx.h)")
 option(ARMLET_PRSP_SHADOW "parallel-rsp shadow verification: every task is replayed on a second JIT (-DPRSP_SHADOW)" OFF)
 
+option(ARMLET_STATIC "build libarmlet.a (with Lightning merged in) for the static single-binary bundle: symbols prefixed armlet_ by the rename header, no version script" OFF)
+set(ARMLET_BUNDLE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../mupen64plus-pow2/bundle" CACHE PATH "directory with rename-armlet.h (ARMLET_STATIC)")
+
 set(ARMLET_PRSP_DIR "${CMAKE_CURRENT_SOURCE_DIR}/ext/parallel-rsp")
 set(ARMLET_HLE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/ext/mupen64plus-rsp-hle")
 foreach(d "${ARMLET_PRSP_DIR}/CMakeLists.txt" "${ARMLET_HLE_DIR}/src/hle.c")
@@ -44,7 +47,11 @@ include(cmake/check_sources.cmake)
 
 # --- GNU Lightning (the fork's copy), static and private to the module
 list(TRANSFORM ARMLET_LIGHTNING_C PREPEND "${ARMLET_PRSP_DIR}/")
-add_library(lightning-m64p STATIC ${ARMLET_LIGHTNING_C})
+if(ARMLET_STATIC)
+    add_library(lightning-m64p OBJECT ${ARMLET_LIGHTNING_C})     # its objects go into libarmlet.a
+else()
+    add_library(lightning-m64p STATIC ${ARMLET_LIGHTNING_C})
+endif()
 target_include_directories(lightning-m64p PUBLIC "${ARMLET_PRSP_DIR}/lightning/include")
 target_compile_definitions(lightning-m64p PUBLIC HAVE_MMAP=1)
 set_target_properties(lightning-m64p PROPERTIES POSITION_INDEPENDENT_CODE ON C_VISIBILITY_PRESET hidden)
@@ -71,9 +78,15 @@ if(ARMLET_PROFILE)
     list(APPEND armlet_cpp src/prof/prof.cpp src/prof/rdp.cpp src/prof/walker.cpp src/prof/tasklog.cpp src/prof/map.cpp src/prof/counts.cpp src/prof/ucode.cpp)
 endif()
 
-add_library(mupen64plus-rsp-armlet MODULE ${armlet_c} ${armlet_cpp} ${hle_c} ${prsp_cpp} ${prsp_extra_cpp})
+if(ARMLET_STATIC)
+    add_library(mupen64plus-rsp-armlet STATIC ${armlet_c} ${armlet_cpp} ${hle_c} ${prsp_cpp} ${prsp_extra_cpp} $<TARGET_OBJECTS:lightning-m64p>)
+    set_target_properties(mupen64plus-rsp-armlet PROPERTIES OUTPUT_NAME armlet)
+    target_compile_options(mupen64plus-rsp-armlet PRIVATE -include "${ARMLET_BUNDLE_DIR}/rename-armlet.h")
+else()
+    add_library(mupen64plus-rsp-armlet MODULE ${armlet_c} ${armlet_cpp} ${hle_c} ${prsp_cpp} ${prsp_extra_cpp})
+    set_target_properties(mupen64plus-rsp-armlet PROPERTIES PREFIX "")
+endif()
 set_target_properties(mupen64plus-rsp-armlet PROPERTIES
-    PREFIX ""
     C_VISIBILITY_PRESET hidden
     CXX_VISIBILITY_PRESET hidden
     VISIBILITY_INLINES_HIDDEN ON
@@ -137,10 +150,12 @@ endif()
 
 # rsp/vu_inline.cpp holds the register-convention VU op bodies the aarch64 JIT copies into its code (x19 = CPUState). The copied
 # code must not touch any integer register the JIT keeps live, so every one of them is fixed for that file (x0-x8, x16, x17 stay
-# free). Source file properties are directory-scoped, which is why this lives here and not in a subdirectory. Same string as the fork.
+# free). -fno-lto keeps the file out of link-time optimisation (bundle build): the fixed registers are not part of the IR, so an LTO
+# recompile of this file would lose them, and its functions must not be inlined into / merged with code that uses those registers.
+# Source file properties are directory-scoped, which is why this lives here and not in a subdirectory. Same string as the fork.
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64|ARM64")
     set_source_files_properties("${ARMLET_PRSP_DIR}/rsp/vu_inline.cpp" PROPERTIES COMPILE_FLAGS
-        "-ffixed-x9 -ffixed-x10 -ffixed-x11 -ffixed-x12 -ffixed-x13 -ffixed-x14 -ffixed-x15 -ffixed-x18 -ffixed-x20 -ffixed-x21 -ffixed-x22 -ffixed-x23 -ffixed-x24 -ffixed-x25 -ffixed-x26 -ffixed-x27 -ffixed-x28")
+        "-fno-lto -ffixed-x9 -ffixed-x10 -ffixed-x11 -ffixed-x12 -ffixed-x13 -ffixed-x14 -ffixed-x15 -ffixed-x18 -ffixed-x20 -ffixed-x21 -ffixed-x22 -ffixed-x23 -ffixed-x24 -ffixed-x25 -ffixed-x26 -ffixed-x27 -ffixed-x28")
 endif()
 
 # Offline harness for native routines (tools/native/replay.c): the same sources, linked as a program
@@ -198,7 +213,9 @@ if(ARMLET_NATIVE_TOOLS AND ARMLET_NATIVE)
 endif()
 
 # Only the six plugin API symbols leave the module; Lightning's _emit_* and everything else stay private.
-target_link_options(mupen64plus-rsp-armlet PRIVATE
-    "-Wl,--version-script=${CMAKE_CURRENT_SOURCE_DIR}/src/armlet_api_export.ver" -Wl,-Bsymbolic -Wl,--exclude-libs,ALL)
+if(NOT ARMLET_STATIC)
+    target_link_options(mupen64plus-rsp-armlet PRIVATE
+        "-Wl,--version-script=${CMAKE_CURRENT_SOURCE_DIR}/src/armlet_api_export.ver" -Wl,-Bsymbolic -Wl,--exclude-libs,ALL)
+endif()
 find_package(Threads REQUIRED)     # the validator thread (src/hle/validate.c)
 target_link_libraries(mupen64plus-rsp-armlet PRIVATE lightning-m64p dl m Threads::Threads)
