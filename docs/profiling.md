@@ -453,6 +453,17 @@ the same (the ucode does the same work), and so are the RSP state hash streams o
 A fit run (session F) of Super Mario 64 on the A53 gives 6610 us per task against 6495 on the A55 and 11.6 ns per instruction against 11.4. No perf on that device; no other scene.
 
 
+### F3DEXBG lit pass, scalar against NEON (Conker, Tavern scene, rgdsplus)
+
+Conker's Bad Fur Day from the slot-1 state, performance governor (restored to schedutil), 34 s per run, timers around `fbg_lit_pass` and on the emulation thread's CPU time (`CLOCK_THREAD_CPUTIME`), the old and the new build alternated, 4 runs each (384 tasks in the window; the numbers repeat to 1 %):
+
+| build | lit pass ms/task | us/call (659 calls, about 14 vertices) | native run ms/task | emulation-thread CPU ms/task | wall ms/task | tasks/s |
+|---|---|---|---|---|---|---|
+| scalar | 7.87 | 11.9 | 17.5 | 47.7 | 49.2 | 20.3 |
+| NEON | 1.48 | 2.24 | 11.0 | 41.0 | 42.4 | 23.6 |
+
+The pass is 5.3 times faster; the emulation thread needs 14 % less CPU per task and the game runs 16 % more tasks per second (the thread is the limit: 97 % of the wall time). Texgen (scalar) is not separately measured.
+
 ### What native code would save, and the decision
 
 A model, not a measurement: nothing native exists. Per game it takes the measured JIT proper, its routine shares (the perf samples), the display-list workload per frame from the

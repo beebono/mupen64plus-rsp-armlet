@@ -83,6 +83,19 @@ static void attenuate(const int16_t pos[4], const int16_t V[4], const uint8_t at
     }
 }
 
+/* the texture coordinates (before the G_TEXTURE scale) of a vertex with the normal n, by the two look-at vectors (slots 0 and 1) */
+static void fbg_texgen(const struct fx2_vctx *vc, const struct fbg_ctx *bc, unsigned g, const int16_t n[3], int16_t sgen[2])
+{
+    const struct fbg_slot *l0 = &bc->s[0], *l1 = &bc->s[1];
+    if (vc->mode & FX2_TEXGEN_LINEAR) {
+        sgen[0] = fx2_texgen_linear(vc, (int16_t)dotn(n, l0->d[g], 0));
+        sgen[1] = fx2_texgen_linear(vc, (int16_t)dotn(n, l1->d[g], 0));
+    } else {
+        sgen[0] = (int16_t)(MUT(108, 0x4000, 0x4001) + (dotn(n, l0->d[g], 0) >> 1));
+        sgen[1] = (int16_t)(0x4000 + (dotn(n, l1->d[g], 0) >> MUT(109, 1, 2)));
+    }
+}
+
 static void light_vertex(const struct fx2_vctx *vc, const struct fbg_ctx *bc, unsigned g, const struct fbg_vin *in, const struct fx2_vtx *o, uint8_t out[4], int16_t sgen[2], int *have_st)
 {
     int16_t n[3] = { (int16_t)(in->n[0] * 256), (int16_t)(in->n[1] * 256), (int16_t)(in->n[2] * 256) };
@@ -127,19 +140,12 @@ static void light_vertex(const struct fx2_vctx *vc, const struct fbg_ctx *bc, un
     out[3] = in->col[3];
     *have_st = 0;
     if (vc->mode & FX2_TEXGEN) {
-        const struct fbg_slot *l0 = &bc->s[0], *l1 = &bc->s[1];
-        if (vc->mode & FX2_TEXGEN_LINEAR) {
-            sgen[0] = fx2_texgen_linear(vc, (int16_t)dotn(n, l0->d[g], 0));
-            sgen[1] = fx2_texgen_linear(vc, (int16_t)dotn(n, l1->d[g], 0));
-        } else {
-            sgen[0] = (int16_t)(MUT(108, 0x4000, 0x4001) + (dotn(n, l0->d[g], 0) >> 1));
-            sgen[1] = (int16_t)(0x4000 + (dotn(n, l1->d[g], 0) >> MUT(109, 1, 2)));
-        }
+        fbg_texgen(vc, bc, g, n, sgen);
         *have_st = 1;
     }
 }
 
-void fbg_lit_pass(const struct fx2_vctx *vc, const struct fbg_ctx *bc, const struct fbg_vin *in, unsigned n, struct fx2_vtx *out)
+void fbg_lit_pass_scalar(const struct fx2_vctx *vc, const struct fbg_ctx *bc, const struct fbg_vin *in, unsigned n, struct fx2_vtx *out)
 {
     unsigned i;
     for (i = 0; i < n; i++) {
@@ -155,6 +161,12 @@ void fbg_lit_pass(const struct fx2_vctx *vc, const struct fbg_ctx *bc, const str
         }
     }
 }
+
+#if defined(__aarch64__) && defined(__ARM_NEON)
+#include "f3dexbg_fx_neon.h"
+#else
+void fbg_lit_pass(const struct fx2_vctx *vc, const struct fbg_ctx *bc, const struct fbg_vin *in, unsigned n, struct fx2_vtx *out) { fbg_lit_pass_scalar(vc, bc, in, n, out); }
+#endif
 
 void fbg_clip_frac(const struct fx2_vctx *vc, const struct fx2_vin *vi, uint16_t cf[4])
 {

@@ -67,6 +67,8 @@ is `src/hle/f3dexbg_fx.c` (`fbg_lit_pass`, pure C on structs; the DMEM adapters 
 - **Result.** colour x vertex colour (rounded), byte = lane >> 7. Texture generation: s = 0x4000 + (n . lookat0) / 2, t likewise with lookat1 (slots 0 and 1), or the F3DEX2 polynomial with the linear bit.
 - **Scratch the microcode leaves** (reproduced, the verification compares them): the MVP integer rows 0 and 1 twice at 0x1b0 / 0x1c0, the last pair's clip-coordinate fractions (halves swapped) at 0x200, its input colours at 0x258.
 
+On aarch64 `fbg_lit_pass` is the NEON form in `f3dexbg_fx_neon.h`, bit-exact with the scalar `fbg_lit_pass_scalar` (which is also the non-aarch64 build): four vertices per vector (the two lane groups of the slots alternate over the lanes), the lights as the outer loop; the bounds that keep every step exact (64-bit view-space and falloff products, the reciprocal as clz plus the ROM lane loads, the halving-add form of the 3-product `macf` chain, `n . d` in `(sum nb d + 64) >> 7`) are in the file's header. Texgen stays scalar per vertex.
+
 It reproduces all 289 + 313 captured Conker tasks, 300 000 randomised commands (lights, positions, attenuations, normals, flags, geometry bits, counts, matrices) against the microcode's transliteration, and the verify runs
 of docs/testing.md. On x86 the lit tasks run 3.4 to 3.9 times faster than the JIT (the transliteration was 0.8 times), so lit vertices are native by default.
 

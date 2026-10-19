@@ -6,7 +6,7 @@
  * pad bytes instead of its colour (docs/ucode-f3dex2-dialects.md, section 2.4). It is computed from the clip coordinates the pipeline leaves in the vertex records, so it is a pass over them:
  * fx2_vtx_xform() with the standard lighting off, then fbg_lit_pass(), which sets the colour and (with texture generation) the texture coordinates.
  *
- * The arithmetic is hle_fx.h's; tools/hle/test_f3dexbg.c checks the NEON vertex form and the scalar one under the pass; the equivalence with the microcode is docs/testing.md ("Regenerating the microcode oracles") and the replays of docs/testing.md.
+ * The arithmetic is hle_fx.h's; tools/hle/test_f3dexbg.c checks the NEON vertex form and the scalar one under the pass, and the NEON lit pass (f3dexbg_fx_neon.h, aarch64) against the scalar one; the equivalence with the microcode is docs/testing.md ("Regenerating the microcode oracles") and the replays of docs/testing.md.
  *
  * Copyright (C) 2026 arMLEt contributors
  * SPDX-License-Identifier: GPL-2.0-or-later
@@ -52,6 +52,8 @@ struct fbg_vin {
 /* out[i] is the record fx2_vtx_xform() made for the vertex with the standard lighting off (its colour the input colour); sets the colour (or leaves the input colour when the flag says so) and, when
  * the geometry mode has texture generation, s and t. n vertices; lane group of vertex i: (i & 1) ? 0 : 1. */
 void fbg_lit_pass(const struct fx2_vctx *vc, const struct fbg_ctx *bc, const struct fbg_vin *in, unsigned n, struct fx2_vtx *out);
+/* the scalar reference form (fbg_lit_pass is the NEON form on aarch64, tools/hle/test_f3dexbg.c checks it against this) */
+void fbg_lit_pass_scalar(const struct fx2_vctx *vc, const struct fbg_ctx *bc, const struct fbg_vin *in, unsigned n, struct fx2_vtx *out);
 
 /* The fractions of the clip coordinates of an input vertex (what the microcode's pair loop leaves in its scratch words for the vertex it computes only for the pair's sake). */
 void fbg_clip_frac(const struct fx2_vctx *vc, const struct fx2_vin *vi, uint16_t cf[4]);
