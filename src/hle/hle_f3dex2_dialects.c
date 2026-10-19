@@ -58,7 +58,7 @@ static int bg_lit_vtx(struct f3 *f)
         unsigned endslot = hle_dm16(t, F2_VTAB + (f->w0 & 0xfff));
         hle_dma_read(t, endslot - n * 16, va, n * 16 - 1);
     }
-    why = fbg_cmd_vtx(t, f->w0, va, f->lean);
+    why = fbg_cmd_vtx(t, f->w0, va, f->lean, f->k0 - F2_IN_REFILL);
     return why ? hle_decline(t, why) : HLE_OK;
 }
 

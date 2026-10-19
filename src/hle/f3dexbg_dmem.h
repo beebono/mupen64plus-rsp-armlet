@@ -49,8 +49,8 @@ static inline void fbg_ld_ctx(const struct hle_task *t, unsigned nlights, struct
         }
 }
 
-/* The lit G_VTX (w0, w1 resolved to va: the vertices in RDRAM; lean: they are read from there, else from DMEM where the DMA of the microcode put them). Returns NULL or the reason the task declines. */
-static inline const char *fbg_cmd_vtx(struct hle_task *t, uint32_t w0, uint32_t va, int lean)
+/* The lit G_VTX (w0, w1 resolved to va: the vertices in RDRAM; lean: they are read from there, else from DMEM where the DMA of the microcode put them; dl: RDRAM address of the display list's current chunk, the input buffer's contents in the lean mode). Returns NULL or the reason the task declines. */
+static inline const char *fbg_cmd_vtx(struct hle_task *t, uint32_t w0, uint32_t va, int lean, uint32_t dl)
 {
     unsigned n = (w0 >> 12) & 0xff, size = hle_dm16(t, F2_LIGHTS_SIZE - 1), nl = size / FBG_LIGHT_STRIDE, endslot, first, s4, i, v0;
     struct fx2_vctx c;
@@ -100,7 +100,10 @@ static inline const char *fbg_cmd_vtx(struct hle_task *t, uint32_t w0, uint32_t 
             f2_ld_vin_rdram(t, va + 16 * i, &in[i]);
             flagnz = w1 & 0xffff;
         } else {
-            f2_ld_vin(t, s4 + 16 * i, &in[i]);
+            if (lean && s4 + 16 * i == F2_IN)           /* an odd count that ends at the last slot: the pair's phantom vertex is the first bytes of the input buffer, which the lean mode does not keep in DMEM */
+                f2_ld_vin_rdram(t, dl - MUT(121, 0, 8), &in[i]);
+            else
+                f2_ld_vin(t, s4 + 16 * i, &in[i]);
             flagnz = hle_dm16(t, s4 + 16 * i + 6);
         }
         bin[i].n[0] = (int8_t)hle_dm8(t, FBG_NORMALS + 2 * (v0 + i));

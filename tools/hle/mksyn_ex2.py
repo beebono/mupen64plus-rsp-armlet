@@ -7,7 +7,8 @@
   and the OSTask; the display list, matrices and vertices are written to free RDRAM at 0x300000 and the OSTask data_ptr is pointed at it. Nothing of a game is in the output.
   tools/hle/synth_ex2.sh runs many seeds.
 
-  CASES  clip    triangles that cross the clip planes, with matrices of very different scales (short edges: the intersection's distance difference has a zero integer part), 12 per task
+  CASES  bgph    (F3DEXBG, on a lit Conker task) lit vertices in odd batches that end at the last slot, with triangles between: the phantom partner of the last pair is read from the display list's current chunk
+         clip    triangles that cross the clip planes, with matrices of very different scales (short edges: the intersection's distance difference has a zero integer part), 12 per task
          zneg    vertices whose screen z is negative (the viewport's z translation 0), triangles drawn, shade / z-buffer / texture on or off
          tri     triangles of all sizes, culling modes, flat and smooth shading, textures: the triangle setup
          mix     vertices in batches of odd and even counts up to the end of the vertex buffer, the triangles between them
@@ -158,16 +159,26 @@ def s2_stage(d, r, data, s2d):
 def case(name, seed):
     r = random.Random(seed * 7919 + len(name))
     data = {}
-    if name in ("clip", "zneg", "tri", "mix", "wild"):
+    if name in ("clip", "zneg", "tri", "mix", "wild", "bgph"):
         shade = r.choice([0, 0x4, 0x4 | 0x200000])
         zb = r.choice([0, 1])
         tex = r.choice([0, 2])
         cull = r.choice([0, 0, 0x400, 0x200, 0x600])
-        geom = shade | zb | cull | 0x800000                 # (the texture on byte is set by G_TEXTURE below; bit 1 of the geometry mode means nothing to F3DEX2)
+        geom = shade | zb | cull | 0x800000 | (0x20000 if name == "bgph" else 0)   # (the texture on byte is set by G_TEXTURE below; bit 1 of the geometry mode means nothing to F3DEX2)
         if len(sys.argv) > 3:
             print('INFO', name, seed, 'shade %x zb %d tex %d cull %x' % (shade, zb, tex, cull), file=sys.stderr)
         trans_z = 0 if name == "zneg" else r.choice([0x1ff, 0, 0x100])
         d, data = common(r, geom, trans_z, tex)
+        if name == "bgph":                                  # F3DEXBG's lights: an odd count, 48-byte slots (G_MOVEMEM index 10 from offset 0x0c, 6 x 8 bytes apart), the look-at slots and the ambient one included
+            nl = r.choice([1, 3, 5])
+            d.cmd(0xdb020000, nl * 48)
+            for slot in range(nl + 2):
+                blob = bytearray(48)                        # (raw direction at +0, colours at +24 and +28; the point-light fields stay zero. Axis directions: random ones differ from the microcode by one in a colour byte in ~7 % of the tasks (found with this case; not the phantom)
+                for k in (24, 25, 26, 28, 29, 30):
+                    blob[k] = r.randrange(256)
+                blob[r.randrange(3)] = r.choice([0x7f, 0x81])
+                data[0x1000 + 0x40 * slot] = bytes(blob)
+                d.cmd(0xdc280000 | ((0x0c + 6 * slot) << 8) | 0x0a, BASE + 0x1000 + 0x40 * slot)
         # matrices: modelview (loaded, not pushed), projection (loaded)
         if name == "clip":
             scale = r.choice([1, 1, 0.5, 0.25, 1 / 16, 1 / 64, 1 / 256, 1 / 1024])
@@ -187,11 +198,14 @@ def case(name, seed):
         data[0x540] = mtx(pj)
         d.cmd(0xda380007, BASE + 0x540)                    # projection, load
         d.cmd(0xda380003, BASE + 0x500)                    # modelview, load
-        nbatch = 3 if name != "mix" else 4
+        nbatch = 3 if name not in ("mix", "bgph") else 4
         vaddr = 0x600
         for b in range(nbatch):
-            n = r.choice([3, 3, 4, 5, 6, 9, 11, 16]) if name != "mix" else r.randrange(1, 12)
-            v0 = r.randrange(0, 32 - n + 1) if name != "mix" else (32 - n if r.random() < 0.5 else r.randrange(0, 32 - n + 1))
+            n = r.choice([3, 3, 4, 5, 6, 9, 11, 16]) if name not in ("mix", "bgph") else r.randrange(1, 12)
+            v0 = r.randrange(0, 32 - n + 1) if name not in ("mix", "bgph") else (32 - n if r.random() < 0.5 else r.randrange(0, 32 - n + 1))
+            if name == "bgph":                              # odd counts that end at the last slot: the pair's phantom partner is the first bytes of the input buffer
+                n = r.choice([1, 3, 5, 7, 9, 11, 17, 31]) if r.random() < 0.8 else n
+                v0 = 32 - n
             span = r.choice([4, 10, 30, 100, 400]) if name not in ("zneg", "wild") else r.choice([0.5, 1.0]) if name == "zneg" else r.choice([2000, 10000, 32767])
             ctr = [r.uniform(-span, span) for _ in range(3)]
             vs = b""
