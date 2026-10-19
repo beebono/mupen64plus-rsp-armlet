@@ -1840,7 +1840,8 @@ static int derive_f2(const struct derive_in *in, struct dimg *U, const struct dc
                 }
             (void)src_lh6; (void)src_lw28; (void)srcw;
             rec->bz_z = (uint8_t)(rec->zex && !rec->gen204 && src == 2);
-            want_lh = rec->zex && !rec->gen204 && !rec->bz_z;
+            rec->bz_w = (uint8_t)(src == 1 && !(rec->zex && !rec->gen204));
+            want_lh = (rec->zex && !rec->gen204 && !rec->bz_z) || rec->bz_w;
             for (j = 0; j < U->n; j++)
                 if (cur[j] && bzset[j] && U->cls[j] == C_MEM) {
                     uint32_t w = U->w[j];
@@ -3060,6 +3061,7 @@ void derive_rec_fields(const struct derive_rec *r, void (*f)(const char *name, u
     f("clip204", r->clip204, arg);
     f("zex", r->zex, arg);
     f("bz_z", r->bz_z, arg);
+    f("bz_w", r->bz_w, arg);
     f("reject_mask", r->reject_mask, arg);
     f("load_key", r->load_key, arg);
     f("lay.rej_flags", r->rej_flags, arg);

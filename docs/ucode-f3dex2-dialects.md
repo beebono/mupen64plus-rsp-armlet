@@ -174,3 +174,14 @@ Chameleon Twist 2's text (`97989ee9c10ef7ad`, "F3DEX fifo 2.05", the 2.04 pcs pl
 differs in is the 2.06 form in this text: the new vertices' stores (`slv` / `ssv` at 0x46c / 0x47c, not `SDV`), the fan (`lhu` / `addi` at 0x4bc / 0x4dc) and the vertex pipeline. So the 2.04 differences are not one generation here, and the single `gen204` could not say it: the derivation was NONE and the probe failed the `clip` case (4 of 28 canned tasks).
 
 The build record has a second flag, **`clip204`**: it selects the clipper's reciprocal (`fx2_clip_ctx.sign0`); `gen204` keeps the vertex pipeline's z, the clipper's new-vertex stores and the fan (`fan_l0`), the lighting's linear texgen. Every registered build has `clip204 == gen204` (the records of F3DEX2 2.03, 2.04, 2.04H and Rej set both). The text is not registered: the derivation produces `gen204 = 0, zex = 1, clip204 = 1`, EXACT, and the probe and latch take it from there.
+
+## 8. F3DZEX.NoN fifo 2.08I: Paper Mario's 2.08 with the clip w in `G_BRANCH_Z` (2026-10-19)
+
+Majora's Mask (`1c724a38139c0669`) is Paper Mario's F3DEX 2.08 text plus four words: the init `vor`, the NoN reject mask `0x70b0` (twice), and at IMEM 0xef4 `lh t9, 6(t9)` in `G_BRANCH_Z`. `zex` stays 0 (the triangle code is the 2.08's), but the branch compares the integer part of the clip w, which the front-end only did for `zex` without `gen204`. The build record has a third source flag, **`bz_w`** (`f3dex2_build`, `derive_rec`, cache entry; `UCACHE_FORMAT` 8): clip w when `(zex && !gen204 && !bz_z) || bz_w`. The tool derives it from the branch instruction (`lh 6` and not (zex without gen204)); mutation 321 (front-end) and 354 (probe) switch it.
+
+| id | banner | games | record |
+|---|---|---|---|
+| `1c724a38139c0669` | F3DZEX.NoN fifo 2.08I | Majora's Mask | Paper Mario's pcs (head 0x194, vertex 0x780, triangles 0xa44 / 0xa3c, MODIFYVTX 0xf08, CULLDL 0xec8, BRANCH_Z 0xef0), **`bz_w = 1`**, `reject_mask 0x70b0`, `load_key 0xc9efea08ae04999b`; the S2DEX load is `l_b_s2_208` |
+
+Before: derived NEAR and probed 25 of 28 equal (`bz/0`, `bz/1`, `misc/1` differ), so never latched. With `bz_w`: 28 of 28; `bz_w` forced to 0 in the probe record (354): 25 of 28, the same three tasks. No game run notices the branch (6000 frames of Majora's Mask: identical, 2431 of 2432 tasks native); the probe's `bz` case and the synthetic `misc` case do (321: 37 of 300 seeds).
+

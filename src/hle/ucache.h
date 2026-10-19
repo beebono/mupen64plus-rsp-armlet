@@ -19,8 +19,8 @@
 extern "C" {
 #endif
 
-#define UCACHE_FORMAT 7           /* 2: the continuation pcs of S2DEX (pc[]) and the dialect command table (ext); 3: F3DEX 1.x records (f1pc, non, dlx, culldl_off; the layout in lay[]); 4: F3D records (f3pc, the masks, f3[]);
-                                     5: the latch policy's state (latch, strikes, the evidence summary, the validated command kinds); 6: the tier in the key (the loose section), n_x, the numeric mismatches */
+#define UCACHE_FORMAT 8           /* 2: the continuation pcs of S2DEX (pc[]) and the dialect command table (ext); 3: F3DEX 1.x records (f1pc, non, dlx, culldl_off; the layout in lay[]); 4: F3D records (f3pc, the masks, f3[]);
+                                     5: the latch policy's state (latch, strikes, the evidence summary, the validated command kinds); 6: the tier in the key (the loose section), n_x, the numeric mismatches; 8: bz_w */
 #define UCACHE_MAX_ENTRIES 512          /* oldest-used entries go first when the cache is full */
 
 enum { UC_PROBE_NONE = 0, UC_PROBE_PASS = 1, UC_PROBE_FAIL = 2, UC_PROBE_PASS_TOL = 3, UC_PROBE_UNSUPPORTED = 4 };
@@ -46,7 +46,7 @@ struct ucache_entry {
     int32_t f2pcs[DERIVE_NF2PCS];
     uint32_t lay[DERIVE_NLAY];
     uint32_t reject_mask;
-    uint8_t gen204, zex, bz_z;
+    uint8_t gen204, zex, bz_z, bz_w;
     uint8_t xreg;                       /* format 6: bit DERIVE_REG_* set for each code region with unexplained or missing words (the loose tier's region gate) */
     uint64_t load_key;
     uint16_t ext[DERIVE_MAXEXT][2];     /* S2DEX: { handler pc, kind } */

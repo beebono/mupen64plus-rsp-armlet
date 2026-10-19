@@ -375,9 +375,10 @@ int main(void)
         r.gen204 = 0;
         r.clip204 = 1;
         r.zex = 1;
+        r.bz_w = 1;
         ucache_from_rec(&x, &r);
         ucache_to_rec(&x, &back);
-        CHECK(back.gen204 == 0 && back.clip204 == 1 && back.zex == 1, "gen204 / clip204 / zex round-trip through an entry");
+        CHECK(back.gen204 == 0 && back.clip204 == 1 && back.zex == 1 && back.bz_w == 1, "gen204 / clip204 / zex / bz_w round-trip through an entry");
     }
     {                                                   /* the record of an F3D build (handler pcs, layout, masks, the attributes) survives the entry, with its family */
         struct derive_rec r, back;

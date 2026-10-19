@@ -305,6 +305,7 @@ void ucache_from_rec(struct ucache_entry *e, const struct derive_rec *r)
     e->clip204 = r->clip204;
     e->zex = r->zex;
     e->bz_z = r->bz_z;
+    e->bz_w = r->bz_w;
     e->load_key = r->load_key;
     e->n_ext = r->n_ext < DERIVE_MAXEXT ? r->n_ext : DERIVE_MAXEXT;
     for (unsigned k = 0; k < e->n_ext; k++) {
@@ -335,6 +336,7 @@ void ucache_to_rec(const struct ucache_entry *e, struct derive_rec *r)
     r->clip204 = UMUT(460, e->clip204, 0);
     r->zex = e->zex;
     r->bz_z = e->bz_z;
+    r->bz_w = UMUT(461, e->bz_w, 0);
     r->load_key = e->load_key;
     r->n_ext = (uint8_t)(e->n_ext < DERIVE_MAXEXT ? e->n_ext : DERIVE_MAXEXT);
     for (unsigned k = 0; k < r->n_ext; k++) {

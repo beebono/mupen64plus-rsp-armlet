@@ -37,7 +37,7 @@ enum { LY_MV, LY_P, LY_MVP, LY_PERSP_NORM, LY_VIEWPORT_SCALE, LY_VIEWPORT_TRANS,
 struct derive_rec {
     const char *name;
     uint8_t fam;
-    uint8_t gen204, clip204, zex, bz_z;
+    uint8_t gen204, clip204, zex, bz_z, bz_w;
     uint8_t n_ext;
     uint8_t rej_flags;          /* f2_layout.rej_flags: the Rej dialect's variant bits (REJ_YQ ...; derived by vote among the Rej references, else 0) */
     uint32_t reject_mask;

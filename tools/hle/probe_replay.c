@@ -334,7 +334,7 @@ int main(int argc, char **argv)
                     m[0xff4 >> 2] = 8;
                 }
                 put_be(DLA, (const uint8_t[]){ 0xdf, 0, 0, 0, 0, 0, 0, 0 }, 8);
-                W.sp_pc = 0x80;
+                W.sp_pc = 0;
                 {                                               /* $1 = the OSTask header, as the boot code leaves it (the F3DEX 1.x start-up code reads the task through it) */
                     static PrspNativeSnap sn;
                     prsp_native_save(&sn);

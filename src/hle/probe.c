@@ -1143,6 +1143,7 @@ static void first_sight(struct armlet_ctx *c, struct pair *p, const struct armle
         /* test builds: deliberate errors in the record (the probe has to fail) */
         p->dr.rec.reject_mask = PMUT(340, p->dr.rec.reject_mask, p->dr.rec.reject_mask ^ 0xc0);
         p->dr.rec.bz_z = (uint8_t)PMUT(341, p->dr.rec.bz_z, !p->dr.rec.bz_z);
+        p->dr.rec.bz_w = (uint8_t)PMUT(354, p->dr.rec.bz_w, !p->dr.rec.bz_w);
         p->dr.rec.pc[PC_TRI1] = PMUT(342, p->dr.rec.pc[PC_TRI1], p->dr.rec.pc[PC_TRI1] + 8);
         p->dr.rec.zex = (uint8_t)PMUT(343, p->dr.rec.zex, !p->dr.rec.zex);
         p->dr.rec.lay[LY_OUT_BYTES] = PMUT(344, p->dr.rec.lay[LY_OUT_BYTES], p->dr.rec.lay[LY_OUT_BYTES] - 8);

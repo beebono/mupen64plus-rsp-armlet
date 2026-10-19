@@ -100,6 +100,7 @@ void dbuild_rec_of(const struct hle_ucode *u, struct derive_rec *r)
     r->clip204 = (uint8_t)b->clip204;
     r->zex = (uint8_t)b->zex;
     r->bz_z = (uint8_t)b->bz_z;
+    r->bz_w = (uint8_t)b->bz_w;
     r->reject_mask = b->reject_mask;
     r->load_key = b->load_key;
     if (b->ext)
@@ -130,7 +131,7 @@ int dbuild_rec_equal(const struct derive_rec *a, const struct derive_rec *b, con
     CMP(clip_mask, "clip_mask") CMP(culldl_mask, "culldl_mask")
     CMP(fam, "fam") CMP(non, "non") CMP(dlx, "dlx") CMP(culldl_off, "culldl_off")
     CMP(rej_flags, "rej_flags")
-    CMP(gen204, "gen204") CMP(clip204, "clip204") CMP(zex, "zex") CMP(bz_z, "bz_z") CMP(reject_mask, "reject_mask") CMP(load_key, "load_key") CMP(n_ext, "n_ext")
+    CMP(gen204, "gen204") CMP(clip204, "clip204") CMP(zex, "zex") CMP(bz_z, "bz_z") CMP(bz_w, "bz_w") CMP(reject_mask, "reject_mask") CMP(load_key, "load_key") CMP(n_ext, "n_ext")
 #undef CMP
     for (k = 0; k < a->n_ext; k++) {
         unsigned q, found = 0;
@@ -423,6 +424,7 @@ int dbuild_make(struct dbuild *d, uint64_t text_id, const struct derive_result *
     d->b.clip204 = rec->clip204;
     d->b.zex = rec->zex;
     d->b.bz_z = rec->bz_z;
+    d->b.bz_w = rec->bz_w;
     d->b.reject_mask = rec->reject_mask;
     d->b.load_key = rec->load_key;
     d->b.lay = &d->lay;

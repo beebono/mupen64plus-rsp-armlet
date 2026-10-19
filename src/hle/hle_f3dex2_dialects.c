@@ -91,5 +91,10 @@ static const struct f3dex2_build l_b_ex2_207n = {
     .head = 0x18c, .copy = 0x208, .sync = 0x20c, .segcopy = 0x218, .ef = 0x238, .ed = 0x244, .tri1 = 0x7b4, .tri2 = 0x7ac, .vtx = 0x4f0,
     .mtx = 0x0f0, .geom = 0x1d0, .enddl = 0x1e4, .half2 = 0x1f8, .modvtx = 0xc78, .culldl = 0xc38, .branchz = 0xc60, .reject_mask = MUT(319, 0x70b0, 0x7070), .load_key = 0xa8d17cd78a5b4e14ull };
 HLE_UCODE(l_ex2_d8bd) = { .id = 0xd8bde2727be1cf28ull, .name = "F3DEX.NoN 2.07 (Tonic Trouble)", .fam = &f3dex2_fam, .fam_data = &l_b_ex2_207n, F3DEX2_DEAD };
+/* F3DZEX.NoN fifo 2.08I (Majora's Mask): Paper Mario's 2.08 text plus four words: the init `vor`, the NoN reject mask (twice) and the G_BRANCH_Z source `lh 6(vertex)` with zex = 0 (bz_w) */
+static const struct f3dex2_build l_b_mm = {
+    .head = 0x194, .copy = 0x210, .sync = 0x214, .segcopy = 0x220, .ef = 0x240, .ed = 0x24c, .tri1 = 0xa44, .tri2 = 0xa3c, .vtx = 0x780,
+    .mtx = 0x0f0, .geom = 0x1d8, .enddl = 0x1ec, .half2 = 0x200, .modvtx = 0xf08, .culldl = 0xec8, .branchz = 0xef0, .bz_w = 1, .reject_mask = 0x70b0, .load_key = 0xc9efea08ae04999bull };
+HLE_UCODE(l_mm) = { .id = 0x1c724a38139c0669ull, .name = "F3DZEX.NoN fifo 2.08I (Majora's Mask)", .fam = &f3dex2_fam, .fam_data = &l_b_mm, F3DEX2_DEAD };
 
 #endif

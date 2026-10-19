@@ -982,7 +982,7 @@ static int run_loop(struct f3 *f, int *handover)
             if (MUT(223, vidx_bad(w0), 0))
                 return hle_decline(t, "G_BRANCH_Z with an unusual vertex number");
             unsigned vs = hle_dm16(t, F2_VTAB + (w0 & 0xfff));
-            uint32_t z = b->zex && MUT(259, !b->gen204, 1) && MUT(246, 1, 0) && MUT(317, !b->bz_z, 1) ? (uint32_t)(int32_t)(int16_t)hle_dm16(t, vs + 6) : hle_dm32(t, vs + 0x1c);   /* F3DZEX compares the integer part of the clip w (`lh 6(vertex)`), the others (F3DEX2 2.04 / 2.04H, which have the `zex` triangle constants, too) the screen z */
+            uint32_t z = (b->zex && MUT(259, !b->gen204, 1) && MUT(246, 1, 0) && MUT(317, !b->bz_z, 1)) || MUT(321, b->bz_w, 0) ? (uint32_t)(int32_t)(int16_t)hle_dm16(t, vs + 6) : hle_dm32(t, vs + 0x1c);   /* F3DZEX compares the integer part of the clip w (`lh 6(vertex)`), the others (F3DEX2 2.04 / 2.04H, which have the `zex` triangle constants, too) the screen z */
             if ((int32_t)(z - w1) < 0) {                /* a branch (no stack) to the address G_RDPHALF_1 left at 0xd8 */
                 if (hle_cmd(t, LATCH_K_BRZ))
                     return HLE_DECLINE;

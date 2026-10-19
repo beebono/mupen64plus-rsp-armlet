@@ -44,6 +44,7 @@ class Rec:
         self.gen204 = 0
         self.clip204 = 0    # the clipper's reciprocal flavour (2.04: VABS of the integer part), decided by the clip overlay's vector words alone
         self.zex = 0
+        self.bz_w = 0       # G_BRANCH_Z reads the clip w (lh 6) although zex is 0
         self.bz_z = 0       # zex build whose G_BRANCH_Z still reads the screen z (lw 28), not the clip w (lh 6)
         self.reject_mask = 0
         self.load_key = None
@@ -65,6 +66,7 @@ class Rec:
         out["clip204"] = self.clip204
         out["zex"] = self.zex
         out["bz_z"] = self.bz_z
+        out["bz_w"] = self.bz_w
         out["reject_mask"] = self.reject_mask
         out["load_key"] = self.load_key
         out["lay.rej_flags"] = self.rej_flags
@@ -115,6 +117,7 @@ def load_f2_records(T, C):
             r.clip204 = int(b.get("clip204", 0))
             r.zex = int(b.get("zex", 0))
             r.bz_z = int(b.get("bz_z", 0))
+            r.bz_w = int(b.get("bz_w", 0))
             r.reject_mask = int(b.get("reject_mask", 0))
             r.load_key = b.get("load_key")
             rf = lay.get("rej_flags", 0)
@@ -891,7 +894,8 @@ def apply_rules(res, U, prim):
         if d["cls"] == isa.C_MEM and (d["name"], d["imm"]) in (("lh", 6), ("lw", 28)):
             src = (d["name"], d["imm"])
     rec.bz_z = 1 if rec.zex and not rec.gen204 and src == ("lw", 28) else 0
-    want = ("lh", 6) if rec.zex and not rec.gen204 and not rec.bz_z else ("lw", 28)
+    rec.bz_w = 1 if src == ("lh", 6) and not (rec.zex and not rec.gen204) else 0
+    want = ("lh", 6) if (rec.zex and not rec.gen204 and not rec.bz_z) or rec.bz_w else ("lw", 28)
     for j in sorted(res.x):
         if j in bz:
             d = isa.decode(U.img.w[j])

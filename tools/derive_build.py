@@ -147,6 +147,8 @@ def fmt_f2_record(reg, res, U, name, ident):
         fs.append(".zex = 1")
     if rec.bz_z:
         fs.append(".bz_z = 1")
+    if rec.bz_w:
+        fs.append(".bz_w = 1")
     fs.append(".reject_mask = %s" % hx(rec.reject_mask, 4))
     if lay_name:
         fs.append(".lay = &%s" % lay_name)
