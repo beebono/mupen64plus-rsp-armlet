@@ -1,10 +1,12 @@
 #!/bin/bash
 # Desktop run of the equivalence harness (x86_64, offscreen, memory-capped scope). The build, plugin and run list are the same as on the devices.
 #   tools/equiv/desk.sh RUN...      RUN = TAG|BUILD|ROM|KIND|LAST, ROM relative to resources/romsets (e.g. test-romset/Super Mario 64.z64)
-# Env: ARMLET_SO (another armlet build, e.g. a mutated one), CORE_DIR (built mupen64plus-core projects/unix), CONSOLE (mupen64plus-ui-console binary), FOIR_SO (x86_64 foir plugin, NEON=0 build),
+# Env: ARMLET_SO (another armlet build, e.g. a mutated one), CORE_DIR (dir with libmupen64plus.so.2), CONSOLE (ui-inn binary), FOIR_SO (x86_64 foir plugin, NEON=0 build),
 #      X (work dir, default test-output/equiv/desk), MEMMAX (default 2G). Needs out/native/{mupen64plus-rsp-armlet.so,ref,tools} (scripts/build.sh, build-tools.sh).
 set -e
 R=$(cd "$(dirname "$0")/../.." && pwd)
+# default CORE_DIR / CONSOLE / FOIR_SO: the workspace's resources/toolchains/x86-64/build.sh
+[ -n "$CORE_DIR" ] || [ ! -f "$R/../../../resources/toolchains/x86-64/out/env.sh" ] || . "$R/../../../resources/toolchains/x86-64/out/env.sh"
 : "${CORE_DIR:?}" "${CONSOLE:?}" "${FOIR_SO:?}"
 X=${X:-$R/test-output/equiv/desk}; N=${NATIVE_OUT:-$R/out/native}
 "$R/tools/equiv/stamp.sh" check "$N/tools" || exit 1

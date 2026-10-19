@@ -8,5 +8,5 @@ mkdir -p "$OUT/home/cache" "$OUT/cfg" "$OUT/dump"
 export SDL_VIDEODRIVER=offscreen SDL_AUDIODRIVER=dummy HOME=$OUT/home XDG_DATA_HOME=$OUT/home XDG_CONFIG_HOME=$OUT/home XDG_CACHE_HOME=$OUT/home/cache
 export UDUMP_TARGET=$PRSP_SO UDUMP_DIR=$OUT/dump FOIR_THREADS=2
 systemd-run --user --scope -q -p MemoryMax=2G -p MemorySwapMax=0 timeout -s KILL "$SECS" \
-  "$CONSOLE" --corelib "$CORE_DIR/libmupen64plus.so.2" --datadir "$CORE_DIR/../../data" --configdir "$OUT/cfg" --plugindir "$(dirname "$UD_SO")" \
+  "$CONSOLE" --corelib "$CORE_DIR/libmupen64plus.so.2" --datadir "${DATADIR:-$CORE_DIR/../../data}" --configdir "$OUT/cfg" --plugindir "$(dirname "$UD_SO")" \
   --gfx "$FOIR_SO" --rsp "$UD_SO" --audio dummy --input "$INPUT_SO" --noosd --set "Core[RandomizeInterrupt]=False" --emumode 2 "$ROM" > "$OUT/log" 2>&1 || true
