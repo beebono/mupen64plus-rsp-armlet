@@ -188,7 +188,7 @@ def tri_block(t, nv, nent, fog, ntri, clip):
 def scene(t):
     r = t.r
     g = 0x6 if r.random() < 0.92 else 0               # (the game draws shaded, textured triangles; the others decline by design)
-    for bit, p in ((0x1, 0.5), (0x200, 0.5), (0x2000, 0.4), (0x10000, 0.25), (0x1000, 0.03), (0x800000, 0.5)):
+    for bit, p in ((0x1, 0.5), (0x200, 0.5), (0x2000, 0.4), (0x10000, 0.25), (0x1000, float(os.environ.get("SYN_B12", "0.03"))), (0x800000, 0.5)):
         if r.random() < p:
             g |= bit
     fog = bool(g & 0x10000)

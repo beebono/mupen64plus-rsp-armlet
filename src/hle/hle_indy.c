@@ -872,7 +872,7 @@ static int tri_draw(struct indy *f, const unsigned a[3], unsigned ra)
                         return hle_decline(t, "a deferred list changed a vertex record");
         } else if ((rc = call_deferred(f, 0x2ac)) != HLE_OK)
             return rc;
-        if ((REG(f, R_S5) & 0x1002) == 0x1002)         /* (bit 12 with textures: the texture coordinates are not scaled and their fractions are what the vector registers hold) */
+        if ((REG(f, R_S5) & 0x1002) == 0x1002)         /* (bit 12 with textures: the texture coordinates are not scaled and their fractions and w are lanes the vector registers carry from the vertex load and the earlier triangles: ucode-indy.md section 7) */
             return hle_decline(t, "a textured triangle with geometry mode bit 12");
     }
     hle_st8(t, SKIP, 0);

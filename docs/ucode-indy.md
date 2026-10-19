@@ -79,6 +79,18 @@ Lighting (overlay 27, op 0x19 with a non-negative factor): section 3 of hle_indy
 
 ## 7. What stays on the JIT
 
-The microcode keeps junk in vector registers between commands and the output depends on it in two cases: a **textured triangle with geometry mode bit 12** (the texture coordinates are not scaled and their
-fractions and w come from v9 / v10 / v22 / v23 as the previous triangle left them) and a **quad without texture words** (bit 9 clear: the fourth vertex's st word is v0's bytes 12 .. 15). Those tasks decline
-(74 % / 5 % of the declines in a 3700-frame run); the clipper declines when it discards a triangle or fog is on; unknown overlay images (hashes in hle_indy.c) and ops other than the table above decline.
+The microcode keeps junk in vector registers between commands and the output depends on it in two cases: a **textured triangle with geometry mode bit 12** and a **quad without texture words**. Those tasks decline
+(3700 frames, 1984 tasks: 746 native, 1085 declined for bit 12, 147 for commands the loop lacks, which include the quads, 5 for a triangle the clipper discards); the clipper also declines with fog on; unknown
+overlay images (hashes in hle_indy.c) and ops other than the table above decline.
+
+**Bit 12** (pc 0x3fc jumps to 0x470 and skips the scaling at 0x400 .. 0x46c): the s, t of the three vertices are the vertex records' words (LLV at 0x3ec .. 0x3f4), their fractions and w are lanes of v10 (0-2, 4-6, written at
+0x38c), v9 (2, 6; 0x3ac), v22 (2) and v23 (0-2; 0xa48 / 0xa4c in the reciprocal routine at 0xa08). The writers are in the same triangle, **their operands are not**: the lanes depend on v7 / v8 lanes 0, 2, 4, 6, 7, on v13,
+v14, v15 lanes 2 and 6 and on v26 lanes 0, 2 and v27 lanes 0, 2 (measured by changing one lane of a random vector state at pc 0x1d8 and comparing the triangle's output; the lanes of the reciprocal pair, the rows the
+previous triangle's gradients left in v13 / v14 / v15, the Newton step of the area reciprocal). In the game: v15 lane 6 at the entry is often v9 lane 2 of the previous triangle; poisoning v13 / v14 lane 6 at the entry of every
+bit-12 triangle (interpreter, 1200 frames) changes the RSP hash stream of every task that has one, not the state stream, pictures or audio (w is ignored by the RDP). The state is local to a task: poisoning the whole vector
+unit after every task changes nothing, and a vertex load (op 0x01 type 1, pc 0x834) sets those lanes from its own matrix rows (v8, v13 .. v15), vertices (v7) and the saturated reciprocal lanes (v26, v27) whatever they were. A
+native bit-12 triangle therefore has to carry about 19 lanes from the vertex load through every triangle of the task (each full triangle shifts v7 : v8 right by 13 and replaces the rest from its own gradients); a clip, the
+lighting or the texture generation between them would have to be modelled or end the tracking.
+
+**A quad without texture words** (bit 9 clear): the fourth vertex's st word is v0 lanes 6, 7, which the previous triangle's VCR at 0x37c wrote (or the texgen overlay's LQV at 0xdfc, the lights' 0x9f4, the clipper's 0xea0): the same
+kind of carried state.

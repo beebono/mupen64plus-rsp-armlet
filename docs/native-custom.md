@@ -40,7 +40,7 @@ for perturbed and synthetic snapshots) and `armlet_hle_harness_jit`.
 |---|---|---|
 | Diddy Kong Racing | all 1663 tasks (and 3903 of 3904 in 9000 frames; the last task of a run is not counted) | nothing in the scripted run; see ucode-rare.md section 8 for what would decline |
 | Jet Force Gemini | all 1791 tasks (4415 of 4416 in 9000 frames) | the same |
-| Indiana Jones and the Infernal Machine | 746 of 1984 tasks (38 %; 2445 of 5184 in 9000 frames, 47 %) | by design: a textured triangle with geometry mode bit 12 (1085 tasks in 3700 frames), commands the loop does not implement (147), a triangle the clipper discards (5), clipping with fog, overlay images that were not seen (later scenes: 1322 more in 9000 frames) and the corners of ucode-indy.md section 7 |
+| Indiana Jones and the Infernal Machine | 746 of 1984 tasks (38 %; 2445 of 5184 in 9000 frames, 47 %) | by design: a textured triangle with geometry mode bit 12 (1085 tasks in 3700 frames; its junk lanes are carried vector state, ucode-indy.md section 7), commands the loop does not implement (147), a triangle the clipper discards (5), clipping with fog, overlay images that were not seen (later scenes: 1322 more in 9000 frames) and the corners of ucode-indy.md section 7 |
 
 Indiana Jones's microcode keeps junk in vector registers between commands and the output depends on it in two cases; those tasks decline instead of guessing, and the front-end is exact for the rest.
 Resident Evil 2: see above, nothing here.
