@@ -15,6 +15,9 @@
 
 #include "probe_cases.h"
 
+/* The case generators stay out of line: inlined into one probe_case_make_*, GCC 15+ -O3 spends minutes completely peeling their short loops. */
+#define NOINLINE __attribute__((noinline))
+
 struct rng {
     uint64_t s;
 };
@@ -139,7 +142,7 @@ static void sample3(struct rng *r, unsigned v0, unsigned n, unsigned *a, unsigne
 
 static void tri1(struct dl *d, unsigned a, unsigned b, unsigned c) { cmd(d, (0x05u << 24) | (a * 2 << 16) | (b * 2 << 8) | c * 2, 0); }
 
-static void geometry_cases(struct probe_case *c, struct dl *d, struct rng *r, unsigned kind)
+NOINLINE static void geometry_cases(struct probe_case *c, struct dl *d, struct rng *r, unsigned kind)
 {
     static const uint32_t shades[3] = { 0, 0x4, 0x4 | 0x200000 };
     static const uint32_t culls[5] = { 0, 0, 0x400, 0x200, 0x600 };
@@ -243,7 +246,7 @@ static void geometry_cases(struct probe_case *c, struct dl *d, struct rng *r, un
     cmd(d, 0xdf000000, 0);
 }
 
-static void misc_case(struct probe_case *c, struct dl *d, struct rng *r)
+NOINLINE static void misc_case(struct probe_case *c, struct dl *d, struct rng *r)
 {
     static const double sc[3] = { 1, 0.5, 1.0 / 8 };
     static const int tz[2] = { 0x1ff, 0 };
@@ -354,7 +357,7 @@ static void misc_case(struct probe_case *c, struct dl *d, struct rng *r)
     cmd(d, 0xdf000000, 0);
 }
 
-static void lit_case(struct probe_case *c, struct dl *d, struct rng *r)
+NOINLINE static void lit_case(struct probe_case *c, struct dl *d, struct rng *r)
 {
     static const uint32_t tg[3] = { 0, 0x40000, 0x40000 | 0x80000 };
     static const uint32_t fg[2] = { 0, 0x10000 };
@@ -416,7 +419,7 @@ static void lit_case(struct probe_case *c, struct dl *d, struct rng *r)
     cmd(d, 0xdf000000, 0);
 }
 
-static void mtx_case(struct probe_case *c, struct dl *d, struct rng *r)
+NOINLINE static void mtx_case(struct probe_case *c, struct dl *d, struct rng *r)
 {
     static const uint32_t gm1[2] = { 0, 0x4 };
     static const int tz[2] = { 0x1ff, 0 };
@@ -448,7 +451,7 @@ static void mtx_case(struct probe_case *c, struct dl *d, struct rng *r)
 
 /* Triangles that lie entirely beyond one clipping plane, and the display-list culls over them: the reject mask decides whether they are dropped at once, so a wrong mask gives another RDP
  * stream whatever the seed. The projection scales the model coordinates down by 8 (w = 1): a coordinate of +-100 is outside, the others (+-3) inside; in the second variant w is negative. */
-static void rej_case(struct probe_case *c, struct dl *d, struct rng *r, unsigned seed)
+NOINLINE static void rej_case(struct probe_case *c, struct dl *d, struct rng *r, unsigned seed)
 {
     static const uint32_t gm1[2] = { 0, 0x4 };
     double m[16] = { 0.125, 0, 0, 0, 0, 0.125, 0, 0, 0, 0, 0.125, 0, 0, 0, 0, 1 };
@@ -516,7 +519,7 @@ static void rej_case(struct probe_case *c, struct dl *d, struct rng *r, unsigned
 
 /* G_BRANCH_Z against thresholds between the clip w (an integer, here 1) and the screen z (16.16, here far above): the build either reads the one or the other, and the branch is taken for some
  * of the thresholds with the one only. A triangle behind each branch and a list at the target show which way it went. */
-static void bz_case(struct probe_case *c, struct dl *d, struct rng *r, unsigned seed)
+NOINLINE static void bz_case(struct probe_case *c, struct dl *d, struct rng *r, unsigned seed)
 {
     static const uint32_t thr[10] = { 0, 1, 2, 5, 0x100, 0x10000, 0x20000, 0x1ff0000, 0x7fffffff, 0xffff0000 };
     static const int tz[2] = { 0x1ff, 0x100 };
@@ -649,7 +652,7 @@ static void s2_head(struct dl *d, struct rng *r)
     cmd(d, 0x0b000000 | CHOICE(r, ((const unsigned[]){ 0, 8 })), randrange(r, 1u << 8) | (randrange(r, 4) << 3) | (randrange(r, 8) << 4));
 }
 
-static void s2_case(struct probe_case *c, struct dl *d, struct rng *r, unsigned kind)
+NOINLINE static void s2_case(struct probe_case *c, struct dl *d, struct rng *r, unsigned kind)
 {
     uint8_t o[48];
     unsigned off = 0x400, n, i;
@@ -804,7 +807,7 @@ static void f1_culldl(struct dl *d, const struct probe_f1ops *o, unsigned a, uns
         cmd(d, (0xbeu << 24) | (a * 2), b * 2);
 }
 
-static void f1_geometry(struct probe_case *c, struct dl *d, struct rng *r, unsigned kind, const struct probe_f1ops *o)
+NOINLINE static void f1_geometry(struct probe_case *c, struct dl *d, struct rng *r, unsigned kind, const struct probe_f1ops *o)
 {
     static const uint32_t shades[3] = { 0, G1_SHADE, G1_SHADE | G1_SMOOTH };
     static const uint32_t culls[5] = { 0, 0, G1_CBACK, G1_CFRONT, G1_CFRONT | G1_CBACK };
@@ -910,7 +913,7 @@ static void f1_sub(struct probe_case *c, unsigned off, const struct dl *s)
     put(c, off, t, 8 * k);
 }
 
-static void f1_misc(struct probe_case *c, struct dl *d, struct rng *r, const struct probe_f1ops *o)
+NOINLINE static void f1_misc(struct probe_case *c, struct dl *d, struct rng *r, const struct probe_f1ops *o)
 {
     static const double sc[3] = { 1, 0.5, 1.0 / 8 };
     static const int tz[2] = { 0x1ff, 0 };
@@ -1028,7 +1031,7 @@ static void f1_misc(struct probe_case *c, struct dl *d, struct rng *r, const str
         f1_enddl(d);
 }
 
-static void f1_lit(struct probe_case *c, struct dl *d, struct rng *r, const struct probe_f1ops *o)
+NOINLINE static void f1_lit(struct probe_case *c, struct dl *d, struct rng *r, const struct probe_f1ops *o)
 {
     static const uint32_t tg[3] = { 0, G1_TEXGEN, G1_TEXGEN | G1_TEXLIN };
     static const uint32_t fg[2] = { 0, G1_FOG };
@@ -1088,7 +1091,7 @@ static void f1_lit(struct probe_case *c, struct dl *d, struct rng *r, const stru
     f1_enddl(d);
 }
 
-static void f1_mtxcase(struct probe_case *c, struct dl *d, struct rng *r, const struct probe_f1ops *o)
+NOINLINE static void f1_mtxcase(struct probe_case *c, struct dl *d, struct rng *r, const struct probe_f1ops *o)
 {
     static const int tz[2] = { 0x1ff, 0 };
     static const uint16_t sm[5] = { 0, 1, 0xffff, 0x8000, 0x7fff };
@@ -1122,7 +1125,7 @@ static void f1_mtxcase(struct probe_case *c, struct dl *d, struct rng *r, const 
 /* rej_case in the F3DEX 1.x GBI: groups of three vertices beyond each plane; the near-plane group is rejected by a mask with the near bits (0x7070) and clipped without them (NoN's 0x7030).
  * Group 7 spreads x and y over both sides and puts z far in front (z < -|w|): with w < 0 (the second variant) a coordinate always sets one of its two compare bits, so no x or y bit and (z < w)
  * no z-far bit is common to the three, and only bit 0x40 is: the NoN builds' sign of w (the EX builds': z <= -w), which G_CULLDL tests with the build's mask (0x7030 leaves it out). */
-static void f1_rej(struct probe_case *c, struct dl *d, struct rng *r, unsigned seed, const struct probe_f1ops *o)
+NOINLINE static void f1_rej(struct probe_case *c, struct dl *d, struct rng *r, unsigned seed, const struct probe_f1ops *o)
 {
     double m[16] = { 0.125, 0, 0, 0, 0, 0.125, 0, 0, 0, 0, 0.125, 0, 0, 0, 0, 1 }, mv[16];
     uint8_t buf[64], vs[16 * 32];
@@ -1191,7 +1194,7 @@ static void f1_rej(struct probe_case *c, struct dl *d, struct rng *r, unsigned s
 }
 
 /* G_BRANCH_Z (when the build has it) against thresholds around the vertices' screen z */
-static void f1_bz(struct probe_case *c, struct dl *d, struct rng *r, unsigned seed, const struct probe_f1ops *o)
+NOINLINE static void f1_bz(struct probe_case *c, struct dl *d, struct rng *r, unsigned seed, const struct probe_f1ops *o)
 {
     static const uint32_t thr[10] = { 0, 1, 2, 5, 0x100, 0x10000, 0x20000, 0x1ff0000, 0x7fffffff, 0xffff0000 };
     static const int tz[2] = { 0x1ff, 0x100 };
@@ -1319,7 +1322,7 @@ static void f3_common(struct probe_case *c, struct dl *d, struct rng *r, const s
 /* a vertex batch's size and first slot: up to 16 per command (the count is a nibble) inside the build's slots */
 static unsigned f3_maxn(const struct probe_f3ops *o) { return o->nslots < 16 ? o->nslots : 16; }
 
-static void f3_geometry(struct probe_case *c, struct dl *d, struct rng *r, unsigned kind, const struct probe_f3ops *o)
+NOINLINE static void f3_geometry(struct probe_case *c, struct dl *d, struct rng *r, unsigned kind, const struct probe_f3ops *o)
 {
     static const uint32_t shades[3] = { 0, G1_SHADE, G1_SHADE | G1_SMOOTH };
     static const uint32_t culls[5] = { 0, 0, G1_CBACK, G1_CFRONT, G1_CFRONT | G1_CBACK };
@@ -1428,7 +1431,7 @@ static void f3_geometry(struct probe_case *c, struct dl *d, struct rng *r, unsig
     f3_enddl(d);
 }
 
-static void f3_misc(struct probe_case *c, struct dl *d, struct rng *r, const struct probe_f3ops *o)
+NOINLINE static void f3_misc(struct probe_case *c, struct dl *d, struct rng *r, const struct probe_f3ops *o)
 {
     static const double sc[3] = { 1, 0.5, 1.0 / 8 };
     static const int tz[2] = { 0x1ff, 0 };
@@ -1539,7 +1542,7 @@ static void f3_misc(struct probe_case *c, struct dl *d, struct rng *r, const str
         f3_enddl(d);
 }
 
-static void f3_lit(struct probe_case *c, struct dl *d, struct rng *r, const struct probe_f3ops *o)
+NOINLINE static void f3_lit(struct probe_case *c, struct dl *d, struct rng *r, const struct probe_f3ops *o)
 {
     static const uint32_t tg[3] = { 0, G1_TEXGEN, G1_TEXGEN | G1_TEXLIN };
     static const uint32_t fg[2] = { 0, G1_FOG };
@@ -1606,7 +1609,7 @@ static void f3_lit(struct probe_case *c, struct dl *d, struct rng *r, const stru
     f3_enddl(d);
 }
 
-static void f3_mtxcase(struct probe_case *c, struct dl *d, struct rng *r, const struct probe_f3ops *o)
+NOINLINE static void f3_mtxcase(struct probe_case *c, struct dl *d, struct rng *r, const struct probe_f3ops *o)
 {
     static const int tz[2] = { 0x1ff, 0 };
     static const uint16_t sm[5] = { 0, 1, 0xffff, 0x8000, 0x7fff };
@@ -1640,7 +1643,7 @@ static void f3_mtxcase(struct probe_case *c, struct dl *d, struct rng *r, const 
 /* rej_case in Fast3D's GBI: groups of three vertices beyond each plane (the build's 16 slots: two loads), each drawn both ways and culled in a list of its own with an RDP witness behind the cull
  * (a wrong cull mask ends the list before it); the near-plane group is rejected by a mask with the near bits (0x7070) and clipped without them (Pilotwings' 0x7030). The second variant puts w < 0;
  * then the spread vertices, in the second slots of three pairs, have only bit 0x40 in common: Pilotwings' sign of w (SM64's: z <= -w), which G_TRI1 and G_CULLDL test with the build's masks. */
-static void f3_rej(struct probe_case *c, struct dl *d, struct rng *r, unsigned seed, const struct probe_f3ops *o)
+NOINLINE static void f3_rej(struct probe_case *c, struct dl *d, struct rng *r, unsigned seed, const struct probe_f3ops *o)
 {
     static const int spread[3][3] = { { 100, -100, -100 }, { -100, 100, -100 }, { 100, 100, -100 } };
     double m[16] = { 0.125, 0, 0, 0, 0, 0.125, 0, 0, 0, 0, 0.125, 0, 0, 0, 0, 1 }, mv[16];
