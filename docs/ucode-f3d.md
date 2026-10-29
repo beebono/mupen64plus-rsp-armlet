@@ -246,7 +246,7 @@ flag lights. MOVEMEM does not set the "lights stale" flag. [verified: all indice
 | 06 | 0x160 | G_MW_SEGMENT: seg table; O = 4*segment -> D32[0x160+4*seg] := w1 (stored raw, not masked) |
 | 08 | 0x330 | G_MW_FOG: D16[0x330] = fm (w1>>16), D16[0x332] = fo (w1&0xffff) |
 | 0a | 0x1f0 | G_MW_LIGHTCOL: O = 0x20*(n-1) (+4 for the second colour) -> light colour words at slot 0x1f0+... |
-| 0c | 0x420 | G_MW_POINTS: vertex buffer word write, O = vtx*40 + {0x10 rgba, 0x14 st, 0x18 xy, 0x1c z} |
+| 0c | 0x420 | G_MW_POINTS: vertex buffer word write, O = vtx*40 + {0x10 rgba, 0x14 st, 0x18 xy, 0x1c z} (gSPModifyVertex; Cruis'n USA writes st and xy of loaded vertices in every task; `tools/f3d/mksyn.py mwpoints`) |
 | 0e | 0x000 | G_MW_PERSPNORM index: stores at DMEM[O..], harmless (the real persp norm is op 0xb4) |
 | 10 | 0x000 | same (table entry 0) |
 
@@ -1801,7 +1801,7 @@ Minimum parameter set per build for a generic native path: the rows of 10.3.1/1.
   were not compared build against build; scratch addresses are in 10.3.2 but contents unverified. Same for the accumulator/flags/divide state at exit.
 - XBUS builds (mm, pwb): ring wrap at 0xde0 and the room check were not exercised (needs > 0x400 bytes of triangles in one list); DPC call chunking at
   buffer-full is unverified. Likewise FIFO wrap per build (only sm64's is in 4.2).
-- 2.0H builds with n > 16 per call (only the slot shift 16 was tested), more than 7 lights, G_MW_POINTS vertex writes, direct MP loads through MOVEMEM matrix indices
+- 2.0H builds with n > 16 per call (only the slot shift 16 was tested), more than 7 lights, direct MP loads through MOVEMEM matrix indices
   in family B, G_CULLDL in family B.
 - Which of the two Pilotwings images is used by which task; the second and third data segments of SSSV (0x36eb0, 0x37e70 with 2.0H strings; SSSV's F3D-looking banner is F3DEX 1.23) are other
   microcodes (not analysed). The Sprite2D variant is outside this document.

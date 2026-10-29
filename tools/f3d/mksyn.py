@@ -10,6 +10,8 @@
          culldl     G_CULLDL over vertices that only the clip ratio group flags (finds a wrong flag mask)
          popmtx     lit vertices before and after a G_POPMTX (finds a missing lights-stale flag)
          nested     calls five levels deep and a branch (the G_DL depth bookkeeping, the stack words)
+         mwpoints   G_MW_POINTS (gSPModifyVertex: Cruis'n USA) rewrites of a loaded vertex's colour, texture, screen and z words before the triangle
+         mwpoints-bad  a G_MW_POINTS offset past the vertex buffer (into the 2.0D command buffer: rewrites a pending G_TRI1): must be declined; mutation 238 runs it and differs
 """
 import struct, sys
 
@@ -133,6 +135,35 @@ def case(name):
         data[0x620] = bytes([0, 0, 0, 0, 0, 0, 0, 0, 0x7f, 0, 0, 0, 0, 0, 0, 0])
         data[0x630] = bytes([30, 30, 30, 0, 30, 30, 30, 0, 0, 0, 0, 0, 0, 0, 0, 0])
         data[0x580] = vtx(50, 40, 0, c=(0x40, 0x20, 0x60, 255)) + vtx(-40, 30, 0, c=(0x10, 0x70, 0x30, 255)) + vtx(0, -60, 0, c=(0x60, 0x60, 0x10, 255))
+    elif name in ("mwpoints", "mwpoints-bad"):
+        import os
+        d = dl
+        common(d, int(os.environ.get("MWG", "0x4"), 16))
+        d.cmd(0x01000040 | (0x02 << 16), BASE + 0x500)   # modelview load (identity)
+        d.cmd(0x01010040 | (0x02 << 16), BASE + 0x540)   # projection load (W = 1)
+        d.cmd(0x04000000 | (2 << 20) | 48, BASE + 0x580)  # G_VTX n=3 at slot 0
+        if name == "mwpoints":
+            slot = 1
+            fields = os.environ.get("MWF", "10,14,18,1c").split(",")         # (MWF: which of the four words to write, for narrowing a failure)
+            words = {"10": 0x20c0ff80, "14": (0x0100 << 16) | 0x0080, "18": ((200 * 4) << 16) | (90 * 4), "1c": 0x01800000}   # rgba; s, t; screen x, y (10.2); screen z
+            for fld in fields:
+                if fld:
+                    d.cmd(0xbc00000c | ((slot * 40 + int(fld, 16)) << 8), words[fld])
+        else:
+            # past the 16 slots, into the microcode's command buffer (2.0D: 0x6a0, 40 commands loaded at the start): w1 of the first G_TRI1 (command 9) := 0,
+            # so the RSP draws a degenerate triangle there while a front-end that took the command from RDRAM draws the real one
+            d.cmd(0xbc00000c | (((0x6a0 + 9 * 8 + 4) - 0x420) << 8), 0)
+        ntri = int(os.environ.get("MWT", "2"))
+        if ntri > 0:
+            d.cmd(0xbf000000, (0 << 24) | (0 << 16) | (10 << 8) | 20)           # G_TRI1 0 1 2
+        if ntri > 1:
+            d.cmd(0xbf000000, (0 << 24) | (20 << 16) | (10 << 8) | 0)           # and the other winding
+        d.cmd(0xb8000000, 0)
+        data[0x500] = mtx(IDENT)
+        p = IDENT[:]
+        p[15] = 1
+        data[0x540] = mtx(p)
+        data[0x580] = vtx(-60, -40, 0, 0, 0, c=(0xff, 0x20, 0x20, 255)) + vtx(70, -30, 0, 32, 32, c=(0x20, 0xff, 0x20, 255)) + vtx(0, 60, 0, 0, 32, c=(0x20, 0x20, 0xff, 255))
     else:
         sys.exit("unknown case " + name)
     data[0] = dl.bytes()

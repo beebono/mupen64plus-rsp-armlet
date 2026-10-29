@@ -40,9 +40,10 @@ static unsigned n_masks;
 static int sticky[MAX_MASK_UCODES];     /* masks stay in force once a graphics task of their ucode has run: the dead bytes it left in DMEM stay there for the tasks after it */
 static double cum_ms, last_log;
 static unsigned long calls;
-#define MAX_MARKS 16
+#define MAX_MARKS 4096
 static char *mark_files[MAX_MARKS];
 static int n_marks, next_mark;
+static double last_markchk;
 static RSP_INFO rinfo;
 static m64p_error (*p_start)(m64p_dynlib_handle, void *, void (*)(void *, int, const char *));
 static m64p_error (*p_stop)(void);
@@ -224,12 +225,15 @@ EXPORT unsigned int CALL DoRspCycles(unsigned int c)
         fprintf(lg, "%.3f %lu %.3f\n", now(CLOCK_BOOTTIME), calls, cum_ms);
         fflush(lg);
     }
-    while (next_mark < n_marks && !stat(mark_files[next_mark], &st)) {
-        if (lg) {
-            fprintf(lg, "MARK %lu %.3f %.3f %.3f\n", calls, cum_ms, now(CLOCK_THREAD_CPUTIME_ID) * 1e3, now(CLOCK_PROCESS_CPUTIME_ID) * 1e3);
-            fflush(lg);
+    if (next_mark < n_marks && b - last_markchk >= 0.002) {        /* a stat per call was 7 % of the emulation thread in a game with 600 RSP calls per frame; 2 ms late is a few calls */
+        last_markchk = b;
+        while (next_mark < n_marks && !stat(mark_files[next_mark], &st)) {
+            if (lg) {
+                fprintf(lg, "MARK %lu %.3f %.3f %.3f\n", calls, cum_ms, now(CLOCK_THREAD_CPUTIME_ID) * 1e3, now(CLOCK_PROCESS_CPUTIME_ID) * 1e3);
+                fflush(lg);
+            }
+            next_mark++;
         }
-        next_mark++;
     }
     return r;
 }

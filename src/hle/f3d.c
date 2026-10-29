@@ -735,8 +735,18 @@ static int f3d_run(struct hle_task *t, const struct hle_ucode *u)
             unsigned off = (w0 >> 8) & 0xffff;
             if (ii > 0x10 || (ii & 1))
                 return hle_decline(t, "G_MOVEWORD index outside the table");
-            if (MUT(238, (off & 3) || off > (ii == 10 ? 0x1fc : 0x3c), 0))     /* a game's offsets are words within the group (segments 0 .. 0x3c, the light colours up to the last light) */
-                return hle_decline(t, "G_MOVEWORD offset outside what a game writes");
+            {
+                /* a game's offsets are words within the group: segments 0 .. 0x3c, the light colours up to the last light, G_MW_POINTS
+                 * (gSPModifyVertex: Cruis'n USA) any word of the vertex buffer */
+                unsigned lim = ii == 0x0a ? 0x1fc : ii == 0x0c ? f3d_nslots(L) * F3D_VSTRIDE - 4 : 0x3c;
+                if (MUT(238, (off & 3) || off > lim, 0)) {
+                    static char why[96];
+                    snprintf(why, sizeof why, "G_MOVEWORD offset outside what a game writes (index %02x offset %04x)", ii, off);
+                    return hle_decline(t, why);
+                }
+                if (ii == 0x0c && hle_dm16(t, L->mw_tab + ii) != (unsigned)L->vtx_base)
+                    return hle_decline(t, "G_MW_POINTS table entry is not the vertex buffer");
+            }
             {
                 unsigned a = hle_dm16(t, L->mw_tab + ii) + ((w0 >> 8) & 0xffff);
                 st32u(t, a, w1);
