@@ -85,7 +85,7 @@ struct f3 {
     int cut;                        /* the hand-over is a G_DL to itself (PRSP_POLL_IDLE): the interpreter runs it to the JIT's idle cut, which ends the call */
     int lean;                       /* the external-effects mode: no DMA the effects do not need (the display list and the vertices are read from RDRAM, the overlays are loaded once at the end) */
     int ov0;                        /* the overlay IMEM held at the start */
-    int trace, watch;
+    int trace, watch, dump_imem;
     uint32_t nsrc;                  /* with nb != b: the address of the text it is loaded from (uc0 after the switch) */
     uint32_t uc0;                   /* the address of the text this run is for: OSTask.ucode at the start, the text address of the last G_LOAD_UCODE that switched builds */
     const struct hle_ucode *nu;     /* the hle_ucode of nb (its gate: hle_bind at the switch) */

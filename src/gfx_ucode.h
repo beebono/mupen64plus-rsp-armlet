@@ -26,6 +26,7 @@ struct armlet_gfx_native {
 
 /* Identifies the ucode of the task in DMEM. *is_new tells whether this id was seen for the first time (it was logged then). */
 const struct armlet_ucode_id *armlet_gfx_identify(const struct armlet_ctx *c, bool *is_new);
+const struct armlet_ucode_id *armlet_gfx_identify_continued(const struct armlet_ctx *c);     /* a call that continues a task: the task's identity, without the text compare */
 const struct armlet_gfx_native *armlet_gfx_native_find(uint64_t id);
 bool armlet_gfx_allowed(const struct armlet_config *cfg, uint64_t id);
 void armlet_gfx_reset(void);

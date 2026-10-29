@@ -966,6 +966,8 @@ Gauntlet Legends (F3DEX fifo 2.06 `0bbe`): `G_DL` to itself, the JIT's idle cut,
 Development switches: `HLE_CUT_VR=1` prints the vector registers, flags, accumulator and divide unit that differ at each cut in verify (not part of the result), `HLE_CUT_SREG_ALL=1` reports every scalar register that differs, `HLE_POISON_SEL` `x=8` is VCC and VCE only. Mutation numbers 481 to 487 are this feature's.
 
 
+2026-10-29, the per-call cost on the rgdsplus (613 calls per frame): a continuing call reuses the task's identity (no 4 KiB memcmp), `armlet_hle_find` caches its last hit, the F3DEX2 development switches are read once: 36.2 -> 33.2 ms per VI, screenshots identical, equivalence `ref` against `armlet` 3700 frames PASS (hash, state, 6 shots, audio; `scripts/build.sh ref native` first: a `ref` pairing built before the idle-poll policy cuts elsewhere and differs from call 21). The rest of the game's gain is the core's: `Core[RspResumeDelay]` and `Core[RspGfxTaskDelay]` (mupen64plus-pow2 README): 27.5 -> 49.8 drawn frames per second.
+
 ## S2DEX 1.x (2026-10-18; docs/ucode-s2dex1.md)
 
 - Kernels: `tools/hle/build_test_s2dex1.sh` and `test_s2dex1` compare each kernel (rect, rotated rect, BG 1-cycle, BG_COPY 1.06 / 1.07, sprite) with rsp2c translations of the microcode (`tools/hle/oracle/s1_*_gen.inc`, ROM-derived, git-ignored) on random inputs including stale vector registers; 0 differences.

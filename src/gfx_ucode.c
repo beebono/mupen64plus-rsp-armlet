@@ -133,6 +133,20 @@ static bool seen_add(uint64_t id)
     return true;
 }
 
+static const struct armlet_ucode_id *l_last;           /* the identity of the last call's task, for the calls that continue it */
+static uint32_t l_last_addr;
+
+const struct armlet_ucode_id *armlet_gfx_identify_continued(const struct armlet_ctx *c)
+{
+    /* a call that continues a task (SP_PC != 0): the microcode is in IMEM since the task started, so the identity is the task's whatever RDRAM holds now;
+     * no memcmp of the 4 KiB text (613 calls per frame in Gauntlet Legends) */
+    uint32_t addr = armlet_dmem32(c, ARMLET_TASK_UCODE) & RDRAM_MASK & ~3u;
+    bool is_new;
+    if (l_last && l_last_addr == addr)
+        return l_last;
+    return armlet_gfx_identify(c, &is_new);
+}
+
 const struct armlet_ucode_id *armlet_gfx_identify(const struct armlet_ctx *c, bool *is_new)
 {
     const unsigned char *rdram = c->rsp.RDRAM;
@@ -159,6 +173,8 @@ const struct armlet_ucode_id *armlet_gfx_identify(const struct armlet_ctx *c, bo
         if (l_slots[i].used && l_slots[i].addr == addr && l_slots[i].size == size) {
             if (!memcmp(l_slots[i].text, text, size)) {
                 *is_new = false;
+                l_last = &l_slots[i].u;
+                l_last_addr = addr;
                 return &l_slots[i].u;
             }
             s = &l_slots[i];                    /* same place, new text */
@@ -179,6 +195,8 @@ const struct armlet_ucode_id *armlet_gfx_identify(const struct armlet_ctx *c, bo
     scan_strings(rdram, data, dsize > 0x800 ? 0x800 : dsize, s->u.name, sizeof(s->u.name));
     s->u.family = family_of(s->u.name);
     *is_new = seen_add(s->u.id);
+    l_last = &s->u;
+    l_last_addr = addr;
     return &s->u;
 }
 

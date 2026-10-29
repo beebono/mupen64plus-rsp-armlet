@@ -115,15 +115,28 @@ const struct hle_ucode *armlet_hle_next(const struct hle_ucode *prev)
 
 const struct hle_ucode *armlet_hle_find(uint64_t id)
 {
+    static uint64_t last_id;                            /* the last hit (a call per RSP call: 613 per frame in Gauntlet Legends) */
+    static const struct hle_ucode *last;
+    static unsigned last_ndyn;
     const struct hle_ucode *const *p;
     unsigned i;
+    if (last && last_id == id && last_ndyn == g_ndyn)
+        return last;
     for (i = 0; i < g_ndyn; i++)
         if (g_dyn[i]->id == id)
-            return g_dyn[i];
+            goto found;
     for (p = __start_hle_ucodes; p < __stop_hle_ucodes; p++)
-        if (*p && (*p)->id == id)
-            return *p;
+        if (*p && (*p)->id == id) {
+            last = *p;
+            goto done;
+        }
     return NULL;
+found:
+    last = g_dyn[i];
+done:
+    last_id = id;
+    last_ndyn = g_ndyn;
+    return last;
 }
 
 const struct hle_ucode *armlet_hle_find_registered(uint64_t id)

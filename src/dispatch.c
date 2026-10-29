@@ -33,7 +33,7 @@ bool armlet_gfx_try_native(struct armlet_ctx *c)
 #ifdef ARMLET_NATIVE
         if (prsp_poll_idle_limit() <= 0)
             return false;
-        u = armlet_gfx_identify(c, &is_new);
+        u = armlet_gfx_identify_continued(c);
         n = armlet_gfx_native_find(u->id);
         return n && armlet_gfx_allowed(&c->cfg, u->id) && n->run(c, u) != 0;
 #else

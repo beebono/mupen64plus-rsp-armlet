@@ -1163,10 +1163,20 @@ static int f3dex2_run(struct hle_task *t, const struct hle_ucode *u)
     f.s6 = c.r[HLE_REG_S6];
     f.s7 = c.r[HLE_REG_S7];
     f.polls = 1;
-    f.trace = getenv("HLE_F3_TRACE") != NULL;
+    {   /* (the development switches, read once: a getenv per call was 1.7 % of the emulation thread in Gauntlet Legends) */
+        static int dev_init, dev_trace, dev_watch, dev_dump;
+        if (!dev_init) {
+            dev_init = 1;
+            dev_trace = getenv("HLE_F3_TRACE") != NULL;
+            dev_watch = getenv("HLE_F3_WATCH") ? (int)strtoul(getenv("HLE_F3_WATCH"), NULL, 16) : -1;
+            dev_dump = getenv("HLE_DUMP_IMEM") != NULL;
+        }
+        f.trace = dev_trace;
+        f.watch = dev_watch;
+        f.dump_imem = dev_dump;
+    }
     if (f.trace)
         fprintf(stderr, "START k0=%08x k1=%08x s6=%04x s7=%04x\n", f.k0, f.k1, f.s6, f.s7);
-    f.watch = getenv("HLE_F3_WATCH") ? (int)strtoul(getenv("HLE_F3_WATCH"), NULL, 16) : -1;
     f.wval = f.watch >= 0 ? hle_dm16(t, f.watch) : 0;
     f.total = 0;
     f.lean = !hle_exact();
@@ -1176,7 +1186,7 @@ static int f3dex2_run(struct hle_task *t, const struct hle_ucode *u)
         rc = run_loop(&f, &handover);
         if (rc != HLE_OK)
             return rc;
-        if (getenv("HLE_DUMP_IMEM")) {                  /* (one file per hand-over: <file>, <file>.1, ...) */
+        if (f.dump_imem) {                              /* (one file per hand-over: <file>, <file>.1, ...) */
             static unsigned dumps;
             char nm[512];
             FILE *fp;
