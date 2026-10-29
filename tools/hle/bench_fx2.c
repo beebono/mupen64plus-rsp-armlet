@@ -56,12 +56,12 @@ static void plausible_ctx(struct fx2_vctx *c, unsigned mode)
             }
 }
 
-static void bench_vtx(unsigned mode, const char *name)
+static void bench_vtx_n(unsigned mode, const char *name, unsigned n)
 {
     struct fx2_vctx c;
     struct fx2_vin in[34];
     struct fx2_vtx out[34];
-    unsigned i, it = 20000, n = 30;
+    unsigned i, it = 20000 * 30 / n;
     double t0, ts, tn;
     plausible_ctx(&c, mode);
     for (i = 0; i < 34; i++) {
@@ -77,7 +77,14 @@ static void bench_vtx(unsigned mode, const char *name)
     for (i = 0; i < it; i++)
         fx2_vtx_xform(&c, in, n, out);
     tn = (now() - t0) / it / n;
-    printf("vtx %-16s scalar %7.1f ns/vertex   neon %7.1f ns/vertex   (%.2fx)\n", name, ts, tn, ts / tn);
+    printf("vtx %-16s n=%-2u scalar %7.1f ns/vertex   neon %7.1f ns/vertex   (%.2fx)\n", name, n, ts, tn, ts / tn);
+}
+static void bench_vtx(unsigned mode, const char *name)
+{
+    bench_vtx_n(mode, name, 30);
+    bench_vtx_n(mode, name, 4);
+    bench_vtx_n(mode, name, 2);
+    bench_vtx_n(mode, name, 1);
 }
 
 static void bench_tri(unsigned g, unsigned tex, const char *name)

@@ -27,7 +27,7 @@
 #ifdef ARMLET_NATIVE
 
 /* development: HLE_F3_PROF=1 sums the time of each command kind over all tasks and prints it at exit */
-static uint64_t g_pt[40], g_pn[40];
+static uint64_t g_pt[40], g_pn[40], g_pvn[33];     /* (g_pvn: G_VTX commands by vertex count) */
 static int g_prof = -1;
 static inline uint64_t ticks(void)
 {
@@ -48,6 +48,11 @@ static void prof_dump(void)
     for (k = 0; k < 27; k++)
         if (g_pn[k])
             fprintf(stderr, "PROF %-9s n=%-9llu ticks=%-12llu per=%.1f\n", nm[k], (unsigned long long)g_pn[k], (unsigned long long)g_pt[k], (double)g_pt[k] / g_pn[k]);
+    fprintf(stderr, "PROF vtx counts:");
+    for (k = 1; k <= 32; k++)
+        if (g_pvn[k])
+            fprintf(stderr, " %u:%llu", k, (unsigned long long)g_pvn[k]);
+    fprintf(stderr, "\n");
 }
 
 /* ---- the builds ------------------------------------------------------------------------------------------------------------------------------------------------------------------ */
@@ -1019,6 +1024,8 @@ static int run_loop(struct f3 *f, int *handover)
         if (g_prof) {
             g_pt[kd] += ticks() - t_cmd;
             g_pn[kd]++;
+            if (kd == K_VTX)
+                g_pvn[((w0 >> 12) & 0xff) < 33 ? (w0 >> 12) & 0xff : 0]++;
         }
         if (f->watch >= 0 && hle_dm16(t, f->watch) != f->wval) {
             f->wval = hle_dm16(t, f->watch);

@@ -44,8 +44,9 @@ struct fx2_lights {
 };
 
 /* ---- vertices ----------------------------------------------------------------------------------------------------------------------------------------------------------------- */
-struct fx2_vin {                                    /* an input vertex (RDRAM layout) */
+struct fx2_vin {                                    /* an input vertex (RDRAM layout, 16 bytes: the NEON form loads it as one vector) */
     int16_t x, y, z;
+    int16_t pad;                                    /* the flag halfword of the record: unused */
     int16_t s, t;
     uint8_t c[4];                                   /* r g b a, or (lighting) nx ny nz (signed bytes) and a */
 };

@@ -335,25 +335,21 @@ NI void vtx_P4(const struct fx2_mtx *mp, const int16_t v[3], int16x4_t *Pi, uint
     }
 }
 
-/* The vertices in stages, so that the serial chains of the scalar reciprocal (rcp, three multiplies) of different vertices overlap: stage 1 the matrix product, the clip flags and Q = P * pn per vertex,
- * stage 2 the reciprocal of Q's w, stage 3 T = Q3 R0 and E = 4 - 4T, stage 4 R1 = E R0, stage 5 the projection and the viewport (NEON again). The results are those of vtx_project in f3dex2_fx.c. */
-#define XFORM_MAX 34
+/* ---- one pair of vertices, the four coordinates in lanes ------------------------------------------------------------------------------------------------------------------------
+ * The form for the short commands (Gauntlet Legends: 58 percent of its G_VTX commands load one vertex, 19 percent two): the matrix product, the clip flags and Q = P * pn in 64-bit lanes per vertex, the
+ * reciprocal and its refinement scalar, the projection and the viewport in lanes again. The results are those of vtx_project in f3dex2_fx.c. */
 
-void fx2_vtx_xform(const struct fx2_vctx *c, const struct fx2_vin *in, unsigned n, struct fx2_vtx *out)
+static void vtx_xform_pair(const struct fx2_vctx *c, const struct fx2_vin *in, unsigned n, struct fx2_vtx *out)
 {
-    unsigned vcc_a[XFORM_MAX], vcc_b[XFORM_MAX], i, nn = n + (n & 1);
-    int16x4_t Pi[XFORM_MAX];
-    uint16x4_t Pf[XFORM_MAX];
-    int16_t Qi3[XFORM_MAX], T_i[XFORM_MAX], R1i[XFORM_MAX];
-    uint16_t Qf3[XFORM_MAX], T_f[XFORM_MAX], R1f[XFORM_MAX];
-    uint32_t R0[XFORM_MAX];
+    unsigned vcc_a[2], vcc_b[2], i, nn = n + (n & 1);
+    int16x4_t Pi[2];
+    uint16x4_t Pf[2];
+    int16_t Qi3[2], T_i[2], R1i[2];
+    uint16_t Qf3[2], T_f[2], R1f[2];
+    uint32_t R0[2];
     uint16x4_t Pf_dummy;
     (void)Pf_dummy;
 
-    if (use_scalar()) {
-        fx2_vtx_xform_scalar(c, in, n, out);
-        return;
-    }
     {   /* stage 1 */
         const int16_t sc[4] = { c->scale[0], c->scale[1], c->scale[2], c->scale[3] };
         (void)sc;
@@ -475,6 +471,211 @@ void fx2_vtx_xform(const struct fx2_vctx *c, const struct fx2_vin *in, unsigned 
         unsigned ca = (vcc_a[pa] & 0x0f0f) | ((vcc_a[pb] & 0x0f0f) << 4);
         unsigned cb = (vcc_b[pa] & 0x0f0f) | ((vcc_b[pb] & 0x0f0f) << 4);
         out[i].flags = (i & 1) ? (uint32_t)(cb << 16 | ca) : (uint32_t)(((cb << 4) & 0xffff) << 16 | ((ca << 4) & 0xffff));
+    }
+}
+
+/* ---- the vertex pipeline, four vertices per pass ---------------------------------------------------------------------------------------------------------------------------------
+ * One vertex per 32-bit lane. The 48-bit accumulator sums are never formed: every readout the scalar form takes of them (hle_sclamp: bits 47..16 saturated to s16; hle_uclamp: bits 15..0, or
+ * 0 / 0xffff when the sum does not fit in s32) is computed from the high and the low 16 bits of the 32-bit terms. With a sum of 32-bit terms t_j plus a base b << 16:
+ *   floor(sum / 2^16) = b + sum_j (t_j >> 16) + ((sum_j (t_j & 0xffff)) >> 16)       (exact; the carry of the low halves is at most 3)
+ *   sum & 0xffff = (sum_j (t_j & 0xffff)) & 0xffff
+ * and the 48-bit wrap is the 32-bit wrap of floor(sum / 2^16), so sclamp = vqmovn of that 32-bit value and uclamp = the low halfword when floor(sum / 2^16) fits in s16, else the sign's constant.
+ * The same bit-exact results as vtx_one / vtx_project in f3dex2_fx.c (tools/hle/test_fx2.c). The lit colour stays scalar per vertex. */
+NI uint32x4_t sel_sat16(int32x4_t hi, uint32x4_t lo)
+{   /* hle_uclamp of the sum whose floor(/2^16) is hi (32-bit) and whose low halfword is lo: lo when hi fits in s16, else 0 (negative) / 0xffff */
+    uint32x4_t fits = vceqq_s32(hi, vmovl_s16(vqmovn_s32(hi)));
+    uint32x4_t sat = vbicq_u32(vdupq_n_u32(0xffff), vreinterpretq_u32_s32(vshrq_n_s32(hi, 31)));
+    return vbslq_u32(fits, lo, sat);
+}
+/* the pair product chain of f3dex2_fx.c (mm + rd) on four lanes: tt = (af bf >> 16) + ai bf + af bi, full = tt + (ai bi << 16); ri = sclamp(full), rf = uclamp(tt). b as 16-bit vectors (bi16, bf16)
+ * and widened to 32-bit lanes (bi32 = bi16 sign-extended, bf32 = bf16 zero-extended) */
+NI void chain4(int16x4_t ai, uint16x4_t af, int16x4_t bi16, uint16x4_t bf16, int32x4_t bi32, int32x4_t bf32, int16x4_t *ri, uint16x4_t *rf)
+{
+    uint32x4_t m16 = vdupq_n_u32(0xffff);
+    uint32x4_t t1 = vshrq_n_u32(vmull_u16(af, bf16), 16);
+    int32x4_t t2 = vmulq_s32(vmovl_s16(ai), bf32);
+    int32x4_t t3 = vmulq_s32(vreinterpretq_s32_u32(vmovl_u16(af)), bi32);
+    int32x4_t p4 = vmull_s16(ai, bi16);
+    uint32x4_t lo = vaddq_u32(vaddq_u32(t1, vandq_u32(vreinterpretq_u32_s32(t2), m16)), vandq_u32(vreinterpretq_u32_s32(t3), m16));
+    int32x4_t hi = vaddq_s32(vaddq_s32(vshrq_n_s32(t2, 16), vshrq_n_s32(t3, 16)), vreinterpretq_s32_u32(vshrq_n_u32(lo, 16)));
+    *rf = vmovn_u32(sel_sat16(hi, vandq_u32(lo, m16)));
+    *ri = vqmovn_s32(vaddq_s32(p4, hi));
+}
+/* a = (f k >> 16) + i k with the 16-bit scalar k (fits in s32): sclamp and uclamp of it */
+NI void mulk4v(int16x4_t i, uint16x4_t f, uint16_t k, int16x4_t *ri, uint16x4_t *rf)
+{
+    int32x4_t a = vaddq_s32(vreinterpretq_s32_u32(vshrq_n_u32(vmull_n_u16(f, k), 16)), vmulq_n_s32(vmovl_s16(i), (int32_t)k));
+    *ri = vqshrn_n_s32(a, 16);
+    *rf = vmovn_u32(vreinterpretq_u32_s32(a));
+}
+NI int32x4_t pack32v(int16x4_t i, uint16x4_t f)
+{
+    return vreinterpretq_s32_u32(vorrq_u32(vshlq_n_u32(vmovl_u16(vreinterpret_u16_s16(i)), 16), vmovl_u16(f)));
+}
+/* the clip-flag masks of four lanes of X against W (hle_clip_le / hle_clip_ge) */
+NI void clipmask4(int32x4_t X, int32x4_t W, uint32x4_t *le, uint32x4_t *ge)
+{
+    uint32x4_t xneg = vcltzq_s32(X), wneg = vcltzq_s32(W), opp = veorq_u32(xneg, wneg);
+    uint32x4_t le_o = vclezq_s32(vaddq_s32(X, W)), ge_o = vcgezq_s32(vsubq_s32(X, W));
+    *le = vbslq_u32(opp, le_o, wneg);
+    *ge = vbslq_u32(opp, wneg, ge_o);
+}
+
+_Static_assert(sizeof(struct fx2_vtx) == 40 && sizeof(struct fx2_vin) == 16, "the records are copied as 8-byte groups / loaded as one vector");
+
+void fx2_vtx_xform(const struct fx2_vctx *c, const struct fx2_vin *in, unsigned n, struct fx2_vtx *out)
+{
+    unsigned nn = n + (n & 1), nb = (nn + 3) & ~3u, b, i, k;
+    const uint32x4_t m16 = vdupq_n_u32(0xffff);
+
+    if (use_scalar()) {
+        fx2_vtx_xform_scalar(c, in, n, out);
+        return;
+    }
+    if (nn == 2) {                                      /* one or two vertices: the pair form (the block form costs its four lanes whatever n is) */
+        vtx_xform_pair(c, in, n, out);
+        return;
+    }
+    for (b = 0; b < nb; b += 4) {                      /* (in[] has 34 entries and n <= 32: the lanes past nn read what follows and are dropped) */
+        int16x4_t V16[3], S16, T16, Pi[4], Qi3, R0i, R1i, rint, T_i, Ei, Si[4];
+        uint16x4_t Pf[4], Qf3, R0f, R1f, T_f, Ef, Szf, C01, C23;
+        int32x4_t V[3], X[4], W, W2, R0i32, R0f32, rint32, R1f32;
+        uint32x4_t vcc_a, vcc_b, flags;
+        uint32_t R0_a[4];
+        uint8_t grp[5][4][8];
+        unsigned m = n > b + 4 ? 4 : n - b;
+
+        {   /* the four input records transposed: x y z (s t c0c1 c2c3) in lanes */
+            int16x8_t r0 = vld1q_s16((const int16_t *)&in[b]), r1 = vld1q_s16((const int16_t *)&in[b + 1]), r2 = vld1q_s16((const int16_t *)&in[b + 2]), r3 = vld1q_s16((const int16_t *)&in[b + 3]);
+            int16x4x2_t t01 = vtrn_s16(vget_low_s16(r0), vget_low_s16(r1)), t23 = vtrn_s16(vget_low_s16(r2), vget_low_s16(r3));
+            int16x4x2_t h01 = vtrn_s16(vget_high_s16(r0), vget_high_s16(r1)), h23 = vtrn_s16(vget_high_s16(r2), vget_high_s16(r3));
+            int32x2x2_t u0 = vtrn_s32(vreinterpret_s32_s16(t01.val[0]), vreinterpret_s32_s16(t23.val[0])), u1 = vtrn_s32(vreinterpret_s32_s16(t01.val[1]), vreinterpret_s32_s16(t23.val[1]));
+            int32x2x2_t v0 = vtrn_s32(vreinterpret_s32_s16(h01.val[0]), vreinterpret_s32_s16(h23.val[0])), v1 = vtrn_s32(vreinterpret_s32_s16(h01.val[1]), vreinterpret_s32_s16(h23.val[1]));
+            V16[0] = vreinterpret_s16_s32(u0.val[0]);
+            V16[1] = vreinterpret_s16_s32(u1.val[0]);
+            V16[2] = vreinterpret_s16_s32(u0.val[1]);
+            S16 = vreinterpret_s16_s32(v0.val[0]);
+            T16 = vreinterpret_s16_s32(v1.val[0]);
+            C01 = vreinterpret_u16_s32(v0.val[1]);
+            C23 = vreinterpret_u16_s32(v1.val[1]);
+        }
+        for (k = 0; k < 3; k++)
+            V[k] = vmovl_s16(V16[k]);
+        /* stage 1: the clip coordinates, per column */
+        for (k = 0; k < 4; k++) {
+            int32x4_t pf0 = vmulq_n_s32(V[0], (int32_t)c->mp.f[0][k]), pf1 = vmulq_n_s32(V[1], (int32_t)c->mp.f[1][k]), pf2 = vmulq_n_s32(V[2], (int32_t)c->mp.f[2][k]);
+            uint32x4_t lo = vaddq_u32(vaddq_u32(vandq_u32(vreinterpretq_u32_s32(pf0), m16), vandq_u32(vreinterpretq_u32_s32(pf1), m16)),
+                                      vaddq_u32(vandq_u32(vreinterpretq_u32_s32(pf2), m16), vdupq_n_u32(c->mp.f[3][k])));
+            int32x4_t Ahi = vaddq_s32(vaddq_s32(vshrq_n_s32(pf0, 16), vshrq_n_s32(pf1, 16)), vaddq_s32(vshrq_n_s32(pf2, 16), vreinterpretq_s32_u32(vshrq_n_u32(lo, 16))));
+            int32x4_t B2 = vmlaq_n_s32(vmlaq_n_s32(vdupq_n_s32(c->mp.i[3][k]), V[0], c->mp.i[0][k]), V[1], c->mp.i[1][k]);
+            int32x4_t B = vmlaq_n_s32(B2, V[2], c->mp.i[2][k]);
+            Pi[k] = vqmovn_s32(vaddq_s32(B, Ahi));
+            Pf[k] = vmovn_u32(sel_sat16(vaddq_s32(B2, Ahi), vandq_u32(lo, m16)));
+            X[k] = pack32v(Pi[k], Pf[k]);
+        }
+        /* the clip flags: against w, and against the guard-band w (lane 3 of the second compare is (w integer, z fraction)) */
+        W = X[3];
+        {
+            uint32x4_t pf = vmull_n_u16(Pf[3], c->ratio);
+            int32x4_t hi = vaddq_s32(vmulq_n_s32(vmovl_s16(Pi[3]), (int32_t)c->ratio), vreinterpretq_s32_u32(vshrq_n_u32(pf, 16)));
+            W2 = vreinterpretq_s32_u32(vorrq_u32(vshlq_n_u32(vmovl_u16(vreinterpret_u16_s16(vqmovn_s32(hi))), 16), vandq_u32(pf, m16)));
+        }
+        vcc_a = vdupq_n_u32(0);
+        vcc_b = vdupq_n_u32(0);
+        for (k = 0; k < 4; k++) {
+            uint32x4_t le, ge;
+            clipmask4(X[k], W, &le, &ge);
+            vcc_a = vorrq_u32(vcc_a, vorrq_u32(vandq_u32(le, vdupq_n_u32(1u << k)), vandq_u32(ge, vdupq_n_u32(0x100u << k))));
+            clipmask4(k == 3 ? pack32v(Pi[3], Pf[2]) : X[k], W2, &le, &ge);
+            vcc_b = vorrq_u32(vcc_b, vorrq_u32(vandq_u32(le, vdupq_n_u32(1u << k)), vandq_u32(ge, vdupq_n_u32(0x100u << k))));
+        }
+        {   /* pair-merged, as the record holds them (fx2_vtx_xform_scalar) */
+            static const uint32_t oddl[4] = { 0, 0xffffffffu, 0, 0xffffffffu };
+            uint32x4_t odd = vld1q_u32(oddl), m0f = vdupq_n_u32(0x0f0f);
+            uint32x4_t a = vandq_u32(vcc_a, m0f), bb = vandq_u32(vcc_b, m0f), as = vrev64q_u32(a), bs = vrev64q_u32(bb);
+            uint32x4_t ca = vbslq_u32(odd, vorrq_u32(as, vshlq_n_u32(a, 4)), vorrq_u32(a, vshlq_n_u32(as, 4)));
+            uint32x4_t cb = vbslq_u32(odd, vorrq_u32(bs, vshlq_n_u32(bb, 4)), vorrq_u32(bb, vshlq_n_u32(bs, 4)));
+            uint32x4_t fo = vorrq_u32(vshlq_n_u32(cb, 16), ca);
+            uint32x4_t fe = vorrq_u32(vshlq_n_u32(vandq_u32(vshlq_n_u32(cb, 4), m16), 16), vandq_u32(vshlq_n_u32(ca, 4), m16));
+            flags = vbslq_u32(odd, fo, fe);
+        }
+        /* stage 2: Q3 = P3 * pn and its reciprocal (scalar, the table) */
+        mulk4v(Pi[3], Pf[3], c->pn, &Qi3, &Qf3);
+        vst1q_s32((int32_t *)R0_a, pack32v(Qi3, Qf3));
+        for (i = 0; i < 4; i++)
+            R0_a[i] = hle_rcp32((int32_t)R0_a[i]);
+        {
+            uint32x4_t R0 = vld1q_u32(R0_a);
+            R0i = vreinterpret_s16_u16(vshrn_n_u32(R0, 16));
+            R0f = vmovn_u32(R0);
+            R0i32 = vshrq_n_s32(vreinterpretq_s32_u32(R0), 16);
+            R0f32 = vreinterpretq_s32_u32(vandq_u32(R0, m16));
+        }
+        /* stages 3 and 4: T = Q3 R0, E = 4 - 4 T, R1 = E R0 */
+        chain4(Qi3, Qf3, R0i, R0f, R0i32, R0f32, &T_i, &T_f);
+        {
+            int32x4_t e1 = vsubq_s32(vdupq_n_s32(4 << 16), vshlq_n_s32(vreinterpretq_s32_u32(vmovl_u16(T_f)), 2));
+            Ei = vqmovn_s32(vsubq_s32(vshrq_n_s32(e1, 16), vshlq_n_s32(vmovl_s16(T_i), 2)));
+            Ef = vmovn_u32(vreinterpretq_u32_s32(e1));
+        }
+        chain4(Ei, Ef, R0i, R0f, R0i32, R0f32, &R1i, &R1f);
+        rint = vbsl_s16(vcgez_s16(Pi[3]), R1i, vdup_n_s16(0x7fff));
+        rint32 = vmovl_s16(rint);
+        R1f32 = vreinterpretq_s32_u32(vmovl_u16(R1f));
+        /* stage 5: the projection (P * R1, then * pn) and the viewport; the fourth lane takes z (the fog) */
+        for (k = 0; k < 4; k++) {
+            int16x4_t ni, nni;
+            uint16x4_t nf, nnf;
+            int32x4_t p, t1hi;
+            chain4(Pi[k == 3 ? 2 : k], Pf[k == 3 ? 2 : k], rint, R1f, rint32, R1f32, &ni, &nf);
+            mulk4v(ni, nf, c->pn, &nni, &nnf);
+            p = vmulq_n_s32(vreinterpretq_s32_u32(vmovl_u16(nnf)), (int32_t)c->scale[k]);
+            t1hi = vaddq_s32(vdupq_n_s32((int32_t)c->trans[k] + (k == 3 ? (int32_t)c->c31_3 : 0)), vshrq_n_s32(p, 16));
+            Si[k] = vqmovn_s32(vaddq_s32(vmull_n_s16(nni, c->scale[k]), t1hi));
+            if (k == 2)
+                Szf = vmovn_u32(sel_sat16(t1hi, vandq_u32(vreinterpretq_u32_s32(p), m16)));
+        }
+        if (c->mode & FX2_LIGHTING) {                   /* the lit colours (and generated texture coordinates), scalar per vertex */
+            uint8_t col[4][4];
+            int16_t sg[4][2];
+            for (i = 0; i < 4; i++) {
+                int8_t nb8[3] = { (int8_t)in[b + i].c[0], (int8_t)in[b + i].c[1], (int8_t)in[b + i].c[2] };
+                sg[i][0] = sg[i][1] = 0;
+                lit_vertex(c, ((b + i) & 1) ? 0 : 1, nb8, in[b + i].c[3], col[i], (c->mode & FX2_TEXGEN) != 0, sg[i]);
+            }
+            {
+                uint16x4x2_t z = vuzp_u16(vreinterpret_u16_u8(vld1_u8(col[0])), vreinterpret_u16_u8(vld1_u8(col[2])));
+                C01 = z.val[0];
+                C23 = z.val[1];
+            }
+            if (c->mode & FX2_TEXGEN) {
+                int16x4x2_t z = vld2_s16(&sg[0][0]);
+                S16 = z.val[0];
+                T16 = z.val[1];
+            }
+        }
+        if (c->mode & FX2_FOG)                          /* the alpha byte: the low byte of max(fog, 0x7f00) */
+            C23 = vorr_u16(vand_u16(C23, vdup_n_u16(0xff)), vshl_n_u16(vreinterpret_u16_s16(vmax_s16(Si[3], vdup_n_s16(0x7f00))), 8));
+        {   /* the records, as five 8-byte groups of four vertices each (vst4: vertex-major) */
+            int16x4x4_t g0 = { { Pi[0], Pi[1], Pi[2], Pi[3] } };
+            uint16x4x4_t g1 = { { Pf[0], Pf[1], Pf[2], Pf[3] } };
+            int16x4x4_t g2 = { { vreinterpret_s16_u16(C01), vreinterpret_s16_u16(C23), vshrn_n_s32(vmulq_n_s32(vmovl_s16(S16), (int32_t)c->sc_s), 16), vshrn_n_s32(vmulq_n_s32(vmovl_s16(T16), (int32_t)c->sc_t), 16) } };
+            int16x4x4_t g3 = { { Si[0], Si[1], NMUT(6, c->gen204, 0) ? Si[2] : vmax_s16(Si[2], vdup_n_s16(0)), vreinterpret_s16_u16(Szf) } };
+            uint16x4x4_t g4 = { { vreinterpret_u16_s16(R1i), R1f, vmovn_u32(flags), vshrn_n_u32(flags, 16) } };
+            vst4_s16((int16_t *)grp[0], g0);
+            vst4_u16((uint16_t *)grp[1], g1);
+            vst4_s16((int16_t *)grp[2], g2);
+            vst4_s16((int16_t *)grp[3], g3);
+            vst4_u16((uint16_t *)grp[4], g4);
+            for (i = 0; i < m; i++) {
+                uint8_t *o = (uint8_t *)&out[b + i];
+                memcpy(o, grp[0][i], 8);
+                memcpy(o + 8, grp[1][i], 8);
+                memcpy(o + 16, grp[2][i], 8);
+                memcpy(o + 24, grp[3][i], 8);
+                memcpy(o + 32, grp[4][i], 8);
+            }
+        }
     }
 }
 

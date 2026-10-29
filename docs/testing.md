@@ -970,6 +970,11 @@ Development switches: `HLE_CUT_VR=1` prints the vector registers, flags, accumul
 
 Yields (same day, a camera-pan state of the level hub): 1314 of 4033 continued calls declined "the task yields" and every resumed task ran on the JIT (27 % of the thread). With the yield request and the yielded resume native (design.md "Yields"): 0 declined, 2752 tasks (every resume counts as one) all native; `ARMLET_HLE_VERIFY=1` from the state, 550 frames: 3216 tasks compared, 0 with differences; frame 1450 identical to the JIT-path run; 28.9 -> 25.6 ms per VI, 20.8 -> 18.5 us per primitive (so stack). Equivalence `ref` against `armlet`: Gauntlet 3700 frames (745 yields) and Banjo-Tooie, Paper Mario, Donkey Kong 64, Pokemon Snap 600 frames each: PASS (hash, state, 6 shots, audio).
 
+The vertex path (same day; design.md, the F3DEX2 front-end): the block form of `fx2_vtx_xform` and the lane-reversal record accessors. `tools/hle/test_fx2.c` 20 000 vertex batches 0 differences (it caught the first
+version's guard-band flags for ratios over 0x7fff); desktop equivalence (scalar forms) of the five games above against the stored `ref` outputs PASS; on the rgdsplus the old and the new plugin on Gauntlet (pan state, 300 frames),
+Banjo-Tooie, Paper Mario, Donkey Kong 64 and Mario Tennis (150 .. 400): RSP hash streams identical, screenshots identical. Frame times (rrd2 core, .so stack, 1300 VI): pan 26.44 -> 25.39 ms per VI, hub 26.22 -> 25.20, peak
+18.60 -> 18.23 (the kernel alone was 1 .. 2.5 percent: most of Gauntlet's G_VTX commands load one vertex, so the per-command cost rules: 1.37 us per G_VTX before, `HLE_F3_PROF`).
+
 ## S2DEX 1.x (2026-10-18; docs/ucode-s2dex1.md)
 
 - Kernels: `tools/hle/build_test_s2dex1.sh` and `test_s2dex1` compare each kernel (rect, rotated rect, BG 1-cycle, BG_COPY 1.06 / 1.07, sprite) with rsp2c translations of the microcode (`tools/hle/oracle/s1_*_gen.inc`, ROM-derived, git-ignored) on random inputs including stale vector registers; 0 differences.

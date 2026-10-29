@@ -87,7 +87,7 @@ session_run() {
         if [ -n "$BIN" ]; then n=$(ls "$OUT"/frame_*.ppm 2>/dev/null | wc -l); else n=$(grep -c '^MARK' "$OUT/rspt" 2>/dev/null); fi
         if [ -n "$PERF" ] && [ -z "$perf_done" ] && [ "${n:-0}" -ge 1 ]; then
             perf_done=1
-            PID=$(pgrep -x mupen64plus | head -1)
+            PID=$(pgrep -x "$(basename "${BIN:-mupen64plus}" | cut -c1-15)" | head -1)      # (a bundle under another name: comm is its first 15 characters)
             if [ -n "$PID" ]; then
                 cp /proc/$PID/maps "$OUT/maps" 2>/dev/null
                 perf record -q -F 997 $PERFG -p "$PID" -o "$OUT/perf.data" -- sleep "$PERF" > "$OUT/perf.out" 2>&1

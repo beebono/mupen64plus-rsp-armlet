@@ -315,6 +315,14 @@ pipeline); `f3dex2_dmem.h` fills the structs from DMEM and writes them back. Eac
 task and in the equivalence runs) and on aarch64 a NEON form with identical results (`tools/hle/test_fx2.c`: 400 000 random triangles, 40 000 vertex batches and 100 000 matrix products bit for bit, with deliberate
 errors in the NEON forms, `-DFX2_NEON_MUTATE=n`, caught). `HLE_FX2_SCALAR=1` selects the scalar forms at run time (A/B timing on a device).
 
+The NEON vertex form (`fx2_vtx_xform`, 2026-10-29) has two shapes. Commands of three or more vertices take the **block form**: four vertices per pass, one per 32-bit lane, and the 48-bit accumulator never formed: every readout the microcode takes of
+it (`VSAR`'s integer half saturated to s16; the fraction half, 0 / 0xffff when the sum does not fit in s32) is computed from the high and the low 16 bits of the 32-bit terms (`floor(sum / 2^16) = base + sum of (t >> 16)
++ carry of the low halves`, the 48-bit wrap being the 32-bit wrap of that; the comment at the kernel). The clip coordinates, the flags against w and the guard-band w, Q = P * pn, T = Q R0, E = 4 - 4T, R1 = E R0, the
+projection and the viewport are all vectors over the four vertices; only the reciprocal (the table) and the lit colour are scalar per vertex. The input records are loaded as one vector each and transposed, the output
+records are written as five 8-byte lane groups (`vst4`). Commands of one or two vertices (Gauntlet Legends: 58 and 19 percent of its G_VTX commands, `HLE_F3_PROF` prints the histogram) take the **pair form**, the
+earlier kernel: the four coordinates of one vertex in lanes, 64-bit accumulators, the refinement chains scalar. rgdsplus (A55, 1.58 GHz), `tools/hle/bench_fx2`: plain vertices 227 -> 125 ns each at n = 4 .. 30 (lit
+292 -> 200), a one-vertex command 344 ns. `f2_st_vtx` and the input loads (`f3dex2_dmem.h`) are lane reversals of the record on aarch64 (a third of `cmd_vtx`'s own time was the halfword assembly of the record).
+
 The **lean mode** (default; `ARMLET_HLE_EXACT=1` turns it off) does only the SP DMA and IMEM loads that the external effects need: the display list is read from RDRAM instead of through the 168-byte refills, the input
 vertices from RDRAM instead of through a DMA to the slots (the 40-byte records written over them cover the range), the matrices, lights and viewport are copied, the RDP buffer is written to the ring with
 `hle_rdram_write`, the lighting and clipping overlays are tracked and the one that the microcode would have left is loaded once at the end. The decisions that the microcode makes per chunk (where the ring wraps, whether the RDP
@@ -369,7 +377,7 @@ text it shares with Super Smash Bros., carries S2DEX's two output buffers), and 
 that the build before it left in ranges it declares dead and does not keep exactly (the clipper's new vertices, the scratch of the triangle setup), and the RDP ignores those bytes.
 
 **Environment.** `ARMLET_HLE_VERIFY` (`1`, `jit`, `interp`), `ARMLET_HLE_EXACT` (the exact-events compare and the DMA-for-DMA front-end), `ARMLET_HLE_INTERP`, `ARMLET_HLE_STATS` (counts, decline reasons, time), `ARMLET_HLE_POISON`,
-`ARMLET_DMEM_POISON`, `ARMLET_HLE_ABORT`, `ARMLET_HLE_QUIET`, `HLE_FX2_SCALAR` (the scalar forms), `HLE_F3_PROF` (ticks per command kind, on stderr), `HLE_F3_TRACE` (every command and triangle), `HLE_F3_WATCH=<addr>` (a DMEM halfword,
+`ARMLET_DMEM_POISON`, `ARMLET_HLE_ABORT`, `ARMLET_HLE_QUIET`, `HLE_FX2_SCALAR` (the scalar forms), `HLE_F3_PROF` (ticks per command kind and the G_VTX commands by vertex count, on stderr), `HLE_F3_TRACE` (every command and triangle), `HLE_F3_WATCH=<addr>` (a DMEM halfword,
 after every command that changes it), `HLE_DUMP_IMEM=<file>`, `HLE_DUMP_STREAM=<file>` (the native side's RDP stream), `HLE_DMEM_ALL` (list every differing DMEM byte), `HLE_RSP_TRIPC=<pc>` (the interpreter prints the three vertex slots at a triangle entry), `HLE_RSP_DEBUG=<n>` (the first n interpreted instructions), `HLE_RSP_TRACE` (every interpreted instruction with the vector register it wrote), `HLE_RSP_WATCH=<addr>` (every change of
 a DMEM byte, with the pc), `HLE_RSP_PROFILE` (executions per pc, `PROF pc count` lines on stderr at the end of every task).
 
