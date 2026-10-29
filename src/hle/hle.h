@@ -87,6 +87,8 @@ struct hle_family {
     unsigned (*wait_pc)(const struct hle_ucode *u, const uint32_t *imem);
     /* the call at the wait pc when nothing changed since the cut, without the framework's snapshot and commit: 1 = done (the state is what the JIT's idle slice leaves), 0 = run() */
     int (*idle)(struct hle_task *t, const struct hle_ucode *u);
+    /* a yielded task's resume (OSTask flags bit 0: the boot code restores the state the yield saved) may run natively: run() runs the boot code on the interpreter */
+    int yield_ok;
 };
 
 struct hle_ucode {

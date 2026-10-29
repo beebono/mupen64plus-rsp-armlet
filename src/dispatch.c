@@ -25,8 +25,6 @@ bool armlet_gfx_try_native(struct armlet_ctx *c)
     /* a graphics task: a task at all (not a bare RSP program), type 1, started fresh and not a yield resume */
     if (armlet_dmem32(c, ARMLET_TASK_UCODE_BOOT_SIZE) > 0x1000 || armlet_dmem32(c, ARMLET_TASK_TYPE) != 1)
         return false;
-    if (armlet_dmem32(c, ARMLET_TASK_FLAGS) & 1)
-        return false;
     if ((*c->rsp.SP_PC_REG & 0xfff) != 0) {
         /* a call that continues a task, after the JIT's idle-poll cut (PRSP_POLL_IDLE: a task that waits for the CPU, Gauntlet Legends): a family that can take it up answers (hle_core.c, wait_pc); no probe,
          * no counting of tasks */
@@ -43,6 +41,15 @@ bool armlet_gfx_try_native(struct armlet_ctx *c)
 
     u = armlet_gfx_identify(c, &is_new);
     n = armlet_gfx_native_find(u->id);
+    if (armlet_dmem32(c, ARMLET_TASK_FLAGS) & 1) {
+        /* a yielded task resumed (Gauntlet Legends: the audio task takes the RSP in the middle of nearly every graphics task): a family that takes it up runs it (the boot code's
+         * restore on the interpreter, hle_core.c); no probe, no counting of tasks */
+#ifdef ARMLET_NATIVE
+        return n && armlet_gfx_allowed(&c->cfg, u->id) && n->run(c, u) != 0;
+#else
+        return false;
+#endif
+    }
     if (c->cfg.probe) {
         /* GfxProbe: a ucode that has no handler is derived and probed (src/hle/probe.c); a derived build runs once the validator latched it, for the data image it was derived for,
          * and the tasks the validator samples run on the JIT */

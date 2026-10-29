@@ -1149,6 +1149,8 @@ static int hle_run_locked(struct armlet_ctx *c, const struct hle_ucode *uc)
         if (!wp || wp != (*c->rsp.SP_PC_REG & 0xfff))     /* (not a call the family can take up: the JIT's, uncounted) */
             return 0;
         K.resumes++;
+    } else if ((armlet_dmem32(c, ARMLET_TASK_FLAGS) & 1) && !uc->fam->yield_ok) {
+        return 0;                                       /* (a yielded task resumed, a family without the path: the JIT's, uncounted) */
     } else {
         K.tasks++;
         if (!(K.tasks & 63))

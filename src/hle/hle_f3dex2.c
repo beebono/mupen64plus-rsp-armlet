@@ -721,6 +721,12 @@ static int f3_resume(struct hle_task *t, const struct f3dex2_build *b, struct hl
     int rc;
     if (prsp_poll_idle_limit() <= 0)
         return hle_decline(t, "the idle-poll policy is off");
+    if (*t->cr[4] & SIG0) {
+        /* a yield request (SIG0): the microcode's own code from the wait routine on, interpreted to its BREAK: the poll at the loop head, the exit code's flush and the yield save
+         * (the JIT ran the same ~200 instructions; what it saved the resumed task restores natively, dispatch.c) */
+        c->stop_pc = 0x1000;
+        return hle_rsp_run(t, c);
+    }
     why = f3_wait_state(t, b, c->r, &target);
     if (why)
         return hle_decline(t, why);
@@ -1153,9 +1159,11 @@ static int f3dex2_run(struct hle_task *t, const struct hle_ucode *u)
     c.stop_pc = b->head + 4;                            /* the first fetch has polled SP_STATUS already */
     rc = t->start_pc ? f3_resume(t, b, &c) : hle_rsp_run(t, &c);
     if (rc != HLE_STOP)
-        return rc;                                      /* the task ended before the loop, or declined (a call that continues a task: ended at the cut again) */
-    if (*t->cr[4] & SIG0)
-        return hle_decline(t, "the task yields");
+        return rc;                                      /* the task ended before the loop, or declined (a call that continues a task: ended at the cut again, or yielded) */
+    if (*t->cr[4] & SIG0) {                             /* a yield request at the first fetch: the microcode's own code from the loop head, interpreted to its BREAK */
+        c.stop_pc = 0x1000;
+        return hle_rsp_run(t, &c);
+    }
     memset(&f, 0, sizeof(f));
     f.t = t;
     f.k0 = c.r[HLE_REG_K0];
@@ -1224,8 +1232,10 @@ static int f3dex2_run(struct hle_task *t, const struct hle_ucode *u)
         rc = hle_rsp_run(t, &c);
         if (rc != HLE_STOP)
             return rc;
-        if (*t->cr[4] & SIG0)
-            return hle_decline(t, "the task yields");
+        if (*t->cr[4] & SIG0) {
+            c.stop_pc = 0x1000;
+            return hle_rsp_run(t, &c);
+        }
         handover = 0;
         f.k0 = c.r[HLE_REG_K0];
         f.k1 = c.r[HLE_REG_K1];
@@ -1262,7 +1272,7 @@ static int f3dex2_run(struct hle_task *t, const struct hle_ucode *u)
     return rc;
 }
 
-const struct hle_family f3dex2_fam = { .name = "f3dex2", .run = f3dex2_run, .wait_pc = f3_wait_pc, .idle = f3_idle };
+const struct hle_family f3dex2_fam = { .name = "f3dex2", .run = f3dex2_run, .wait_pc = f3_wait_pc, .idle = f3_idle, .yield_ok = 1 };
 
 static const struct f3dex2_build l_b_dk64 = {
     .head = 0x18c, .copy = 0x208, .sync = 0x20c, .segcopy = 0x218, .ef = 0x238, .ed = 0x244, .tri1 = 0x7b4, .tri2 = 0x7ac, .vtx = 0x4f0,
