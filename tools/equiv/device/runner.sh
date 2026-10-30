@@ -61,7 +61,7 @@ equiv_run() {
     } >> "$X/out/session.info"
     # shellcheck disable=SC2086
     $WRAP timeout -s KILL "$TMO" $MUPEN --configdir "$X/cfg" --plugindir "$P" --gfx "$P/mupen64plus-rdp-foir.so" --rsp "$P/rsp-shim.so" $RSPARGS \
-        --audio "$AUD" --input "$P/input-det.so" --noosd --set "Core[RandomizeInterrupt]=False" --emumode 2 $VIDARGS "$ROMPATH" > "$OUT/log" 2>&1 &
+        --audio "$AUD" --input "$P/input-det.so" --noosd --set "Core[RandomizeInterrupt]=False" --set "Core[RdpFullSyncDelayMax]=0" --emumode 2 $VIDARGS "$ROMPATH" > "$OUT/log" 2>&1 &
     MP=$!
     i=0; status=timeout
     while [ $i -lt $((TMO * 2)) ]; do
