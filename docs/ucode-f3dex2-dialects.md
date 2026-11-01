@@ -211,6 +211,6 @@ The record, `l_b_turok` (`hle_f3dex2_dialects.c`), is the derived one:
 - **`plight = 1`**: the front-end gives bit 0x80 a meaning (`geom_def(f)`) and runs `plight_pass` on the records after `fx2_vtx_xform`.
 
 The triangle code ORs the geometry mode's low byte into a command byte that already has 0x80, so the bit changes nothing there. The pass's scratch (0x2d0 .. 0x2d7, a pair's colours, written before every read) is a dead range of the build.
-`derive_refs.c` was not regenerated: this machine's dump set is smaller than the one the committed file was made from, so the text is not yet a reference of the C derivation.
+The text is a reference of the C derivation (`derive_refs.c`); a derived build has no `plight` (the record does not carry it), so the bit declines there.
 
 Without the pass (the bit declined), 8 % of Turok 2's tasks and 67 % of South Park's ran on the JIT. With it, all but the first task of each game run natively (testing.md, "Turok 2 engine").

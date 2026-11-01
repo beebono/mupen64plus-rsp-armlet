@@ -1042,3 +1042,4 @@ Desktop x86_64, `GfxMode=hle`, 3700 frames, the reference pairing; the build's d
 | equivalent mutants, not kept | skipping no light (an off light's negative radius adds nothing either); the lit alpha under fog (the fog value replaces it) |
 | regression, verify 3700 f | Paper Mario, Banjo-Tooie: identical, 0 differences |
 | `armlet-probe-replay --sync` | 37 references, 0 out of step |
+| `derive_refs.c` regenerated (38 references) | the local dump set had lost three reference texts (Excitebike 64's loaded F3DEX.NoN xbus 2.08: a link into a deleted scratch directory; Majora's Mask, StarCraft 64): dumped again (USA ROMs, 60 s, `UDUMP_LOADS=1`), with them the generator of the previous commit reproduces its `derive_refs.c` byte for byte. Four more dead links in `not-coded` dumped again. `--sync` 38, 0 out of step; `derive_check.sh` passes (`l_b_turok` NONE, 49 unexplained, all 82 fields equal) |

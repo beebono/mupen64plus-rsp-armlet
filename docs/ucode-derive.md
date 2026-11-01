@@ -93,6 +93,7 @@ Every registered build is derived **without its own table** (all texts of its re
 | f3dex2 | l_b_rej_206 | 95129dc7 | l_b_rej_203 | l_b_rej_xbus | NONE | 153 | - / 150 | 79 | unconfirmed 1, expected 2 |
 | f3dex2 | l_b_rej_flx | c750be26 | l_b_rej_203 | - | NONE | 50 | {'init': 1, 'light-small': 1} / 61 | 79 | unconfirmed 2, expected 1 |
 | f3dex2 | l_b_rej_xbus | 8b0a3e32 | l_b_rej_203 | l_b_ex2_208n_xbus | NONE | 88 | {'init': 2, 'light-small': 12} / 87 | 79 | unconfirmed 1, expected 1 |
+| f3dex2 | l_b_turok | 7847866d | l_b_ex2_206 | l_b_ex2_204 | NONE | 49 | - / 3 | 82 | none (the 49: the point-light pass, ucode-f3dex2-dialects.md section 9) |
 | f3dex1 | l_b_121 | 208a567e | l_b_123 | l_b_non122 | EXACT | 0 | - / 0 | 65 | none |
 | f3dex1 | l_b_non122 | fd5a31cc | l_b_121 | l_b_non100 | EXACT | 0 | - / 0 | 65 | none |
 | f3dex1 | l_b_123 | 047252e8 | l_b_121 | l_b_lx123 | EXACT | 0 | - / 0 | 65 | none |
