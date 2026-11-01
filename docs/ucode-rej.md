@@ -181,4 +181,75 @@ relocation of the derivation, not a layout field (it had made the knob "mvp" amb
 **What the recount's Rej texts derive to** (docs/ucode-derive.md, "Rej as a derivation family", has the numbers): Mario Party 3's F3DLX.Rej fifo 2.08 (`9332f30c`) and the F3DLX.Rej fifo 2.05 text of NBA Jam 2000 and NFL Blitz (`36f10dc3`, loaded by
 `G_LOAD_UCODE`) derive **NEAR** from F3DLX.Rej 2.03 with the 2.08 xbus text supplying the lighting words (`rej_flags` = `REJ_YQ`), probe 28 of 28 and latch. ECW's F3DEX.Rej fifo 2.08 (`23cb9e85`) is **NONE** (22 words of the triangle setup that
 no reference has: another lane layout of the constant vector; the probe finds 7 of 28 canned tasks different), and Air Boarder 64's and ISS 64's F3DLX.Rej 1.21 (`3c51d836`) is of the **F3DEX 1.x** generation (425 of 1024 words align with F3DEX 1.21, 25 with F3DLX 1.21;
-nothing aligns with the F3DEX2 skeleton): the Rej extension exists in the F3DEX2 front-end only.
+nothing aligns with the F3DEX2 skeleton): the Rej extension of the F3DEX2 front-end cannot run it. Section 11 has the 1.x texts, on the F3DEX 1.x front-end.
+
+## 11. The 1.x Rej texts: F3DLX.Rej 1.21 and 1.23 (2026-11-01)
+
+Three texts of the 2026-10-31 coverage sweep are a 1.x generation of Rej. It is not a derivation of the 2.x texts above: it is **F3DLX 1.23's skeleton** (the command loop, the state commands, `G_MTX`, `G_MOVEWORD`, `G_MOVEMEM`, `G_DL`,
+`G_LOAD_UCODE`, the F3DEX 1.x lighting overlay word for word) with a vertex stage that does not clip, triangle code of its own and a double-buffered output. The front-end is the F3DEX 1.x one (`f3dex.c`) with the build
+record's `rej` words (`struct f3dex_rej1`, `f3dex_bld.h`); the closed forms are `rej1_fx.c` (vertices) and `rej_fx.c` with `REJ_X1` (triangles), the DMEM side `rej1_dmem.h`.
+
+| text | id | `load_key` | games (first 30 s of the sweep) | G_VTX / G_TRI2 / G_TRI1 | variants |
+|---|---|---|---|---|---|
+| F3DLX.Rej 1.23 | `4610a50be23b3d62` | `80a5362e1b53a228` | Bust-A-Move 2, Bust-A-Move 3 DX, Bust-A-Move '99, Puzzle Bobble 64, Mortal Kombat 4, Dezaemon 3D, Flying Dragon, SD Hiryuu no Ken Densetsu | 0x3ac / 0xa70 / 0x1c0 | - |
+| F3DLX.Rej 1.23 (earlier) | `7b02bbdc4199a4ba` | `b066853d859b8470` | WCW vs. nWo World Tour, Virtual Pro Wrestling 64, Hiryuu no Ken Twin | 0x3b4 / 0xa78 / 0x1c8 | `texf0` |
+| F3DLX.Rej 1.21 | `3c51d836d337efab` | `578ac8cc405d9e81` | Air Boarder 64, ISS 64, J.League Dynamite Soccer 64, Jikkyou World Soccer 3, Mortal Kombat Mythologies; loaded by `G_LOAD_UCODE` in Fighters Destiny / Fighting Cup, SimCity 2000, Madden 64 | as the earlier 1.23 | `texf0`, `flat1` |
+
+The earlier 1.23 text has the 1.21 text's pcs and differs from it by the scheduling of one instruction (and the banner); the variants are the only differences in what they compute.
+
+### 11.1 Memory map
+
+Where it differs from F3DLX 1.23 (`rej1_lay_123`): viewport 0x320 (the fog words at 0x330), return stack 0x336 (**not word-aligned**: the `SW` / `LW` of `G_DL` and `G_ENDDL` are unaligned), MV 0x380, P 0x3c0, MVP 0x400,
+64 vertex slots of 20 bytes from 0x440 to the command window at 0x940, the operand buffer 0xa80, two output buffers of 0x160 bytes at 0xc80 and 0xde0, the relight's transpose scratch 0xf70 .. 0xfbf. There is no
+vertex address table: a vertex number (twice the slot) becomes `0x440 + 10 n` by arithmetic, in the triangle code by a `VMUDN` / `VMADL` with the constants at 0x144 (`0x0a00`, `-0x440`). The overlay at DMA entry 0x10 (F3DEX 1.x's clipper) is empty.
+
+Record: `+0` sx, `+2` sy, `+4` sz integer, `+6` its fraction, `+8` r g b a, `+12` s t, `+16` 1/w integer, `+18` fraction.
+
+### 11.2 `G_VTX`
+
+Four vertices per pass in two pairs (the parity of a vertex selects the light bytes, as in F3DEX 1.x); nothing is stored beyond the count.
+
+1. P = MVP x (x y z 1) as F3DEX 1.x (the fraction read before row 3's integer part), the lit colour and the texture generation from the F3DEX 1.x lighting overlay (`f3dex_lit`).
+2. **Marked** when x or y is outside +-W' or z is at or beyond W, by the VCH / VCL pair (masks 0x703 / 0x7030): W' has the integer part `clamp16(ratio * W.i)` (`VMUDH`) and **W's own fraction**; z is compared with W itself and only on the far side.
+3. R = the refined reciprocal of `W x persp` (F3DEX 1.x's), **not clamped** for a negative result; N = P x R; N2 = N x persp; S = translation + N2 x (scale x sign) (no screen limits).
+4. T = the halfword at 0xb0 if marked (0x7fff), else at 0xb2 (0x8000). **sx = max(S.x, T), sz = max(S.z, T)** (the integer parts; the fraction of z is S's); sy = `clamp16(S.y + 2) & DMEM16[0x4a]` (0xfffc), taken
+   **before** the maximum. A marked vertex thus has sx = 0x7fff, and its y is its own.
+5. Fog: the alpha is F3DEX 1.x's fog byte of N2.z. s t = the input's times the `G_TEXTURE` scale >> 16.
+
+The VCO carry of the vector unit is added to the texture coordinates of the first pass when the vertices are unlit (a `VADD` copies them); it is 0 after every command the microcode runs, and the front-end assumes so (as for F3DLX).
+
+### 11.3 Triangles
+
+`G_TRI2` (0xb1) draws **w1's triangle first**, then w0's, and both go to the RDP as **one chunk** (one flush); `G_TRI1` (0xbf) writes w1's last vertex byte into w0's three, so w0's triangle has no area. There is no `G_QUAD` (0xb5 is the no-op).
+For each triangle (A, B, C in command order):
+
+- **dropped** if the sx of A, B or C is 0x7fff (`VSUBC` against 0x7fff);
+- the cross product `clamp16((A - B).y (C - A).x + (C - A).y (B - A).x)` (saturated differences); with `G_CULL_BACK` (0x2000) only a negative one is drawn, else any nonzero one: **`G_CULL_FRONT` is not tested**;
+- the sort and the edges as the 2.x Rej texts (the tie of the two larger y values goes to the pair compared with the third), slopes = dx x 0x4000 times eight times the reciprocal of dy, their integer parts clamped
+  to +-0x1cc (`VCR`); XH = XM = H.x << 14 (no correction for the y fraction);
+- the command id is the low byte of the geometry mode `| 0xcc`: **always shaded**; the second byte the area's sign `<< 7 |` the tile byte (DMEM 0x122);
+- the attributes (`rej1_tri_attrs`) are the microcode's own, not F3DEX2's:
+  - the values at the start are the top vertex's, with the fractions 0 (the colours have none; the texture's are stored from the colour lanes);
+  - the x and y gradients are the cross products of the edges with four times the edge deltas, times twice the reciprocal of the 32-bit area (no Newton step);
+  - the edge gradient is (L - H) times eight times the reciprocal of the H-L dy;
+  - the shade has **no y gradient** (zeros);
+  - z: the record's word << 5 (wrapping), its gradients times 32;
+  - the texture lanes are s, t and 0x7fff times 1/w over the **largest** 1/w of the three.
+- The fraction registers of the middle and the low vertex are cleared once per command: the second triangle of a `G_TRI2` finds the first one's x gradient (times 32, the low halfword) and edge gradient (times 32, the
+  saturated integer part) in its colour fractions (`rej_tri_in.x1_frac`).
+
+The variants: **`texf0`**: the top vertex's texture fractions are never loaded and stay 0 (1.21 and the earlier 1.23: the text lacks `ldv v16[8], 8(s7)`); **`flat1`**: the register with the flat-shading vertex is not set
+again for the second triangle of a `G_TRI2`, which takes the colour of w1's first vertex (1.21: the text lacks `addi a0, t0, 0`).
+
+### 11.4 The other commands
+
+- **`G_CULLDL`**: ends the display list when the sx of every vertex from w0's to w1's is 0x7fff (the numbers times 10 are byte offsets).
+- **`G_BRANCH_Z`**: the 32-bit screen z at the record `w0 >> 10` bytes in (the GBI's `5 v << 12`).
+- **`G_MODIFYVTX`**: the word w1 at the record of w0's vertex plus the field's offset `^ 0x18` (0x10 colour -> +8, 0x14 st -> +12, 0x18 xy -> +0, 0x1c z -> +4).
+- **The output**: a command is assembled in the buffer DMEM16[0x15a] selects; the flush publishes `DPC_END` = the previous write pointer when it starts (the F3DLX W1 / W3 of rdp.md section 9), DMAs the chunk and toggles the
+  halfword (`xori 0x160`). Pass-through commands publish the new pointer after the flush (W2), as F3DLX.
+
+### 11.5 Status
+
+Registered (`l_lxrej123`, `l_lxrej123a`, `l_lxrej121` in `f3dex.c`) and references of the derivation (`rej1` of the F3DEX 1.x record: the primary reference's Rej words, the variants read from the text). Declines: vertex
+numbers outside the 64 slots or odd, a `G_VTX` count past them or with too short an operand, `G_CULLDL` / `G_BRANCH_Z` / `G_MODIFYVTX` numbers and fields no game writes, geometry bits the build does not define. See testing.md, "1.x Rej".

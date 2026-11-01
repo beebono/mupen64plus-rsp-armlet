@@ -53,6 +53,7 @@ void dbuild_rec_of(const struct hle_ucode *u, struct derive_rec *r)
         r->non = b1->fx.non;
         r->dlx = b1->fx.dlx;
         r->culldl_off = b1->culldl_off;
+        r->rej1 = b1->rej ? (uint8_t)(DERIVE_REJ1 | (b1->rej->texf0 ? DERIVE_REJ1_TEXF0 : 0) | (b1->rej->flat1 ? DERIVE_REJ1_FLAT1 : 0)) : 0;
         r->load_key = b1->load_key;
         return;
     }
@@ -129,7 +130,7 @@ int dbuild_rec_equal(const struct derive_rec *a, const struct derive_rec *b, con
     for (k = 0; k < F3F_N; k++)
         CMP(f3[k], "f3")
     CMP(clip_mask, "clip_mask") CMP(culldl_mask, "culldl_mask")
-    CMP(fam, "fam") CMP(non, "non") CMP(dlx, "dlx") CMP(culldl_off, "culldl_off")
+    CMP(fam, "fam") CMP(non, "non") CMP(dlx, "dlx") CMP(culldl_off, "culldl_off") CMP(rej1, "rej1")
     CMP(rej_flags, "rej_flags")
     CMP(gen204, "gen204") CMP(clip204, "clip204") CMP(zex, "zex") CMP(bz_z, "bz_z") CMP(bz_w, "bz_w") CMP(reject_mask, "reject_mask") CMP(load_key, "load_key") CMP(n_ext, "n_ext")
 #undef CMP
@@ -198,6 +199,18 @@ static int make_f1(struct dbuild *d, uint64_t text_id, const struct derive_resul
     d->b1.fx.lay = &d->lay1;
     d->b1.culldl_off = rec->culldl_off;
     d->b1.load_key = rec->load_key;
+    d->b1.rej = NULL;
+    if (rec->rej1) {                                    /* (the Rej words of the primary, the variants of the record) */
+        const struct f3dex_rej1 *pr1 = ((const struct f3dex1_build *)pu->fam_data)->rej;
+        if (!pr1) {
+            *why = "a 1.x Rej record whose primary reference is not one";
+            return 1;
+        }
+        d->rej1 = *pr1;
+        d->rej1.texf0 = MUT(629, (rec->rej1 & DERIVE_REJ1_TEXF0) != 0, (rec->rej1 & DERIVE_REJ1_TEXF0) == 0);
+        d->rej1.flat1 = MUT(630, (rec->rej1 & DERIVE_REJ1_FLAT1) != 0, (rec->rej1 & DERIVE_REJ1_FLAT1) == 0);
+        d->b1.rej = MUT(626, &d->rej1, NULL);
+    }
     snprintf(d->name, sizeof(d->name), "derived %s (%016" PRIx64 ", from %s)", derive_verdict_name(r->verdict), text_id, pr->name);
     d->uc.id = text_id;
     d->uc.name = d->name;

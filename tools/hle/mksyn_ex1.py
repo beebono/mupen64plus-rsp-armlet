@@ -17,7 +17,9 @@
          load    a few stages, then loads in a sequence drawn from  A -> A, A -> B, A -> B -> A, A -> B -> B, A -> A -> B  (the data of the loaded text 2048 bytes, or fewer: the DMEM above is the old state);
                  after a load the state commands are given again, as a game does (the data image resets the matrices, segments and viewport, a short one not)
          xload   a stage, then the load of X: the front-end declines (the JIT runs the task); a seed passes when both agree and the front-end declines or is equal
-         call    as load, with the loads inside a called display list (the return stack survives a data image shorter than 0x148 bytes, else the depth byte is the image's)
+         call    as load, with the loads inside a called display list (MKSYN1_STAGES=n: n stages after each load) (the return stack survives a data image shorter than 0x148 bytes, else the depth byte is the image's)
+         rej     the 1.x Rej builds (F3DLX.Rej 1.2x: Gen.rejstage), on a snapshot of one
+         rejbad  a rej stage, then a command no game writes (a vertex number, a count or a field outside what the 1.x Rej front-end accepts): a seed passes when the front-end declines it
 """
 import os
 import random
@@ -167,6 +169,67 @@ class Gen:
                 self.rdp()
 
 
+    def rejstage(self):
+        """the 1.x Rej builds (64 slots of 20 bytes, no clipping): vertices inside and outside the guard band, fog, lighting and texture generation, the texture, both cull bits, G_TRI1 / G_TRI2,
+        G_CULLDL, G_BRANCH_Z, G_MODIFYVTX and G_MW_POINTS"""
+        r, d = self.r, self.d
+        lit = r.random() < 0.35
+        geom = r.choice([0, 0x4, 0x4 | 0x200, 0x200]) | r.choice([0, 1]) | r.choice([0, 0, 0x1000, 0x2000, 0x3000]) | (0x20000 if lit else 0) | r.choice([0, 0x10000]) | r.choice([0, 0x800000])
+        if lit and r.random() < 0.4:
+            geom |= 0x40000 | r.choice([0, 0x80000])
+        self.setup(geom, lit)
+        if geom & 0x10000:
+            moveword(d, 8, 0, (r.choice([0x100, 0x800, 0x1800, 0x7fff]) << 16) | (r.randrange(-0x400, 0x400) & 0xffff))     # G_MW_FOG: multiplier, offset
+        if r.random() < 0.6:
+            d.cmd(0xbb000000 | (r.randrange(8) << 11) | (r.randrange(8) << 8) | 1, r.choice([0xffffffff, 0x80008000, 0x20004000, 0x10001000]))     # G_TEXTURE on
+        self.matrices(r.choice([1, 0.5, 1 / 8, 4]))
+        last = None
+        for _ in range(r.randrange(1, 4)):
+            n = r.choice([1, 2, 3, 4, 5, 7, 8, 11, 16, 32])
+            v0 = r.randrange(0, 64 - n + 1)
+            vs = b""
+            spread = r.choice([2, 20, 100, 400, 2000])
+            for _ in range(n):
+                c = (r.randrange(256), r.randrange(256), r.randrange(256), r.randrange(256))
+                if lit:
+                    c = (r.randrange(-127, 128) & 255, r.randrange(-127, 128) & 255, r.randrange(-127, 128) & 255, r.randrange(256))
+                vs += vtx(r.randint(-spread, spread), r.randint(-spread, spread), r.randint(-spread, spread), r.randrange(-1024, 1024), r.randrange(-1024, 1024), c)
+            self.data[self.vaddr] = vs
+            d.cmd(0x04000000 | (v0 * 2 << 16) | (n << 10) | (16 * n - 1), BASE + self.vaddr)
+            self.vaddr += 0x200
+            last = (v0, n)
+            if n >= 3:
+                for _ in range(r.randrange(2, 10)):
+                    a, b, c = r.sample(range(v0, v0 + n), 3)
+                    if r.random() < 0.5:
+                        a2, b2, c2 = r.sample(range(v0, v0 + n), 3)
+                        d.cmd(0xb1000000 | (a2 * 2 << 16) | (b2 * 2 << 8) | c2 * 2, (a * 2 << 16) | (b * 2 << 8) | c * 2)
+                    else:
+                        d.cmd(0xbf000000, (a * 2 << 16) | (b * 2 << 8) | c * 2)
+            if r.random() < 0.3:                                # G_MODIFYVTX of a field of a loaded vertex
+                v = r.randrange(v0, v0 + n)
+                d.cmd(0xb2000000 | (r.choice([0x10, 0x14, 0x18, 0x1c]) << 16) | v * 2, r.randrange(1 << 32))
+            if r.random() < 0.15 and v0 == 0:                   # G_MW_POINTS: a word of the first records
+                moveword(d, 12, 4 * r.randrange(0, 15), r.randrange(1 << 32))
+            if r.random() < 0.3:
+                self.rdp()
+        if last and r.random() < 0.4:                           # G_CULLDL over the last batch
+            v0, n = last
+            d.cmd(0xbe000000 | v0 * 2, (v0 + n - 1) * 2)
+        if last and r.random() < 0.4:                           # G_BRANCH_Z to a list of a few triangles
+            v0, n = last
+            sub = DL()
+            for _ in range(2):
+                if n >= 3:
+                    a, b, c = r.sample(range(v0, v0 + n), 3)
+                    sub.cmd(0xbf000000, (a * 2 << 16) | (b * 2 << 8) | c * 2)
+            sub.cmd(0xb8000000, 0)
+            self.data[0x11000] = sub.bytes()
+            v = r.randrange(v0, v0 + n)
+            d.cmd(0xb4000000, BASE + 0x11000)
+            d.cmd(0xb0000000 | (v * 5 << 12) | v * 2, r.choice([0, 0x7fffffff, r.randrange(-0x4000000, 0x4000000) & 0xffffffff]))
+
+
 def load(g, text_addr, data_addr, size, kseg):
     d = g.d
     t = text_addr | (0x80000000 if kseg else 0)
@@ -200,6 +263,32 @@ def case(name, seed):
     if name == "stage":
         g.stage()
         g.d.cmd(0xb8000000, 0)
+    elif name == "rej":
+        for _ in range(r.randrange(1, 3)):
+            g.rejstage()
+        g.d.cmd(0xb8000000, 0)
+    elif name == "rejbad":                                      # one command no game writes, after a normal stage: the 1.x Rej front-end declines it (a seed passes when it does)
+        g.rejstage()
+        k = seed % 7
+        d = g.d
+        if k == 0:
+            d.cmd(0xb0000000 | (r.choice([64, 70, 200]) * 5 << 12) | 2, 0)                 # G_BRANCH_Z: a vertex past the 64 slots
+        elif k == 1:
+            d.cmd(0xb2000000 | (r.choice([0x00, 0x20, 0x12, 0x08]) << 16) | 2 * r.randrange(64), 0)    # G_MODIFYVTX: a field offset outside 0x10 .. 0x1c
+        elif k == 2:
+            d.cmd(0xb2000000 | (0x10 << 16) | r.choice([129, 130, 200]), 0)              # G_MODIFYVTX: an odd vertex number or one past the slots
+        elif k == 3:
+            a = r.randrange(1, 64)
+            d.cmd(0xbe000000 | 2 * a, 2 * r.randrange(0, a))                          # G_CULLDL: the end before the start
+        elif k == 4:
+            d.cmd(0xbe000000 | 2 * r.randrange(64), r.choice([129, 140, 300]))         # G_CULLDL: past the slots or odd
+        elif k == 5:
+            d.cmd(0xbf000000, (r.choice([129, 131, 160, 254]) << 16) | (2 << 8) | 4)    # G_TRI1: an odd vertex number or one past the slots
+        else:
+            n = r.choice([6, 8])
+            g.data[g.vaddr] = b"\0" * (16 * n)
+            d.cmd(0x04000000 | (r.choice([2 * 60, 2 * 62, 2 * 3 + 1]) << 16) | (n << 10) | (16 * n - 1), BASE + g.vaddr)     # G_VTX: slots past the 64, or an odd first slot
+        d.cmd(0xb8000000, 0)
     elif name in ("load", "call"):
         seq = r.choice(["A", "B", "BA", "BB", "AB", "AA", "B"])
         if env.get("MKSYN1_SEQ"):
@@ -218,7 +307,8 @@ def case(name, seed):
                 load(g, BASE + TA, BASE + DA, sz, kseg)
             else:
                 load(g, BASE + TB, BASE + DB, sz, kseg)
-            g.stage()
+            for _ in range(int(env.get("MKSYN1_STAGES", "1"))):        # (more than one: lists longer than the command window after a load)
+                g.stage()
         if env.get('MKSYN1_INFO'):
             print('SIZES', [hex(x) for x in sizes], 'kseg', kseg, file=sys.stderr)
         g.d.cmd(0xb8000000, 0)

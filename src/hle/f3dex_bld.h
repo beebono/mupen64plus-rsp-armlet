@@ -43,12 +43,19 @@ struct s2d1_build {
     uint8_t bgc107;                     /* G_BG_COPY is the routine of S2DEX 2.x (1.07), not 1.06's own */
 };
 
+/* the Rej words of a 1.x Rej layout (rej1_dmem.h): the slots, the mark table, the word with the y mask, the halfword that selects the output buffer (and what toggles it); the variants */
+struct f3dex_rej1 {
+    uint16_t vbuf, tab, ymask, bufsel, buftog;
+    uint8_t texf0;          /* the top vertex's texture fractions are 0 (REJ_X1T0) */
+    uint8_t flat1;          /* the second triangle of a G_TRI2 takes the flat colour of the first one's first vertex (1.21: the register is not set again) */
+};
 struct f3dex1_build {
     struct f3dex_build fx;              /* reject mask, NoN, LX, the DMEM layout */
     uint16_t pc[F1_NPC];                /* by F1PC_*; 0: the build has no such command */
     uint8_t culldl_off;                 /* G_CULLDL's operands are byte offsets into the vertex buffer and the last vertex is not tested (the 0.95 builds), not vertex numbers */
     uint64_t load_key;                  /* FNV-1a-64 of the text's first 0xf48 bytes (the derivation's record key; 0: no dump of the text) */
     const struct s2d1_build *s2;        /* S2DEX 1.x: the commands are the 2D ones (hle_s2dex1.h); NULL for the F3DEX 1.x / F3DLX builds */
+    const struct f3dex_rej1 *rej;       /* the 1.x Rej builds (F3DLX.Rej 1.2x, rej1_dmem.h): the vertex, triangle, G_CULLDL, G_BRANCH_Z and G_MODIFYVTX commands and the output buffers are those; NULL for the others */
 };
 
 #ifdef ARMLET_NATIVE

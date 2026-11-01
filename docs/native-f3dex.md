@@ -74,6 +74,7 @@ Builds (ids as gfx_ucode.c logs them) and the games they were run with:
 | `pc[24]` | the start-up code's stop (`head`), the loop's return point that the no-op commands lead to (`nop`), and the handler of every command (0: the build has none) | read from each text's tables |
 | `culldl_off` | G_CULLDL takes byte offsets into the vertex buffer and leaves the last vertex out (0.95), not vertex numbers | 1 for the 0.95 builds |
 | `load_key` | the FNV-1a-64 of the text's first 0xf48 bytes: the record's key for the derivation and the probe | from the dumps (F3DLX 0.95: none) |
+| `rej` | the 1.x Rej builds (`struct f3dex_rej1`: the slots, the mark table, the y mask, the output buffer selector and its toggle, the variants `texf0` / `flat1`): section 9 | F3DLX.Rej 1.21 / 1.23; NULL for the others |
 
 The commands are dispatched through the build's own handler tables in DMEM (class 0: `jt0 + 2 op`, ops 0x00 .. 0x09; class 2: `jt2 + 2 (op & 0x7f)`, ops 0xaf .. 0xbf; the other cells of the overlapping tables
 are not handler pointers and decline), whose pcs are matched against the record once per task (`make_kinds`): the 0.95 numbering of RDPHALF / PERSPNORM / G_QUAD, Turok's missing G_BRANCH_Z and G_LOAD_UCODE
@@ -195,3 +196,10 @@ output, with another loop (`s2_cmd`, `hle_s2dex1.h`, included by `f3dex.c`). Dif
 must end where the microcode's do), the end of the task is the microcode's own code on the interpreter, G_SETOTHERMODE_L / _H look at the next command of the window (the microcode peeks), and a store into the flags words can change the jump table's first cell (`s2_cells_changed`). The dead ranges of an S2DEX 1.x build are its own plus F3DEX 1.x's (the lean F3DEX path leaves its window and output buffer stale). `tail_differs`: the IMEM
 tail a `G_LOAD_UCODE` leaves must be the same in both texts, but for the two words of the DMA wait.
 
+## 9. The 1.x Rej texts as a mode of the front-end (2026-11-01; ucode-rej.md section 11)
+
+F3DLX.Rej 1.21 and 1.23 are F3DLX 1.23's skeleton and lighting with the Rej vertex and triangle code, so a build with `f3dex1_build.rej` set runs on this front-end: G_VTX (`cmd_vtx_rej1`), G_TRI1 / G_TRI2
+(`cmd_tri_rej1`: w1's triangle, then w0's, one chunk), G_CULLDL, G_BRANCH_Z and G_MODIFYVTX take the Rej forms (`rej1_dmem.h`), everything else is the F3DEX 1.x code with the build's layout. What the mode
+adds to the loop: the output alternates between two buffers (the halfword at `rej.bufsel` toggles on every flush, in the lean mode as in the exact one); the return stack is not word-aligned (unaligned stores
+and loads for every build); and in a task that switched to a Rej text by `G_LOAD_UCODE` the command window is read into DMEM and G_TRI1 writes its bytes there as the microcode does, because the Rej window lies
+over three vertex slots of the F3DEX 1.x builds that load it. The range 0xd90 .. 0xddf, which F3DEX 1.x never uses and the Rej output buffer does, is dead for the F3DEX 1.x builds.

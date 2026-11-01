@@ -112,6 +112,47 @@ uint8_t f3dex_fog_byte(const struct f3dex_vctx *c, int16_t qzi, uint16_t qzf)
     return (uint8_t)FMUT(1, f, f + 1);
 }
 
+/* ---- the lit colour (light.md): the records nrec down to 0 for vertex h of the pair, texture generation; col[0..2] and st are overwritten (col[3] is the input's alpha) ----------------- */
+void f3dex_lit(const struct f3dex_vctx *c, const struct f3dex_vin *in, unsigned h, uint8_t col[4], int16_t st[2])
+{
+    int16_t n[3] = { (int16_t)((int8_t)in->c[0] << 8), (int16_t)((int8_t)in->c[1] << 8), (int16_t)((int8_t)in->c[2] << 8) };
+    int16_t acc[3] = { 0, 0, 0 }, cur[3];
+    for (int j = 0; j < 3; j++)
+        cur[j] = (int16_t)(c->lcol[c->nrec + 1][4 * h + j] << 7);       /* the ambient colour, added first */
+    int16_t D = 0, Dprev = 0, col0[3] = { 0, 0, 0 };
+    for (int k = (int)c->nrec; k >= 0; k--) {
+        for (int j = 0; j < 3; j++)
+            acc[j] = hle_clamp16((int32_t)acc[j] + (FMUT(12, cur[j] > 0, 1) ? cur[j] : 0));
+        int16_t p[3];
+        for (int j = 0; j < 3; j++)
+            p[j] = vmulf16(n[j], (int16_t)(c->ldir[k][4 * h + j] << 8));
+        Dprev = D;
+        D = hle_clamp16((int32_t)hle_clamp16((int32_t)p[0] + p[1]) + p[2]);
+        for (int j = 0; j < 3; j++) {
+            col0[j] = (int16_t)(c->lcol[k][4 * h + j] << 7);
+            cur[j] = vmulf16(col0[j], D);
+        }
+    }
+    for (int j = 0; j < 3; j++)
+        col[j] = (uint8_t)(acc[j] >> 7);
+    if (c->geom & F3DEX_G_TEXGEN) {
+        for (int j = 0; j < 2; j++) {
+            hle_acc a = hle_mulf(col0[j], D);                              /* the accumulator the last VMULF left: 2 col0 D + 0x8000 */
+            a = hle_wrap48(a + (hle_acc)(uint16_t)(c->lk[4 * h + j] << 8) * Dprev);    /* VMADN: unsigned weight x signed dot product */
+            int16_t v = hle_sclamp(a);
+            if (c->geom & F3DEX_G_TEXGEN_LINEAR) {
+                int16_t sq = vmulf16(v, v);
+                int16_t cu = vmulf16(sq, v);
+                hle_acc b = (hle_acc)2 * cu * c->tg[0] + 0x8000;
+                b += (hle_acc)2 * cu * FMUT(11, c->tg[2], c->tg[1]);
+                b += (hle_acc)2 * v * c->tg[1];
+                v = hle_sclamp(hle_wrap48(b));
+            }
+            st[j] = hle_clamp16((int32_t)v + FMUT(2, c->tgbias, c->tgbias + 1));
+        }
+    }
+}
+
 /* ---- one vertex --------------------------------------------------------------------------------------------------------------------------------------------------------------------- */
 struct vinfo {
     int wneg;
@@ -150,44 +191,8 @@ static void vtx_one(const struct f3dex_vctx *c, const struct f3dex_vin *in, unsi
     uint8_t col[4];
     memcpy(col, in->c, 4);
     int16_t st[2] = { in->s, in->t };
-    if (lit) {
-        int16_t n[3] = { (int16_t)((int8_t)in->c[0] << 8), (int16_t)((int8_t)in->c[1] << 8), (int16_t)((int8_t)in->c[2] << 8) };
-        int16_t acc[3] = { 0, 0, 0 }, cur[3];
-        for (int j = 0; j < 3; j++)
-            cur[j] = (int16_t)(c->lcol[c->nrec + 1][4 * h + j] << 7);       /* the ambient colour, added first */
-        int16_t D = 0, Dprev = 0, col0[3] = { 0, 0, 0 };
-        for (int k = (int)c->nrec; k >= 0; k--) {
-            for (int j = 0; j < 3; j++)
-                acc[j] = hle_clamp16((int32_t)acc[j] + (FMUT(12, cur[j] > 0, 1) ? cur[j] : 0));
-            int16_t p[3];
-            for (int j = 0; j < 3; j++)
-                p[j] = vmulf16(n[j], (int16_t)(c->ldir[k][4 * h + j] << 8));
-            Dprev = D;
-            D = hle_clamp16((int32_t)hle_clamp16((int32_t)p[0] + p[1]) + p[2]);
-            for (int j = 0; j < 3; j++) {
-                col0[j] = (int16_t)(c->lcol[k][4 * h + j] << 7);
-                cur[j] = vmulf16(col0[j], D);
-            }
-        }
-        for (int j = 0; j < 3; j++)
-            col[j] = (uint8_t)(acc[j] >> 7);
-        if (c->geom & F3DEX_G_TEXGEN) {
-            for (int j = 0; j < 2; j++) {
-                hle_acc a = hle_mulf(col0[j], D);                              /* the accumulator the last VMULF left: 2 col0 D + 0x8000 */
-                a = hle_wrap48(a + (hle_acc)(uint16_t)(c->lk[4 * h + j] << 8) * Dprev);    /* VMADN: unsigned weight x signed dot product */
-                int16_t v = hle_sclamp(a);
-                if (c->geom & F3DEX_G_TEXGEN_LINEAR) {
-                    int16_t sq = vmulf16(v, v);
-                    int16_t cu = vmulf16(sq, v);
-                    hle_acc b = (hle_acc)2 * cu * c->tg[0] + 0x8000;
-                    b += (hle_acc)2 * cu * FMUT(11, c->tg[2], c->tg[1]);
-                    b += (hle_acc)2 * v * c->tg[1];
-                    v = hle_sclamp(hle_wrap48(b));
-                }
-                st[j] = hle_clamp16((int32_t)v + FMUT(2, c->tgbias, c->tgbias + 1));
-            }
-        }
-    }
+    if (lit)
+        f3dex_lit(c, in, h, col, st);
     memcpy(o->col, col, 4);
     o->s = hle_sclamp((hle_acc)st[0] * c->tscale[0]);                     /* VMUDM: (s * scale) >> 16 */
     o->t = hle_sclamp((hle_acc)st[1] * c->tscale[1]);

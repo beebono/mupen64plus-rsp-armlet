@@ -302,9 +302,12 @@ static int rej_tri_prepare(const struct rej_tri_in *in, const struct fx2_vtx *fv
     unsigned k;
 
     for (k = 0; k < 3; k++)
-        if (fv[k].sy >= MUT(383, REJ_MARK_Y, REJ_MARK_Y + 1))
+        if ((in->flags & REJ_X1) ? fv[k].sx == MUT(606, 0x7fff, 0x7ffe) : fv[k].sy >= MUT(383, REJ_MARK_Y, REJ_MARK_Y + 1))
             return FX2_TRI_SKIP;
-    {
+    if (in->flags & REJ_X1) {                                           /* (the same sum with the other saturated differences: (A - B).y (C - A).x + (C - A).y (B - A).x) */
+        int32_t sum = (int32_t)hle_clamp16((int32_t)A.y - B.y) * hle_clamp16((int32_t)C.x - A.x) + (int32_t)hle_clamp16((int32_t)C.y - A.y) * hle_clamp16((int32_t)MUT(617, B.x - A.x, A.x - B.x));
+        cross16 = hle_clamp16(sum);
+    } else {
         int32_t sum = (int32_t)hle_clamp16((int32_t)A.x - B.x) * hle_clamp16((int32_t)A.y - C.y) + (int32_t)hle_clamp16((int32_t)A.x - C.x) * hle_clamp16((int32_t)B.y - A.y);
         cross16 = hle_clamp16(sum);
     }
@@ -346,6 +349,12 @@ static int rej_tri_prepare(const struct rej_tri_in *in, const struct fx2_vtx *fv
         struct fx2_pair S;
         mm(dxs, A32, &tt, &full);
         S = rd(tt, full);
+        if (in->flags & REJ_X1) {                                        /* (the 1.x texts clamp the integer part: VCR with 0x1cc) */
+            if (S.i > 0x1cc)
+                S.i = MUT(612, 0x1cc, 0x1cb);
+            if (S.i < ~0x1cc)
+                S.i = ~0x1cc;
+        }
         st->slope[k] = S;
         slope_m[k] = S;
     }
@@ -405,8 +414,146 @@ static void rej_tri_in_f2(const struct rej_tri_in *in, struct fx2_vtx fv[3], str
     for (k = 0; k < 3; k++)
         ti->v[k] = &fv[k];
     ti->g = in->g;
+    if (in->flags & REJ_X1) {                                               /* (the 1.x texts: smooth is 0x200, and flat shading takes all four bytes of the first vertex) */
+        if (!(in->g & MUT(607, 0x200, 0x400)))
+            for (k = 0; k < 3; k++)
+                memcpy(fv[k].col, in->x1_flat ? in->x1_flat->col : in->v[0]->col, MUT(608, 4, 3));
+        ti->g |= 0x200000;
+    }
     ti->tex = in->tex;
     ti->tile = in->tile;
+}
+
+/* The attributes of the 1.x texts (REJ_X1), the microcode's own code: the values at the start are the top vertex's, with the fractions 0 (the colours have none; the texture's are stored from the colour lanes);
+ * the gradients along x and y are the cross products of the edges with four times the edge deltas, times twice the reciprocal of the area (no Newton step); the gradient along the edge is the
+ * difference of the low and the top vertex times eight times the reciprocal of its dy; the shade has no y gradient (zeros); z is the record's word times 32, its gradients times 32. */
+static inline struct fx2_pair sub32(struct fx2_pair a, struct fx2_pair b)
+{
+    struct fx2_pair r;
+    r.f = (uint16_t)(a.f - b.f);
+    r.i = hle_clamp16((int32_t)a.i - b.i - (a.f < b.f));
+    return r;
+}
+static inline struct fx2_pair x32(struct fx2_pair a)                    /* VMUDN / VMADH with 0x20 */
+{
+    struct fx2_pair r;
+    hle_acc acc = (hle_acc)a.f * 32 + (((hle_acc)a.i * 32) << 16);
+    r.f = (uint16_t)(a.f * 32u);
+    r.i = hle_sclamp(acc);
+    return r;
+}
+static unsigned rej1_tri_attrs(const struct rej_tri_in *in, const struct fx2_tri_state *st, uint32_t *cmd)
+{
+    const struct fx2_vtx *v3[3] = { st->H, st->M, st->L };
+    uint32_t g = in->g;
+    unsigned tex = in->tex, zb = g & 1, k, l, o;
+    struct fx2_pair att[3][8], dMH[8], dLH[8], dX[8], dY[8], dE[8], R, RLH;
+    int16_t dyMH4 = hle_clamp16(4 * (int32_t)st->dyMH), nyLH4 = hle_clamp16(4 * (int32_t)st->nyLH), dxLH4 = hle_clamp16(4 * (int32_t)st->dxLH), nxMH4 = hle_clamp16(4 * (int32_t)st->nxMH);
+    int16_t dyLH = hle_clamp16((int32_t)st->L->sy - st->H->sy);
+    hle_acc tt, full;
+
+    for (k = 0; k < 3; k++) {
+        for (l = 0; l < 4; l++) {
+            att[k][l].i = v3[k]->col[l];
+            att[k][l].f = k == 0 ? 0 : MUT(616, in->x1_frac[4 * (k - 1) + l], 0);
+        }
+        for (l = 4; l < 7; l++)
+            att[k][l].i = 0, att[k][l].f = 0;
+        att[k][7].i = v3[k]->szi;
+        att[k][7].f = v3[k]->szf;
+    }
+    if (tex) {                                                          /* s, t, 0x7fff times 1/w over the largest 1/w of the three */
+        int32_t w[3], mw;
+        struct fx2_pair Rm;
+        for (k = 0; k < 3; k++)
+            w[k] = (int32_t)((uint32_t)(uint16_t)v3[k]->rwi << 16 | v3[k]->rwf);
+        mw = w[0] > w[1] ? w[0] : w[1];
+        mw = mw > w[2] ? mw : w[2];
+        Rm = fxs((int32_t)hle_rcp32(mw));
+        for (k = 0; k < 3; k++) {
+            struct fx2_pair r;
+            int16_t x[3] = { v3[k]->s, v3[k]->t, 0x7fff };
+            mm(fxs(w[k]), Rm, &tt, &full);
+            r = rd(tt, full);
+            for (l = 0; l < 3; l++) {
+                hle_acc acc = (hle_acc)x[l] * r.f + (((hle_acc)x[l] * r.i) << 16);
+                att[k][4 + l].i = hle_sclamp(acc);
+                att[k][4 + l].f = k == 0 && MUT(627, (in->flags & REJ_X1T0), !(in->flags & REJ_X1T0)) ? 0 : hle_uclamp(acc);
+            }
+        }
+    }
+    {
+        uint32_t rr = hle_rcp32(st->area);
+        hle_acc a = (hle_acc)(uint16_t)rr * 2 + (((hle_acc)(int16_t)(rr >> 16) * 2) << 16);
+        R.f = (uint16_t)(rr * 2u);
+        R.i = hle_sclamp(a);
+    }
+    {
+        hle_acc a = hle_mac_32xu16((int32_t)hle_rcp32((int32_t)dyLH), 8);
+        RLH.i = hle_sclamp(a);
+        RLH.f = hle_uclamp(a);
+    }
+    for (l = 0; l < 8; l++) {
+        hle_acc a1, a2;
+        struct fx2_pair nx, ny;
+        dMH[l] = sub32(att[1][l], att[0][l]);
+        dLH[l] = sub32(att[2][l], att[0][l]);
+        a1 = hle_wrap48((hle_acc)dLH[l].f * dyMH4 + (((hle_acc)dLH[l].i * dyMH4) << 16) + (hle_acc)dMH[l].f * nyLH4 + (((hle_acc)dMH[l].i * nyLH4) << 16));
+        a2 = hle_wrap48((hle_acc)dMH[l].f * dxLH4 + (((hle_acc)dMH[l].i * dxLH4) << 16) + (hle_acc)dLH[l].f * nxMH4 + (((hle_acc)dLH[l].i * nxMH4) << 16));
+        nx.i = (int16_t)(a1 >> 32);
+        nx.f = (uint16_t)(a1 >> 16);
+        ny.i = (int16_t)(a2 >> 32);
+        ny.f = (uint16_t)(a2 >> 16);
+        mm(nx, R, &tt, &full);
+        dX[l] = rd(tt, full);
+        mm(ny, R, &tt, &full);
+        dY[l] = rd(tt, full);
+        mm(dLH[l], RLH, &tt, &full);
+        dE[l] = rd(tt, full);
+    }
+    if (in->x1_next)
+        for (l = 0; l < 4; l++) {
+            in->x1_next[l] = (uint16_t)(dX[l].f * 32u);
+            in->x1_next[4 + l] = (uint16_t)x32(dE[l]).i;
+        }
+    o = 32;
+    for (l = 0; l < 4; l++) {                                           /* the shade */
+        put16(cmd, o + 2 * l, (uint16_t)att[0][l].i);
+        put16(cmd, o + 8 + 2 * l, (uint16_t)dX[l].i);
+        put16(cmd, o + 16 + 2 * l, 0);
+        put16(cmd, o + 24 + 2 * l, dX[l].f);
+        put16(cmd, o + 32 + 2 * l, (uint16_t)dE[l].i);
+        put16(cmd, o + 40 + 2 * l, 0);
+        put16(cmd, o + 48 + 2 * l, dE[l].f);
+        put16(cmd, o + 56 + 2 * l, MUT(613, 0, dY[l].f));
+    }
+    o += 64;
+    if (tex) {
+        for (l = 0; l < 4; l++) {
+            put16(cmd, o + 2 * l, (uint16_t)att[0][4 + l].i);
+            put16(cmd, o + 8 + 2 * l, (uint16_t)dX[4 + l].i);
+            put16(cmd, o + 16 + 2 * l, MUT(614, 0, att[0][4 + l].f));      /* (the lanes of the colour fractions) */
+            put16(cmd, o + 24 + 2 * l, dX[4 + l].f);
+            put16(cmd, o + 32 + 2 * l, (uint16_t)dE[4 + l].i);
+            put16(cmd, o + 40 + 2 * l, (uint16_t)dY[4 + l].i);
+            put16(cmd, o + 48 + 2 * l, dE[4 + l].f);
+            put16(cmd, o + 56 + 2 * l, dY[4 + l].f);
+        }
+        o += 64;
+    }
+    if (zb) {
+        uint32_t z0 = ((uint32_t)(uint16_t)st->H->szi << 16 | st->H->szf) << MUT(615, 5, 4);
+        struct fx2_pair zx = x32(dX[7]), ze = x32(dE[7]), zy = x32(dY[7]);
+        put32(cmd, o, z0);
+        put16(cmd, o + 4, (uint16_t)zx.i);
+        put16(cmd, o + 6, zx.f);
+        put16(cmd, o + 8, (uint16_t)ze.i);
+        put16(cmd, o + 10, ze.f);
+        put16(cmd, o + 12, (uint16_t)zy.i);
+        put16(cmd, o + 14, zy.f);
+        o += 16;
+    }
+    return o;
 }
 
 int rej_tri_setup_core(const struct rej_tri_in *in, uint32_t *cmd, unsigned *len, int neon)
@@ -419,7 +566,9 @@ int rej_tri_setup_core(const struct rej_tri_in *in, uint32_t *cmd, unsigned *len
     r = rej_tri_prepare(in, fv, cmd, &st);
     if (r != FX2_TRI_DRAW)
         return r;
-    if (!((in->g & 4) || in->tex || (in->g & 1)))
+    if (in->flags & REJ_X1)
+        *len = rej1_tri_attrs(in, &st, cmd);
+    else if (!((in->g & 4) || in->tex || (in->g & 1)))
         *len = 32;
 #ifdef __aarch64__
     else if (neon)

@@ -321,6 +321,8 @@ int main(int argc, char **argv)
                     ((uint8_t *)W.dmem)[k ^ 3] = d[k];                     /* the data segment, where the boot code puts it */
                 for (k = 0; k < 0xf80; k++)
                     ((uint8_t *)W.imem)[(0x80 + k) ^ 3] = t[k];             /* the text, where the boot code puts it: IMEM 0x80 .. 0xfff */
+                W.imem[0] = 0x08000020u;                                    /* the boot code's jump to the text (j 0x80; the delay slot a nop): the F3DEX 1.x loop head 0x058, where the start-up
+                                                                               interpreter stops, is below the text */
                 {
                     uint32_t *m = W.dmem;
                     m[0xfc0 >> 2] = 1;

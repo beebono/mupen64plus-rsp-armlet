@@ -1059,3 +1059,67 @@ Desktop x86_64, `GfxMode=hle`, Perfect Dark (Europe), 3700 frames of the scripte
 | `derive_refs.c` (39 references), `--sync`, `derive_check.sh` | 0 out of step; passes (`l_pd` NONE, 45 unexplained, `pc.tri1` expected) |
 
 Not covered: the levels (fog, the clipper and lit geometry of gameplay), the other regions' texts, the devices.
+
+## 1.x Rej: F3DLX.Rej 1.21 and 1.23 on the F3DEX 1.x front-end (2026-11-01; docs/ucode-rej.md section 11)
+
+Builds `4610` (F3DLX.Rej 1.23), `7b02` (the earlier 1.23) and `3c51` (1.21). Desktop x86_64, `GfxMode=hle`, against the reference pairing, 3700 frames of the scripted pad.
+**The closed forms are checked against the microcode itself**: `tools/hle/gen_rej1_oracles.sh` makes rsp2c translations of a text's G_VTX and G_TRI1 / G_TRI2 handlers from its dump (an IMEM image of the head code,
+the text and the lighting overlay in its window; ROM-derived, git-ignored), `tools/hle/test_rej1.c` (`tools/hle/build_test_rej1.sh`, `REJ1_BUILD=123 | 121 | 123a`) runs random DMEM images through the oracle and through
+`rej1_dmem.h` and compares DMEM (the window, the operand and output buffers and the relight scratch excepted) and the bytes the flush sends.
+
+| check | result |
+|---|---|
+| `test_rej1` against the oracles, x86: G_VTX 1 .. 32 vertices (lit, texture generation, a relight, fog, vertices inside and outside the guard band, w of 0 and below, the extreme corners), G_TRI1 / G_TRI2 (marked vertices, both cull bits, flat and smooth, texture, z, records with y low bits, edges of zero length, wild coordinates, both output buffers) | 1.23: 20 000 + 19 400 cases, 1.21 and the earlier 1.23: 6000 + 5800 each; 0 failures |
+| the same under qemu-aarch64 (1.23) | 1500 + 1470 cases, 0 failures |
+| each variant against the other's oracle (1.21 with the earlier 1.23's, and back) | 172 of 1000 triangle cases fail: the tests tell the variants apart |
+| captured task starts (`ARMLET_GFX=jit` + `ARMLET_HLE_CAPTURE`), `armlet-native-replay` | Bust-A-Move 2 60, Mortal Kombat 4 60, Air Boarder 64 111 (1.21), Virtual Pro Wrestling 64 19 (the earlier 1.23): all equal, 0 declined. Tasks that start with another text and load the Rej one decline in the replay (the snapshot has the 0xf18 bytes the load's DMA read, the load key covers 0xf48): the load path is the synthetic `load` case and the games |
+| synthetic tasks (`tools/hle/mksyn_ex1.py`: `rej`, `rejbad`, and `load` / `call` from F3DLX 1.21 into the 1.21 Rej text; `MKSYN1_A_TEXT` / `MKSYN1_A_ADDR` put the text and its overlays where the snapshot's RDRAM lacks them) | `rej`: 400 seeds on two 1.23 snapshots, all equal; `rejbad`: 56 seeds, 0 differ, 41 declined at the guard they aim at (the others end the list before it); `load`: 120 seeds, 85 equal, 35 declined by design (a data image shorter than 0x800), 0 differ; 40 long lists after a load (`MKSYN1_STAGES=6`, more than a window of commands): all equal |
+| the snapshots under qemu-aarch64 | all 250 equal (the 1.x Rej code has no NEON form; the F3DEX 1.x lighting it shares is the scalar one) |
+| `tools/f3dex/fxn_vtx` (a64, qemu) after `f3dex_lit` was taken out of the F3DEX 1.x vertex code | NEON == scalar, 6 000 018 vertices (2 667 609 lit) |
+| equivalence gates (`ref` against `armlet-hle` and `ARMLET_HLE_VERIFY=1`) | identical, 0 differences: see the table below |
+| `ARMLET_DMEM_POISON=mask` + `ARMLET_HLE_POISON=1` (the final build): Bust-A-Move 2, Mortal Kombat 4, ISS 64, Airboarder 64, Fighters Destiny, Virtual Pro Wrestling 64 | identical to `ref` (the dead ranges are dead, the new F3DEX 1.x range 0xd90 .. 0xddf included) |
+
+| game | text | graphics tasks native |
+|---|---|---|
+| Bust-A-Move 2 (Europe) | 1.23 | 3199 of 3200 |
+| Mortal Kombat 4 (Europe) | 1.23 | 3071 of 3072 |
+| Dezaemon 3D (Japan) | 1.23 | 1535 of 1536 |
+| Bust-A-Move '99 (USA) | 1.23 | 3071 of 3072 |
+| ISS 64 (Europe) | 1.21 (and F3DEX 1.21) | 1834 of 1835 (3669 of 3669) |
+| Mortal Kombat Mythologies (Europe) | 1.21 | 2175 of 2176 |
+| Airboarder 64 (Europe) | 1.21, started and loaded by `G_LOAD_UCODE` from F3DLX 1.21 | 667 of 667 (1124 of 1125) |
+| Fighters Destiny (Europe) | 1.21, loaded from F3DEX.NoN 1.21 | 1663 of 1664 |
+| SimCity 2000 (Japan) | 1.21, loaded from F3DEX.NoN 1.21 | 1215 of 1408: the rest load a text no build covers, later than the sweep's 30 s |
+| WCW vs. nWo World Tour (Europe) | the earlier 1.23 (and F3DEX 1.23) | 9 of 9 (1782 of 1783) |
+| Virtual Pro Wrestling 64 (Japan) | the earlier 1.23 | 795 of 795 |
+
+Regression (`ref` against `armlet-hle` and verify, 3700 f; the shared code changed: the F3DEX 1.x front-end's output, return stack and dead ranges, `f3dex_lit`, `rej_fx.c`): Banjo-Kazooie, Toy Story 2, Star Fox 64,
+Mario Kart 64, Turok, Wipeout 64, Yoshi's Story, Pokemon Puzzle League, Glover, Excitebike 64, F-Zero X, Resident Evil 2: identical, 0 differences. The rg35xxsp build is clean (glibc <= 2.17).
+
+**Mutations** (`tools/hle/mutcheck_rej1.sh` for the closed forms against the oracles; the front-end's with `--hmut=N` against the snapshots and the synthetic cases; the derivation's with the offline probe):
+
+| # | the deliberate error | caught by |
+|---|---|---|
+| 600 .. 605 | the clip ratio on w; the near side of z marked; y + 1; the y mask; z not raised to the mark; the light parity | oracle (84 .. 1162 failures in 3000 cases) |
+| 606 .. 608, 611 .. 617 | the mark 0x7ffe; the smooth bit; a flat colour of three bytes; the cull bits swapped; the slope clamp 0x1cb; a shade y gradient; texture start fractions; z << 4; no carry of the colour fractions; the cross product's operand | oracle (11 .. 513) |
+| 627 | the texture fractions of `texf0` inverted | oracle of the 1.21 text (501) |
+| 610 | the bound of the vertex numbers of a triangle | **an equivalent mutant at the closed-form level** (the microcode turns any byte into an address and the oracle reads the same DMEM); `rejbad` (28 instead of 35 declines) |
+| 609, 620, 621, 623 | the guards of G_VTX slots, G_BRANCH_Z, G_MODIFYVTX, G_CULLDL numbers | `rejbad`: seeds no longer decline (3 differ / 32, 23, 23 declines instead of 35) |
+| 618, 619, 622, 624 | the output buffer not toggled; w0's triangle left out of the chunk; the field offset ^ 0x10; G_CULLDL compares 0x7ffc | snapshots and the `rej` case (5 .. 32 of 60 seeds) |
+| 625 | the return stack stored word-aligned | every snapshot declines |
+| 631, 632 | after a load into the Rej text: the window read 8 bytes off; G_TRI1's write into the window left out | the long `load` lists (40 of 40); `load` (2 seeds) |
+| 626, 629, 630 | a derived 1.x Rej build without the Rej words; `texf0` / `flat1` inverted | the offline probe FAILs (26, 5, 3 of 28 canned tasks differ) |
+
+**What the tests found** (fixed before the commit):
+- the return stack at 0x336 is not word-aligned: the front-end's aligned stores and loads put it two bytes low (every task differed in verify);
+- 1.21 and the earlier 1.23 are not 1.23: two variants (`texf0`, `flat1`), found by their oracles (about 500 of 3000 cases differed);
+- the triangle code's colour fractions carry from the first triangle of a `G_TRI2` to the second (the oracle, 230 of 1943 cases);
+- a task that loads the Rej text leaves the Rej output buffer at 0xd90 .. 0xddf, a range F3DEX 1.x never uses (Air Boarder 64, 318 tasks): dead for the F3DEX 1.x builds now; and the Rej window and G_TRI1's
+  write into it lie over F3DEX 1.x vertex slots: read and written after a load (the synthetic loads);
+- the leave-one-out check derived the earlier 1.23 EXACT with the 1.21 variants (the composite explained the words of the other variant): the variants are read from the text now.
+- **`armlet-probe-replay` declined every F3DEX 1.x text since 2026-10-19** (efb1df5 started the replay at pc 0 over a zeroed IMEM, which ran into the F3DEX 1.x loop head 0x058 before the text): the tool
+  now puts the boot code's jump to 0x80 at IMEM 0. Banjo-Kazooie's and Donald Duck's texts PASS 28 / 28 again. The probe in a game was not affected (it starts from the game's state).
+
+**Derivation**: `derive_refs.c` 42 references (the three 1.x Rej texts); `tools/derive_check.sh` passes: left out, the 1.23 and the 1.21 text derive NONE from the others (10 and 1 unexplained words: the variant
+code), the earlier 1.23 EXACT from 1.21 + 1.23 with its record (`rej1 = 3`); `tools/derive_c_check.sh`: C = Python on 66 texts, 42 leave-one-out, 17 mutants, 854 shortcut pairs; `--sync` 0 out of step. The offline
+probe on the earlier 1.23 text without its own record: PASS 28 / 28, latched.

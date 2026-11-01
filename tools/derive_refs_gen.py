@@ -186,6 +186,8 @@ def generate(dumps):
             import derive_f1d as D1
             fs = ["    { .name = \"%s\", .fam = 1" % r.name]
             fs.append(".reject_mask = 0x%x, .load_key = 0x%016xull, .non = %d, .dlx = %d, .culldl_off = %d" % (r.num["reject_mask"][0], r.load_key or 0, r.flags["non"], r.flags["dlx"], r.flags["culldl_off"]))
+            if r.flags.get("rej1"):
+                fs.append(".rej1 = %d" % r.flags["rej1"])
             fs.append(".lay = { %s }" % ", ".join("0x%x" % r.num["lay." + k][0] for k in D1.F1_LAY_FIELDS))
             fs.append(".f1pc = { %s }" % ", ".join("0x%x" % r.num["pc." + k][0] for k in D1.F1_PC_FIELDS))
             P(",\n      ".join(fs) + " },")

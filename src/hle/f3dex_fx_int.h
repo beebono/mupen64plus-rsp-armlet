@@ -53,5 +53,7 @@ struct f3dex_tail_out {
 void f3dex_vtx_tail(const struct f3dex_vctx *c, const int16_t Pi[4], int16_t wi, const uint16_t Pf[4], struct f3dex_vtx *o, struct f3dex_tail_out *t);
 /* the fog byte from the projected z */
 uint8_t f3dex_fog_byte(const struct f3dex_vctx *c, int16_t qzi, uint16_t qzf);
+/* the lit colour and the generated texture coordinates of vertex h (0 / 1: the first / second of a pair) from its normal (in->c); col[3] and, without texture generation, st are left alone */
+void f3dex_lit(const struct f3dex_vctx *c, const struct f3dex_vin *in, unsigned h, uint8_t col[4], int16_t st[2]);
 
 #endif

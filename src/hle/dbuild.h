@@ -23,6 +23,7 @@ struct dbuild {
     struct f2_pcs pcs;
     struct f3dex1_build b1;             /* (F3DEX 1.x) */
     struct f3dex_layout lay1;
+    struct f3dex_rej1 rej1;             /* (F3DEX 1.x, a 1.x Rej record: the primary's words, the record's variants) */
     struct f3d_build b3;                /* (F3D) */
     struct f3d_layout lay3;
     uint16_t ext[DERIVE_MAXEXT + 1][2];  /* the dialect commands (S2DEX), ending in { 0xffff, 0 } */

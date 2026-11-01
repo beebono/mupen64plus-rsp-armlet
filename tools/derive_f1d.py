@@ -45,7 +45,9 @@ F1_LAY_FIELDS = ["jt0", "jt2", "half1", "persp", "geom", "omh", "oml", "texture"
 F1_LAY_NKNOB = 29
 F1_PC_FIELDS = ["head", "nop", "mtx", "movemem", "vtx", "dl", "loaduc", "branchz", "tri2", "modvtx", "half2", "half1", "persp", "quad", "clrgeom", "setgeom", "enddl", "oml", "omh", "texture",
                 "moveword", "popmtx", "culldl", "tri1"]
-F1_FLAGS = ["non", "dlx", "culldl_off"]
+F1_FLAGS = ["non", "dlx", "culldl_off", "rej1"]
+REJ1, REJ1_TEXF0, REJ1_FLAT1 = 1, 2, 4      # the rej1 attribute (derive_int.h DERIVE_REJ1*): a 1.x Rej build, the top vertex's texture fractions 0, the second triangle's flat vertex the first's
+REJ1_W_TEXF, REJ1_W_FLAT = 0xcaf01c01, 0x21040000      # `ldv v16[8], 8(s7)` (the load of those fractions), `addi a0, t0, 0` (the second triangle's flat vertex)
 F1_BASE29 = 0x110           # $29: the constant base register of the whole run (`addi sp, zero, 0x110` at IMEM 0x84); state words are addressed relative to it
 F1_GEOM_DEF = 0x1 | 0x2 | 0x4 | 0x200 | 0x1000 | 0x2000 | 0x10000 | 0x20000 | 0x40000 | 0x80000 | 0x800000     # F3DEX_G_DEFINED: the geometry bits the front-end gives a meaning to
 
@@ -59,7 +61,7 @@ def load_f1_records(T, C):
     """one record per registered F3DEX 1.x build table (struct f3dex1_build of f3dex.c)"""
     recs = {}
     for var, f in T.ucodes:
-        if f.get("_macro") != "U":
+        if f.get("_macro") not in ("U", "UR"):
             continue
         bn = f["fam_data"].lstrip("&").strip("()")
         if bn not in T.vars or T.vars[bn][0] != "f3dex1_build":
@@ -80,6 +82,12 @@ def load_f1_records(T, C):
             r.flags["non"] = fx[1]
             r.flags["dlx"] = fx[2]
             r.flags["culldl_off"] = int(b.get("culldl_off", 0))
+            rj = b.get("rej")
+            if rj:
+                rv = T.vars[rj[1]][1]
+                r.flags["rej1"] = REJ1 | (REJ1_TEXF0 if rv.get("texf0") else 0) | (REJ1_FLAT1 if rv.get("flat1") else 0)
+            else:
+                r.flags["rej1"] = 0
             r.load_key = b.get("load_key") or None
         r.ids.append(L.uhex(f["id"]))
     return list(recs.values())
@@ -273,6 +281,15 @@ def derive_f1(U, refs):
     costs = [cost(P) for P in order]
     prim = order[min(range(len(order)), key=lambda q: (costs[q], q))]
     order1 = [prim] + [P for P in order if P is not prim]
+    flags["rej1"] = 0
+    if prim.R.rec.flags.get("rej1", 0):                # (the variants from the text: the primary's are a reference's, and the composite explains the words of the other one)
+        flags["rej1"] = REJ1 | (0 if REJ1_W_TEXF in U.img.w else REJ1_TEXF0) | (0 if REJ1_W_FLAT in U.img.w else REJ1_FLAT1)
+    if flags["rej1"]:                       # (a 1.x Rej primary: its vertex and triangle code has neither the NoN nor the F3DLX signatures; the attributes are its)
+        for k in ("non", "dlx"):
+            flags[k] = prim.R.rec.flags[k]
+            if k in undecided:
+                undecided.remove(k)
+                res.notes = [n for n in res.notes if not n.startswith(k + ":")]
     res.primary, res.prs, res.prim = prim.R.name, prs, prim
     cur, res.contrib = composite(prim)
     # the record: knobs (layout, reject mask), the constants and pcs, the flags
@@ -303,7 +320,7 @@ def derive_f1(U, refs):
         rec.num["pc." + k] = (v, "pc")
     # culldl_off: the index form looks the two vertex numbers up in the vertex table (`lhu rX, vtab(rY)` in the handler's first words); the 0.95 form uses byte offsets
     cpc = rec.num["pc.culldl"][0]
-    if cpc:
+    if cpc and not flags["rej1"]:
         ws = [U.img.w[U.img.idx_text(cpc) + q] for q in range(8) if U.img.idx_text(cpc) + q < U.img.n]
         flags["culldl_off"] = 0 if any(isa.decode(w).get("name") == "lhu" and isa.decode(w)["rs"] != 0 and (isa.decode(w)["imm"] & 0xffff) == lay["vtab"] for w in ws) else 1
     else:

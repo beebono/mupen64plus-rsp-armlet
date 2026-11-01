@@ -71,7 +71,7 @@ class CTables:
         self.vars = {}      # name -> (type, fields dict or list)
         self.ucodes = []    # HLE_UCODE entries
         self.text = ""
-        for fn in ("hle_f3dex2_int.h", "f3dex2_dmem.h", "hle.h", "hle_f3dex2.c", "hle_f3dex2_dialects.c", "hle_s2dex2.c", "f3dex.c", "f3d.c", "f3d_dmem.h", "f3dex_vtx_fx.c", "f3d_fx_int.h", "f3d_fx.h", "rej_fx.h", "rej_dmem.h", "hle_rej.c"):
+        for fn in ("hle_f3dex2_int.h", "f3dex2_dmem.h", "hle.h", "hle_f3dex2.c", "hle_f3dex2_dialects.c", "hle_s2dex2.c", "f3dex.c", "f3d.c", "f3d_dmem.h", "f3dex_vtx_fx.c", "rej1_dmem.h", "f3d_fx_int.h", "f3d_fx.h", "rej_fx.h", "rej_dmem.h", "hle_rej.c"):
             p = os.path.join(srcdir, fn)
             if os.path.exists(p):
                 self.text += strip_comments(open(p).read()) + "\n"
@@ -165,8 +165,8 @@ class CTables:
                     f[mm.group(1)] = mm.group(2).strip()
             if m.group(1) != "var":
                 self.ucodes.append((m.group(1), f))
-        # macro forms: U(var, id, name, bld), F3D_UCODE(...), F3D_UCODE_R(...)
-        for m in re.finditer(r"^\s*(U|F3D_UCODE|F3D_UCODE_R)\((\w+),\s*(0x[0-9a-fA-F]+)ull,\s*\"([^\"]*)\",\s*(\w+)", self.text, flags=re.M):
+        # macro forms: U(var, id, name, bld), UR(...) (the 1.x Rej builds of f3dex.c), F3D_UCODE(...), F3D_UCODE_R(...)
+        for m in re.finditer(r"^\s*(U|UR|F3D_UCODE|F3D_UCODE_R)\((\w+),\s*(0x[0-9a-fA-F]+)ull,\s*\"([^\"]*)\",\s*(\w+)", self.text, flags=re.M):
             self.ucodes.append((m.group(2), {"id": m.group(3) + "ull", "name": '"%s"' % m.group(4), "fam_data": "&" + m.group(5), "_macro": m.group(1)}))
 
     def get(self, name):

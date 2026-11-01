@@ -2257,7 +2257,7 @@ static int derive_f1(const struct derive_in *in, struct dimg *U, const struct dc
     struct pairing *prs = (struct pairing *)calloc((size_t)nrefs, sizeof(struct pairing));
     struct pairing *order[DERIVE_MAXREFS], *order1[DERIVE_MAXREFS], *prim;
     uint8_t *cur = NULL, *expl[DERIVE_MAXREFS], *uw = NULL, *rw = NULL, *gw = NULL, *cat = NULL;
-    int i, j, ndone = 0, rc = -1, q, undecided = 0, nu = U->n < 1024 ? U->n : 1024;
+    int i, j, ndone = 0, rc = -1, q, undecided = 0, und_dlx = 0, und_non = 0, nu = U->n < 1024 ? U->n : 1024;
     int dlx, non, culldl_off;
     struct derive_rec *rec = &out->rec;
     struct merged *mg = NULL;
@@ -2302,7 +2302,7 @@ static int derive_f1(const struct derive_in *in, struct dimg *U, const struct dc
             dlx = ev1 > ev0;
         else {
             dlx = order[0]->rec->dlx;
-            undecided = 1;
+            und_dlx = 1;
         }
     }
     /* non: the near-plane mask 0x703 and the w-sign shifts of the NoN vertex code */
@@ -2322,7 +2322,7 @@ static int derive_f1(const struct derive_in *in, struct dimg *U, const struct dc
             non = 0;
         else {
             non = order[0]->rec->non;
-            undecided = 1;
+            und_non = 1;
         }
     }
     /* the primary: the fewest words left unexplained after the composite, counting its own words the unknown lacks */
@@ -2347,10 +2347,24 @@ static int derive_f1(const struct derive_in *in, struct dimg *U, const struct dc
     }
     out->primary = prim->ref;
     out->aligned_num = (unsigned)prim->n_pr;
+    if (prim->rec->rej1) {                                  /* (a 1.x Rej primary: its vertex and triangle code has neither the NoN nor the F3DLX signatures; the attributes are its) */
+        non = prim->rec->non;
+        dlx = prim->rec->dlx;
+        und_non = und_dlx = 0;
+    }
+    undecided = und_non || und_dlx;
     /* the record */
     memset(rec, 0, sizeof(*rec));
     rec->name = "(derived)";
     rec->fam = DERIVE_F3DEX1;
+    if (prim->rec->rej1) {                                  /* (the variants from the text: the primary's are a reference's, and the composite explains the words of the other one) */
+        int tf = 0, fl = 0;
+        for (j = 0; j < U->n; j++) {
+            tf |= U->w[j] == DERIVE_REJ1_W_TEXF;
+            fl |= U->w[j] == DERIVE_REJ1_W_FLAT;
+        }
+        rec->rej1 = (uint8_t)(DERIVE_REJ1 | (tf ? 0 : DERIVE_REJ1_TEXF0) | (fl ? 0 : DERIVE_REJ1_FLAT1));
+    }
     merge_knobs(order1, nrefs, mg);
     for (i = 0; i < DERIVE_NF1LAY; i++)
         rec->lay[i] = i < DERIVE_NF1KNOB && mg->has[i] ? mg->val[i] : prim->rec->lay[i];
@@ -2387,7 +2401,7 @@ static int derive_f1(const struct derive_in *in, struct dimg *U, const struct dc
     }
     {
         int cpc = rec->f1pc[22], hit = 0, k;                /* culldl */
-        if (cpc) {
+        if (cpc && !rec->rej1) {
             int base = ((cpc - 0x80) & 0xfff) / 4;
             for (k = 0; k < 8 && base + k < U->n; k++) {
                 uint32_t w = U->w[base + k];
@@ -3042,6 +3056,7 @@ void derive_rec_fields(const struct derive_rec *r, void (*f)(const char *name, u
         f("flag.non", r->non, arg);
         f("flag.dlx", r->dlx, arg);
         f("flag.culldl_off", r->culldl_off, arg);
+        f("flag.rej1", r->rej1, arg);
         f("load_key", r->load_key, arg);
         return;
     }

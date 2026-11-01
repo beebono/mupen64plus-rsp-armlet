@@ -31,6 +31,7 @@
 #else
 #define MUT(n, ok, bad) (ok)
 #endif
+#include "rej1_dmem.h"
 
 #ifdef ARMLET_NATIVE
 
@@ -148,6 +149,10 @@ static inline void st32u(struct hle_task *t, unsigned a, uint32_t v)       /* un
 {
     hle_st8(t, a, (uint8_t)(v >> 24)); hle_st8(t, a + 1, (uint8_t)(v >> 16)); hle_st8(t, a + 2, (uint8_t)(v >> 8)); hle_st8(t, a + 3, (uint8_t)v);
 }
+static inline uint32_t ld32u(const struct hle_task *t, unsigned a)  /* (the return stack of the 1.x Rej builds is at 0x336: the microcode's LW / SW are unaligned) */
+{
+    return (uint32_t)hle_dm8(t, a) << 24 | (uint32_t)hle_dm8(t, a + 1) << 16 | (uint32_t)hle_dm8(t, a + 2) << 8 | hle_dm8(t, a + 3);
+}
 static inline uint32_t seg(const struct f3dex_task *f, uint32_t x) { return hle_dm32(f->t, f->L->segs + 4 * ((x >> 24) & 0xf)) + (x & 0xffffff); }
 
 /* ---- the RDP FIFO: the microcode's flush of the output buffer (rdp.md 5, F3DLX: 9) ----------------------------------------------------------------------------------------------- */
@@ -216,6 +221,8 @@ static int out_reserve(struct f3dex_task *f, unsigned n)
     if (!f->pend_n)
         f->pend_ptr = ptr;
     f->wp = ptr + n;
+    if (f->b->rej)                                          /* (the 1.x Rej builds alternate between two output buffers) */
+        hle_st16(t, f->b->rej->bufsel, (uint16_t)(hle_dm16(t, f->b->rej->bufsel) ^ MUT(618, f->b->rej->buftog, 0)));
     if (!f->fx->dlx) {                                      /* F3DEX: the flush writes DPC_END */
         f->vend = f->wp;
         f->vend_dirty = 1;
@@ -240,6 +247,9 @@ static int out_chunk(struct f3dex_task *f, const uint8_t *cmd, unsigned n)
     return HLE_OK;
 }
 
+/* the output buffer the next command is assembled in (the 1.x Rej builds: the one DMEM16[bufsel] selects) */
+static inline unsigned outbuf_of(const struct f3dex_task *f) { return f->b->rej ? hle_dm16(f->t, f->b->rej->bufsel) : f->L->outbuf; }
+
 /* the microcode's flush of the output buffer at 0xce0 (exact mode: the DMA and DPC_END at once, as the microcode does) */
 static int flush_(struct f3dex_task *f, unsigned n)
 {
@@ -260,8 +270,10 @@ static int flush_(struct f3dex_task *f, unsigned n)
         if (!((int32_t)(ptr - cur) >= 0) && !((int32_t)((ptr + n) - cur) < 0))
             return hle_decline(t, "FIFO full (the RDP would have to catch up)");
     }
-    hle_dma_write(t, f->L->outbuf, ptr, n - 1);
+    hle_dma_write(t, outbuf_of(f), ptr, n - 1);
     hle_st32(t, f->L->rdp_wp, ptr + n);
+    if (f->b->rej)
+        hle_st16(t, f->b->rej->bufsel, (uint16_t)(hle_dm16(t, f->b->rej->bufsel) ^ f->b->rej->buftog));
     if (!f->fx->dlx)
         hle_mtc0(t, 9, ptr + n);
     return HLE_OK;
@@ -284,7 +296,7 @@ static int emit_bytes(struct f3dex_task *f, const uint8_t *cmd, unsigned len, in
     if (f->exact) {
         if (f->fx->dlx) { hle_mtc0(f->t, 9, hle_dm32(f->t, f->L->rdp_wp)); }
         for (i = 0; i < len; i += 4)
-            hle_st32(f->t, f->L->outbuf + i, (uint32_t)cmd[i] << 24 | (uint32_t)cmd[i + 1] << 16 | (uint32_t)cmd[i + 2] << 8 | cmd[i + 3]);
+            hle_st32(f->t, outbuf_of(f) + i, (uint32_t)cmd[i] << 24 | (uint32_t)cmd[i + 1] << 16 | (uint32_t)cmd[i + 2] << 8 | cmd[i + 3]);
         r = flush(f, len);
         if (r == HLE_OK && !tri && f->fx->dlx)
             hle_mtc0(f->t, 9, hle_dm32(f->t, f->L->rdp_wp));
@@ -425,6 +437,33 @@ static int cmd_movemem(struct f3dex_task *f, uint32_t w0, uint32_t w1)
 }
 
 /* ---- vertices (light.md) ------------------------------------------------------------------------------------------------------------------------------------------------------ */
+/* the 1.x Rej builds (docs/ucode-rej.md section 11): 20-byte records, no clipping, the F3DEX 1.x lighting overlay */
+static int cmd_vtx_rej1(struct f3dex_task *f, uint32_t w0, uint32_t w1)
+{
+    struct hle_task *t = f->t;
+    unsigned n = (w0 >> 10) & 0x3f;
+    struct src s;
+    const char *why;
+    int marked = 0;
+    if (dma_bytes(w0) < 16 * (n ? n : 1))
+        return hle_decline(t, "G_VTX length unusual");
+    s = fetch(f, seg(f, w1), w0 & 0x3ff);
+    if (hle_dm32(t, f->L->geom) & F3DEX_G_LIGHTING) {
+        if (hle_cmd(t, LATCH_K_LIT))
+            return HLE_DECLINE;
+        if (f->ov != OV_LIGHT) {
+            load_overlay(f, 2);
+            f->ov = OV_LIGHT;
+        }
+    }
+    why = rej1_vtx_dmem(t->dmem, f->fx, f->b->rej, w0, s.img, s.base, s.ram, &marked);
+    if (why)
+        return hle_decline(t, why);
+    if ((t->gate || t->cmds) && hle_vtx_kinds(t, marked ? 1u : 0u, 0))
+        return HLE_DECLINE;
+    return HLE_OK;
+}
+
 static int cmd_vtx(struct f3dex_task *f, uint32_t w0, uint32_t w1)
 {
     struct hle_task *t = f->t;
@@ -434,6 +473,8 @@ static int cmd_vtx(struct f3dex_task *f, uint32_t w0, uint32_t w1)
     struct f3dex_vtx out[32];
     struct src s;
     uint32_t geom = hle_dm32(t, f->L->geom);
+    if (f->b->rej)
+        return cmd_vtx_rej1(f, w0, w1);
     if ((v0x2 & 1) || (v0x2 >> 1) + cnt > 32 || dma_bytes(w0) < 16 * cnt)
         return hle_decline(t, "G_VTX slot range or length unusual");
     if (MUT(239, geom & ~F3DEX_G_DEFINED, 0))               /* (bits the microcode's mode word has no meaning for steer its vertex and triangle code in ways the struct-level functions do not model) */
@@ -553,6 +594,38 @@ static int tri_one(struct f3dex_task *f, unsigned a0, unsigned a1, unsigned a2, 
     return HLE_OK;
 }
 
+/* the 1.x Rej builds: G_TRI2 draws w1's triangle, then w0's, and sends them as one chunk; G_TRI1 is w1's triangle (the code makes w0's one of three equal vertices, which has no area) */
+static int cmd_tri_rej1(struct f3dex_task *f, uint32_t w0, uint32_t w1, int two)
+{
+    struct hle_task *t = f->t;
+    uint32_t cmd[0xb0 / 4];
+    uint8_t out[2 * 0xb0];
+    uint16_t frac[8] = { 0, 0, 0, 0, 0, 0, 0, 0 };
+    unsigned j, k, tot = 0;
+    if (!two && (f->exact || MUT(632, t->switched, 0))) {          /* (G_TRI1 writes w1's last byte over w0's three in the window: DMEM that is live when the task started with another build) */
+        unsigned a = f->L->window + 312 - (unsigned)f->gp;
+        for (k = 1; k < 4; k++)
+            hle_st8(t, a + k, (uint8_t)w1);
+    }
+    for (j = 0; j < (two ? 2u : 1u); j++) {
+        uint32_t ww = j ? w0 : w1;
+        unsigned len = 0;
+        const char *why = NULL;
+        int r = rej1_tri_dmem(t->dmem, f->fx, f->b->rej, (ww >> 16) & 0xff, (ww >> 8) & 0xff, ww & 0xff, ((f->b->rej->flat1 ? w1 : ww) >> 16) & 0xff, frac, cmd, &len, &why);
+        if (r < 0)
+            return hle_decline(t, why);
+        if (r != FX2_TRI_DRAW) {
+            if (hle_cmd(t, LATCH_K_TRI_CULL))
+                return HLE_DECLINE;
+            continue;
+        }
+        for (k = 0; k < len; k++)
+            out[tot + k] = (uint8_t)(cmd[k >> 2] >> (24 - 8 * (k & 3)));
+        tot += MUT(619, len, j ? 0 : len);
+    }
+    return tot ? emit_bytes(f, out, tot, 1) : HLE_OK;
+}
+
 /* TRI1: the addresses are the bytes 1..3 of w1 (twice the vertex indices); TRI2: w1's triangle first, then w0's */
 static int cmd_tri1(struct f3dex_task *f, uint32_t w1)
 {
@@ -601,7 +674,7 @@ static int enddl(struct f3dex_task *f)
     int d = (int8_t)hle_dm8(t, f->L->depth) - 4;
     if (d < 0)
         return 1;
-    f->k0 = hle_dm32(t, f->L->retstack + d);
+    f->k0 = ld32u(t, f->L->retstack + d);
     hle_st8(t, f->L->depth, (uint8_t)d);
     f->gp = 0;
     return (f->k0 & 7) ? -1 : 0;
@@ -769,7 +842,10 @@ static int enter(struct f3dex_task *f, const struct hle_cpu *c)
     if (*t->cr[11] & 1)                                 /* (the microcode's start clears XBUS with DPC_STATUS <- 1: the lists are the FIFO's whatever the previous task left) */
         return hle_decline(t, "XBUS still set after the start of the task");
     *t->cr[11] |= MUT(490, 0, 1);
+    if (f->trace) fprintf(stderr, "F3DEX enter k0 %08x k1 %x gp %x s7 %x bufsel %x\n", f->k0, c->r[27], c->r[28], c->r[23], f->b->rej ? hle_dm16(t, f->b->rej->bufsel) : 0);
     if ((f->k0 & 7) || c->r[27] != L->window || c->r[28] != L->operand || c->r[23] != L->outbuf)
+        return hle_decline(t, "unusual state at the command loop");
+    if (f->b->rej && hle_dm16(t, f->b->rej->bufsel) != c->r[23])
         return hle_decline(t, "unusual state at the command loop");
     make_kinds(f);
     return HLE_OK;
@@ -985,7 +1061,10 @@ static int f3dex_run(struct hle_task *t, const struct hle_ucode *u)
                         return hle_decline(t, "G_DL: negative stack depth");
                     if (d - 68 > 0)
                         break;                          /* the stack is full: the command is ignored */
-                    hle_st32(t, L->retstack + d, f.k0);
+                    if (MUT(625, 1, 0))
+                        st32u(t, L->retstack + d, f.k0);
+                    else
+                        hle_st32(t, L->retstack + d, f.k0);
                     hle_st8(t, L->depth, (uint8_t)(d + 4));
                 }
                 if (jump_to(&f, seg(&f, w1)) != HLE_OK)
@@ -1008,10 +1087,17 @@ static int f3dex_run(struct hle_task *t, const struct hle_ucode *u)
                 break;
             }
             case K1_BRANCHZ: {
-                if (MUT(472, f1_vidx_bad(w0), 0))      /* (as G_MODIFYVTX: the slot address of an offset past the table is staged data the lean mode does not have) */
-                    return hle_decline(t, "G_BRANCH_Z vertex out of range");
-                unsigned va = hle_dm16(t, L->vtab + (w0 & 0xfff));
-                uint32_t vz = hle_dm32(t, va + 0x1c);
+                uint32_t vz;
+                if (b->rej) {                           /* (the screen z of the record w0 >> 10 bytes in: the GBI's 5 v << 12) */
+                    unsigned o = (w0 >> 10) & 0xfff;
+                    if (MUT(620, o % REJ1_VSTRIDE || o >= REJ1_VSTRIDE * REJ1_NSLOTS, 0))
+                        return hle_decline(t, "G_BRANCH_Z vertex out of range");
+                    vz = hle_dm32(t, b->rej->vbuf + o + 4);
+                } else {
+                    if (MUT(472, f1_vidx_bad(w0), 0))  /* (as G_MODIFYVTX: the slot address of an offset past the table is staged data the lean mode does not have) */
+                        return hle_decline(t, "G_BRANCH_Z vertex out of range");
+                    vz = hle_dm32(t, hle_dm16(t, L->vtab + (w0 & 0xfff)) + 0x1c);
+                }
                 if ((int32_t)(vz - w1) <= 0 && hle_cmd(t, LATCH_K_BRZ))
                     return HLE_DECLINE;
                 if ((int32_t)(vz - w1) <= 0 && jump_to(&f, seg(&f, hle_dm32(t, L->half1))) != HLE_OK)
@@ -1019,10 +1105,17 @@ static int f3dex_run(struct hle_task *t, const struct hle_ucode *u)
                 break;
             }
             case K1_TRI2:
-                if (cmd_tri2(&f, w0, w1) != HLE_OK)
+                if ((b->rej ? cmd_tri_rej1(&f, w0, w1, 1) : cmd_tri2(&f, w0, w1)) != HLE_OK)
                     return HLE_DECLINE;
                 break;
             case K1_MODVTX: {
+                if (b->rej) {                           /* the field's offset ^ 0x18 into the record of w0 * 10 (0x10 colour -> +8, 0x14 st -> +12, 0x18 xy -> +0, 0x1c z -> +4) */
+                    unsigned v2 = w0 & 0xfff, fo = (w0 >> 16) & 0xff;
+                    if (MUT(621, (v2 & 1) || v2 >= 2 * REJ1_NSLOTS || fo < 0x10 || fo > 0x1c || (fo & 3), 0))
+                        return hle_decline(t, "G_MODIFYVTX out of range");
+                    st32u(t, b->rej->vbuf + 10 * v2 + (fo ^ MUT(622, 0x18, 0x10)), w1);
+                    break;
+                }
                 if (MUT(471, f1_vidx_bad(w0) || ((w0 >> 16) & 0xff) >= 0x28 || ((w0 >> 16) & 3), 0))      /* a vertex outside the 32 slots, an odd number, or a field outside the record: the slot address is read from, and the store goes to, anywhere in DMEM (Toy Story 2 perturbed: 0x800 read the staging area the lean mode does not fill) */
                     return hle_decline(t, "G_MODIFYVTX out of range");
                 unsigned va = hle_dm16(t, L->vtab + (w0 & 0xfff));
@@ -1073,7 +1166,14 @@ static int f3dex_run(struct hle_task *t, const struct hle_ucode *u)
             case K1_CULLDL: {                               /* culled when some clip-flag bit is set in all the vertices of the range */
                 uint32_t acc = f.fx->reject_mask;
                 unsigned guard = 0;
-                if (b->culldl_off) {                        /* byte offsets into the vertex buffer, the last vertex excluded */
+                if (b->rej) {                               /* the 1.x Rej builds: when the x of every vertex from w0's to w1's is the mark (the numbers times 10 are byte offsets) */
+                    uint32_t pa = (w0 * 10) & 0xffff, pb = w1 * 10, p;
+                    if (MUT(623, pa % REJ1_VSTRIDE || pb % REJ1_VSTRIDE || pb < pa || pb >= REJ1_VSTRIDE * REJ1_NSLOTS, 0))
+                        return hle_decline(t, "G_CULLDL range unusual");
+                    for (p = pa; acc && p <= pb; p += REJ1_VSTRIDE)
+                        if (hle_dm16(t, b->rej->vbuf + p) != MUT(624, REJ1_MARK_X, 0x7ffc))
+                            acc = 0;
+                } else if (b->culldl_off) {                        /* byte offsets into the vertex buffer, the last vertex excluded */
                     unsigned p = w0 & 0x3ff;
                     if (w1 <= p || (w1 - p) % 40 || w1 > 40 * 32)
                         return hle_decline(t, "G_CULLDL range unusual");
@@ -1104,7 +1204,7 @@ static int f3dex_run(struct hle_task *t, const struct hle_ucode *u)
                 break;
             }
             case K1_TRI1:
-                if (cmd_tri1(&f, w1) != HLE_OK)
+                if ((b->rej ? cmd_tri_rej1(&f, w0, w1, 0) : cmd_tri1(&f, w1)) != HLE_OK)
                     return HLE_DECLINE;
                 break;
             default:
@@ -1114,8 +1214,9 @@ static int f3dex_run(struct hle_task *t, const struct hle_ucode *u)
         if (f.gp <= 0) {                                /* the window is used up (or a list change): the next 40 commands */
             if (f.k0 & 7)
                 return hle_decline(t, "display list address not 8-byte aligned");
-            if (f.exact || f.s2)                        /* (S2DEX's DMEM state is its own: the window is read as the microcode reads it, which also leaves the DMA registers where the microcode does) */
-                hle_dma_read(t, L->window, f.k0, 319);
+            if (f.exact || f.s2 || (b->rej && t->switched))     /* (S2DEX's DMEM state is its own: the window is read as the microcode reads it, which also leaves the DMA registers where the microcode does; a task
+                                                                   that loaded a 1.x Rej text: its window is over three of the F3DEX 1.x vertex slots, which are live for the build the task started with) */
+                hle_dma_read(t, L->window, MUT(631, f.k0, f.k0 + 8), 319);
             f.gp = 320;
             if (MUT(243, ring_hit(&f, f.k0, 320), 0))
                 f.bad = "the display list is inside the RDP output ring";
@@ -1196,6 +1297,7 @@ static const struct f3dex1_build l_b_non100 = { .fx = { 0x7030, 1, 0, &l_lay_c4 
     { 0xbe0, 0xc40 },       /* the triangle scratch (sorted vertex addresses, perspective-scaled s/t/w, texture scale inputs) */ \
     { 0xc40, 0xc70 },       /* the clipper's polygon lists */ \
     { 0xce0, 0xd90 },       /* the RDP output buffer and the triangle code's coefficient scratch beyond the command */ \
+    { 0xd90, 0xde0 },       /* (not used by F3DEX 1.x: the first output buffer of the 1.x Rej builds, and its triangle scratch, which a task that loads the Rej text leaves there) */ \
     { 0xde0, 0xfc0 },       /* (the vertex clip flags of every slot follow: junk after an F3DLX G_VTX with clipping off, internal to a task otherwise) */       /* the clipper's new vertices, the matrix product scratch (0xde0..0xe1f), the light-recompute scratch (0xdf0..0xe2f) */ \
     /* the clip flags (+0x24, +0x26) of the 32 vertex slots */ \
     { 0x4c4, 0x4c8 }, \
@@ -1246,6 +1348,25 @@ U(l_wo, 0x76c763bc18ad3ab3ull, "F3DLX 1.21 (Wipeout 64)", l_b_lx121);
 U(l_cf, 0x0a7cc6c93363c663ull, "F3DLX.NoN 1.21 (Clay Fighter SC)", l_b_lxn121);
 U(l_ig, 0xcc09096cb6a48e7bull, "F3DLX.NoN 1.23 (Iggy's Reckin' Balls, Penny Racers)", l_b_lxn123);
 U(l_tu, 0x5063f108118bf62aull, "F3DEX.NoN 1.00 (Turok)", l_b_non100);
+
+/* ---- the 1.x Rej builds (rej1_dmem.h; docs/ucode-rej.md section 11) ------------------------------------------------------------------------------------------------------------------------------------- */
+/* .pc in the order of F3DEX_PC_FIELDS, from the handler tables (no G_PERSPNORM, no G_QUAD: opcode 0xb5 is the no-op) */
+static const struct f3dex1_build l_b_lxrej123 = { .fx = { 0x7070, 0, 1, &rej1_lay_123 },                 /* F3DLX.Rej 1.23 */
+    .pc = { 0x058, 0x09c, 0x6ec, 0x868, 0x3ac, 0x878, 0xf80, 0x2d8, 0xa70, 0x314, 0x33c, 0x334, 0, 0, 0x300, 0x2f0, 0x2b8, 0x248, 0x240, 0x21c, 0x204, 0x1d0, 0x284, 0x1c0 },
+    .culldl_off = 0, .load_key = 0x80a5362e1b53a228ull, .rej = &rej1_123 };
+/* dead at the end of a task: the return address G_VTX keeps, the command window and the operand buffer, the two output buffers (and the triangle code's scratch in them), the relight's scratch, the fourth bytes of
+ * the transformed light directions */
+static const struct hle_dead_range l_dead_rej1[] = { { 0x106, 0x108 }, { 0x940, 0xc80 }, { 0xc80, 0xf48 }, { 0xf70, 0xfc0 }, F1_DEAD_PADS_1 F1_DEAD_PADS_2 F1_DEAD_PADS_3 };
+static const struct f3dex1_build l_b_lxrej121 = { .fx = { 0x7070, 0, 1, &rej1_lay_123 },                 /* F3DLX.Rej 1.21 */
+    .pc = { 0x058, 0x09c, 0x6f4, 0x870, 0x3b4, 0x880, 0xf80, 0x2e0, 0xa78, 0x31c, 0x344, 0x33c, 0, 0, 0x308, 0x2f8, 0x2c0, 0x250, 0x248, 0x224, 0x20c, 0x1d8, 0x28c, 0x1c8 },
+    .culldl_off = 0, .load_key = 0x578ac8cc405d9e81ull, .rej = &rej1_121 };
+static const struct f3dex1_build l_b_lxrej123a = { .fx = { 0x7070, 0, 1, &rej1_lay_123 },                /* F3DLX.Rej 1.23, the earlier text (the 1.21 pcs) */
+    .pc = { 0x058, 0x09c, 0x6f4, 0x870, 0x3b4, 0x880, 0xf80, 0x2e0, 0xa78, 0x31c, 0x344, 0x33c, 0, 0, 0x308, 0x2f8, 0x2c0, 0x250, 0x248, 0x224, 0x20c, 0x1d8, 0x28c, 0x1c8 },
+    .culldl_off = 0, .load_key = 0xb066853d859b8470ull, .rej = &rej1_123a };
+#define UR(var, uid, nm, bld) HLE_UCODE(var) = { .id = (uid), .name = (nm), .fam = &f3dex1_fam, .fam_data = &(bld), .dead = l_dead_rej1, .n_dead = sizeof(l_dead_rej1) / sizeof(l_dead_rej1[0]), .ring_off = 0xfe8, .flags = HLE_F_XBUS_OK }
+UR(l_lxrej123, 0x4610a50be23b3d62ull, "F3DLX.Rej 1.23 (Bust-A-Move 2, Bust-A-Move '99, Puzzle Bobble 64, Mortal Kombat 4, Dezaemon 3D)", l_b_lxrej123);
+UR(l_lxrej123a, 0x7b02bbdc4199a4baull, "F3DLX.Rej 1.23 (WCW vs. nWo World Tour, Virtual Pro Wrestling 64, Hiryuu no Ken Twin)", l_b_lxrej123a);
+UR(l_lxrej121, 0x3c51d836d337efabull, "F3DLX.Rej 1.21 (Air Boarder 64, ISS 64, Mortal Kombat Mythologies, Fighters Destiny, SimCity 2000)", l_b_lxrej121);
 
 /* ---- S2DEX 1.06 / 1.07 (hle_s2dex1.h; docs/ucode-s2dex1.md) ------------------------------------------------------------------------------------------------------------------------------------------ */
 static const struct f3dex_layout l_lay_s2d1 = { .half1 = 0xe0, .omh = 0xc8, .oml = 0xcc, .rdp_wp = 0xd4, .depth = 0xd0, .fifo = 0xfe8, .segs = 0xe8, .retstack = 0x128, .window = 0x3c0, .outbuf = 0x588 };

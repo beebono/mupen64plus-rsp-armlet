@@ -94,15 +94,18 @@ Every registered build is derived **without its own table** (all texts of its re
 | f3dex2 | l_b_rej_flx | c750be26 | l_b_rej_203 | - | NONE | 50 | {'init': 1, 'light-small': 1} / 61 | 79 | unconfirmed 2, expected 1 |
 | f3dex2 | l_b_rej_xbus | 8b0a3e32 | l_b_rej_203 | l_b_ex2_208n_xbus | NONE | 88 | {'init': 2, 'light-small': 12} / 87 | 79 | unconfirmed 1, expected 1 |
 | f3dex2 | l_b_turok | 7847866d | l_b_ex2_206 | l_b_ex2_204 | NONE | 49 | - / 3 | 82 | none (the 49: the point-light pass, ucode-f3dex2-dialects.md section 9) |
-| f3dex1 | l_b_121 | 208a567e | l_b_123 | l_b_non122 | EXACT | 0 | - / 0 | 65 | none |
-| f3dex1 | l_b_non122 | fd5a31cc | l_b_121 | l_b_non100 | EXACT | 0 | - / 0 | 65 | none |
-| f3dex1 | l_b_123 | 047252e8 | l_b_121 | l_b_lx123 | EXACT | 0 | - / 0 | 65 | none |
-| f3dex1 | l_b_lx123 | 7502cfb7 | l_b_lx121 | l_b_lxn123 | EXACT | 0 | - / 0 | 65 | none |
-| f3dex1 | l_b_095 | 34dad673 | l_b_non100 | l_b_121 | NONE | 32 | - / 28 | 65 | expected 4 |
-| f3dex1 | l_b_lx121 | 19bd8c82 | l_b_lx123 | l_b_lxn121 | EXACT | 0 | - / 0 | 65 | none |
-| f3dex1 | l_b_lxn121 | 0a7cc6c9 | l_b_lxn123 | l_b_lx121 | EXACT | 0 | - / 0 | 65 | none |
-| f3dex1 | l_b_lxn123 | cc09096c | l_b_lx123 | l_b_lxn121 | EXACT | 0 | - / 0 | 65 | none |
-| f3dex1 | l_b_non100 | 5063f108 | l_b_non122 | l_b_095 | NONE | 12 | - / 22 | 65 | none |
+| f3dex1 | l_b_121 | 208a567e | l_b_123 | l_b_non122 | EXACT | 0 | - / 0 | 66 | none |
+| f3dex1 | l_b_non122 | fd5a31cc | l_b_121 | l_b_non100 | EXACT | 0 | - / 0 | 66 | none |
+| f3dex1 | l_b_123 | 047252e8 | l_b_121 | l_b_lx123 | EXACT | 0 | - / 0 | 66 | none |
+| f3dex1 | l_b_lx123 | 7502cfb7 | l_b_lx121 | l_b_lxn123 | EXACT | 0 | - / 0 | 66 | none |
+| f3dex1 | l_b_095 | 34dad673 | l_b_non100 | l_b_121 | NONE | 32 | - / 28 | 66 | expected 4 |
+| f3dex1 | l_b_lx121 | 19bd8c82 | l_b_lx123 | l_b_lxn121 | EXACT | 0 | - / 0 | 66 | none |
+| f3dex1 | l_b_lxn121 | 0a7cc6c9 | l_b_lxn123 | l_b_lx121 | EXACT | 0 | - / 0 | 66 | none |
+| f3dex1 | l_b_lxn123 | cc09096c | l_b_lx123 | l_b_lxn121 | EXACT | 0 | - / 0 | 66 | none |
+| f3dex1 | l_b_non100 | 5063f108 | l_b_non122 | l_b_095 | NONE | 12 | - / 22 | 66 | none |
+| f3dex1 | l_b_lxrej123 | 4610a50b | l_b_lxrej123a | l_b_lx123 | NONE | 10 | - / 8 | 66 | none (the 10: the load of the top vertex's texture fractions, which the other two texts lack; ucode-rej.md section 11) |
+| f3dex1 | l_b_lxrej123a | 7b02bbdc | l_b_lxrej121 | l_b_lxrej123 | EXACT | 0 | - / 0 | 66 | none (`rej1 = 3`: the variants read from the text) |
+| f3dex1 | l_b_lxrej121 | 3c51d836 | l_b_lxrej123a | - | NONE | 1 | - / 2 | 66 | none (the second triangle's flat vertex: the earlier 1.23 sets it again) |
 | f3d | l_sm64 | 94c7cfdd | l_tt | l_pw | NONE | 0 | - / 5 | 70 | none |
 | f3d | l_pw | 3e9b9c3a | l_sm64 | l_ge | NONE | 0 | - / 6 | 70 | none |
 | f3d | l_wr | fb483893 | l_sm64 | l_tt | NONE | 80 | - / 47 | 70 | expected 2, noted 1 |
@@ -432,7 +435,7 @@ Results (`tools/derive_check.sh`, `tools/derive_c_check.sh`, `armlet-probe-repla
 
 The F3DEX 1.x front-end is data-driven now ([native-f3dex.md](native-f3dex.md) section 3: `struct f3dex1_build`, one record per registered text), and `derive_f1d.derive_f1` (`derive.c` `derive_f1`, decision for
 decision) derives all of it. The record's fields, in the tool's names: `lay.*` (`F1_LAY_FIELDS`: 29 addresses and 7 constants), `pc.*` (`F1_PC_FIELDS`: `head`, `nop` and the 22 handlers), `reject_mask`,
-`flag.non`, `flag.dlx`, `flag.culldl_off`, `load_key`.
+`flag.non`, `flag.dlx`, `flag.culldl_off`, `flag.rej1` (2026-11-01), `load_key`.
 
 **How each part is derived.**
 
@@ -448,6 +451,10 @@ decision) derives all of it. The record's fields, in the tool's names: `lay.*` (
   Both signatures make it NoN, neither (with the 0x707 mask) not; one without the other is undecided (NONE): the mutant "0x707 -> 0x703 without the NoN code" is caught by that. The old pair votes could not decide
   it when the leave-one-out removed the build's pair (1.21 and 1.23 are one record there).
 - **The G_CULLDL form**: the index form looks the two vertex numbers up in the vertex table (`lhu rX, vtab(rY)` in the handler's first eight words); otherwise byte offsets.
+- **The 1.x Rej texts** (`flag.rej1`, 2026-11-01; [ucode-rej.md](ucode-rej.md) section 11): a record whose primary reference is a 1.x Rej build is one, with the primary's Rej words (`struct f3dex_rej1`) and its NoN,
+  LX and G_CULLDL form (their signatures mean nothing in that code); its variants are read from the text, not from the primary: `texf0` when it lacks `ldv v16[8], 8(s7)` (the load of the top vertex's texture
+  fractions), `flat1` when it lacks `addi a0, t0, 0` (the second triangle's flat vertex). From the primary they were wrong: the leave-one-out derived the earlier 1.23 EXACT with 1.21's variants, the composite
+  explaining the one word of the other variant by the 1.23 reference. The value is 1 | 2 texf0 | 4 flat1 (`DERIVE_REJ1*`); `dbuild_make` copies the primary's words and sets the variants.
 - **The primary reference** is the one that leaves the fewest words unexplained after the composite, counting its own words the unknown lacks (a NoN reference has 8 words of w-sign code a non-NoN text lacks,
   which the old choice by unexplained words alone left "deleted").
 - **Two understood differences.** (1) The display-list window refill of 1.21 / 1.22 returns through a saved `ra` (`add s5, zero, ra ; ... jal 0xfd4 ; ... jr s5`) where 1.23 tail-jumps (`j 0xfd4`); the only

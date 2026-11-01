@@ -51,11 +51,17 @@ struct derive_rec {
     } ext[DERIVE_MAXEXT];
     int32_t f1pc[DERIVE_NF1PC];
     uint8_t non, dlx, culldl_off;
+    uint8_t rej1;               /* F3DEX 1.x: a 1.x Rej build (f3dex1_build.rej, the primary reference's, and with it NoN, LX and the G_CULLDL form): DERIVE_REJ1 | the variant bits read from the text */
     int32_t f3pc[DERIVE_NF3PC];
     uint32_t clip_mask, culldl_mask;
     uint8_t f3[7];              /* F3_FLAGS of tools/derive_f3d.py: flags_variant, vtx_wr, gp_end, tri_wr, popmtx_stale, xbus, vptr_mul */
 };
 enum { F3F_FV, F3F_VTX_WR, F3F_GP_END, F3F_TRI_WR, F3F_POPMTX_STALE, F3F_XBUS, F3F_VPTR_MUL, F3F_N };
+/* derive_rec.rej1: a 1.x Rej build; its variants (struct f3dex_rej1): the top vertex's texture fractions are 0 (the text lacks `ldv v16[8], 8(s7)`), the second triangle of a G_TRI2 takes the first one's flat
+ * vertex (the text lacks `addi a0, t0, 0`) */
+enum { DERIVE_REJ1 = 1, DERIVE_REJ1_TEXF0 = 2, DERIVE_REJ1_FLAT1 = 4 };
+#define DERIVE_REJ1_W_TEXF 0xcaf01c01u
+#define DERIVE_REJ1_W_FLAT 0x21040000u
 
 struct derive_seg {             /* a segment of an image: the text (off 0) or an overlay behind it */
     uint16_t base;              /* IMEM address of its first word */
