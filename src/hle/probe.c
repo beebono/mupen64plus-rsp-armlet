@@ -38,6 +38,7 @@
 
 #define PAIR_MAX 16
 #define MAX_TASKS 128
+#define ALIKE_WORDS 32                  /* a text this close to one that has nothing to run is the same build (texts_alike) */
 
 enum { PS_NEW, PS_PROBING, PS_DONE };
 
@@ -77,6 +78,9 @@ struct pair {
     int deflt;                          /* (loose) the default-record arm: a NONE derivation outside the word bound, probed with the family's record as derived */
     int sig;                            /* did is the static data signature (data_sig), not the hash of the whole image: set once the record is known */
     uint64_t last_fd;                   /* the last whole-image hash that matched this pair (the signature is not recomputed for it) */
+    uint32_t *text;                     /* a pair with nothing to run (NONE, unsupported, a cached failure): its text, for texts_alike */
+    uint64_t img;                       /* ... and the whole-image hash of its first task */
+    unsigned n_alike;                   /* texts taken as this one */
 };
 
 static struct {
@@ -194,7 +198,10 @@ void armlet_probe_reset(void)
         }
         if (p->latched && p->b)
             armlet_hle_unregister_dynamic(&p->b->uc);
+        if (p->n_alike)
+            armlet_log(M64MSG_INFO, "probe: ucode %016" PRIx64 ": %u more texts taken as this one (at most %u words differ), not derived", p->tid, p->n_alike, ALIKE_WORDS);
         free(p->b);
+        free(p->text);
     }
     memset(P.pairs, 0, sizeof(P.pairs));
     ucache_close();
@@ -931,6 +938,13 @@ static void start_probe(struct armlet_ctx *c, struct pair *p, const char *src)
                derive_verdict_name(p->dr.verdict), p->deflt ? " (loose tier, default record)" : p->loose ? " (loose tier)" : "", src, derive_refs[p->dr.primary].name, p->derive_ms, p->total, P.step);
 }
 
+static void read_text(const struct armlet_ctx *c, uint32_t ta, uint32_t *text)
+{
+    unsigned i;
+    for (i = 0; i < 1024; i++)
+        text[i] = *(const uint32_t *)((const uint8_t *)c->rsp.RDRAM + ((ta + 4 * i) & 0x7ffffc));
+}
+
 static void first_sight(struct armlet_ctx *c, struct pair *p, const struct armlet_ucode_id *u, uint64_t did, uint32_t da, unsigned ds)
 {
     uint32_t text[1024], ta = p->ta, i;
@@ -943,8 +957,7 @@ static void first_sight(struct armlet_ctx *c, struct pair *p, const struct armle
     int derived = 0;
 
     (void)u;
-    for (i = 0; i < 1024; i++)
-        text[i] = *(const uint32_t *)((const uint8_t *)c->rsp.RDRAM + ((ta + 4 * i) & 0x7ffffc));
+    read_text(c, ta, text);
     if (!ce || (p->force && !P.force_cache)) {
         /* not known under the hash of the whole image: derive now (the first pair of a text also tells which bytes of the image matter), and look the pair up again under the static data
          * signature, the key every pair ends with; a game that rewrites its data image per task finds its pair here from the second task on (task_pair) */
@@ -1277,6 +1290,34 @@ static int offer_loaded(struct armlet_ctx *c, uint32_t ta, uint32_t da, uint32_t
 
 static void offer_locked(struct armlet_ctx *c, const struct armlet_ucode_id *u);
 
+/* Texts that are one build with different words behind its code (game variables linked after the text, inside the 4 KiB the id covers: a frame counter at 0xf08 in Super Robot
+ * Spirits, seven at 0xee0 .. 0xf84 in Heiwa Pachinko World 64, six floats at 0xfcc .. 0xfe8 in Blast Corps' level select): a new id on nearly every task. A text within ALIKE_WORDS words of
+ * a pair with nothing to run, and with the same data image, gets that pair's verdict without a derivation (~40 ms each on the rgdsplus), a pair or a cache entry. */
+static int texts_alike(const struct armlet_ctx *c, uint64_t tid, uint32_t ta, uint64_t did)
+{
+    uint32_t text[1024];
+    int have = 0;
+    unsigned i, j, nd;
+    for (i = 0; i < PAIR_MAX; i++) {
+        struct pair *p = &P.pairs[i];
+        if (!p->text || p->img != did)
+            continue;
+        if (!have) {
+            read_text(c, ta, text);
+            have = 1;
+        }
+        for (j = nd = 0; j < 1024 && nd <= ALIKE_WORDS; j++)
+            nd += text[j] != p->text[j];
+        if (nd <= ALIKE_WORDS) {
+            if (!p->n_alike++)
+                armlet_log(M64MSG_INFO, "probe: ucode %016" PRIx64 " data %016" PRIx64 ": %u words from ucode %016" PRIx64 ", taken as that one (%s); texts like it are not logged",
+                           tid, p->did, nd, p->tid, p->note);
+            return 1;
+        }
+    }
+    return 0;
+}
+
 void armlet_probe_offer(struct armlet_ctx *c, const struct armlet_ucode_id *u)
 {
     if (!P.init)
@@ -1323,14 +1364,22 @@ static void offer_locked(struct armlet_ctx *c, const struct armlet_ucode_id *u)
     did = armlet_ucode_hash((const unsigned char *)c->rsp.RDRAM, da, ds);
     p = task_pair(c, u->id, did, da, ds);
     if (!p) {
+        uint32_t ta = armlet_dmem32(c, ARMLET_TASK_UCODE) & 0x7ffffc;
+        if (!registered && texts_alike(c, u->id, ta, did))
+            return;
         p = new_pair(u->id, did);
         if (!p)
             return;                                     /* (more pairs than the table holds: the rest are not probed) */
         p->force = registered;
-        p->ta = armlet_dmem32(c, ARMLET_TASK_UCODE) & 0x7ffffc;
+        p->ta = ta;
         p->da = da;
         p->ds = ds;
         first_sight(c, p, u, did, da, ds);
+        if (p->state == PS_DONE && !p->force && (p->outcome == PROBE_OUT_NO_CANDIDATE || p->outcome == PROBE_OUT_UNSUPPORTED || p->outcome == PROBE_OUT_FAIL) &&
+            (p->text = (uint32_t *)malloc(4096)) != NULL) {
+            read_text(c, ta, p->text);
+            p->img = did;
+        }
         return;                                         /* (the first canned tasks run on the next graphics task: the derivation took long enough for this one) */
     }
     if (p->state == PS_PROBING && P.step)

@@ -13,6 +13,7 @@
 
 #include "m64p_types.h"
 
+#include "armlet.h"
 #include "gfx_ucode.h"
 #include "hle/hle.h"
 
@@ -128,8 +129,11 @@ static bool seen_add(uint64_t id)
     for (i = 0; i < l_nseen; i++)
         if (l_seen[i] == id)
             return false;
-    if (l_nseen < SEEN_MAX)
-        l_seen[l_nseen++] = id;
+    if (l_nseen == SEEN_MAX)
+        return false;                           /* (a game that rewrites words of its text per task: Heiwa Pachinko World 64, ~700 ids in 30 s; logged once) */
+    l_seen[l_nseen++] = id;
+    if (l_nseen == SEEN_MAX)
+        armlet_log(M64MSG_INFO, "gfx ucode: %u graphics ucodes this session; no more are logged", SEEN_MAX);
     return true;
 }
 
