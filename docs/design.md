@@ -548,7 +548,10 @@ little, variety counts fully, but a build whose tasks all look alike still moves
 distinct-fingerprint bar still holds it, unless the evidence reaches **`override` (4) times the base `evidence` (96, whatever the tier's multiplier) with at least 2 distinct fingerprints**: a loaded text's tasks, or a HUD's, are inherently
 uniform (NBA Jam 2000's loaded F3DLX.Rej: 2390 equal replays, 2 fingerprints), and hundreds of equal replays under the per-command gate are the stronger proof). An
 EXACT build **latches** at evidence >= `evidence` (24) **and** >= `distinct` (8) distinct fingerprints; a NEAR build (a NEAR derivation, or a probe pass that needed the tolerance) needs `near`
-(1.75) times both (42 and 14). Declined, inconclusive and loaded-text-not-loaded replays count neither way.
+(1.75) times both (42 and 14), **or `near_run` (192) equal replays with at least 2 distinct fingerprints**, whatever the evidence (2026-10-31: in the retail sweep, Mario Party's and
+Mario Party 2's NEAR F3DLX.Rej fifo builds were replayed 649 and 391 times without a mismatch but showed only 2 and 6 fingerprints in 150 s, so they never latched on a first launch;
+a NEAR build's first mismatch unlatches it for good and the per-command gate keeps it to what was validated, so a long clean run is proof enough; loose builds keep their own bars).
+Declined, inconclusive and loaded-text-not-loaded replays count neither way.
 
 **Per-command gate.** A latched build runs a task natively, but its loop declines the task (`hle_cmd`, the decline reason `hle_gate_why`) at the first command kind or risky path that was in no
 validated task; the JIT runs the task and the validator takes it (`armlet_probe_declined`), so the kind is validated by the next match. A decline costs the native work before it (the whole task

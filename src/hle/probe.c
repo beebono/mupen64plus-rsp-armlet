@@ -169,8 +169,8 @@ void armlet_probe_init(struct armlet_ctx *c)
         armlet_log(M64MSG_INFO, "loose tier: a NONE derivation with at most %u unexplained + missing words is probed%s; a latched loose build's shade and vertex colours may differ by %u levels without a strike",
                    P.loose_words, P.deflt ? ", one beyond that with the family's record as derived (the default-record arm)" : "", P.loose_levels);
     if (P.validator)
-        armlet_log(M64MSG_INFO, "latch policy: evidence %.1f, %u distinct (NEAR x %.2f, loose x %.2f, default record x %.2f), %u strikes, sampling 1/%u .. 1/%u (halving every %u), %u capture slots", P.lc.evidence,
-                   P.lc.distinct, P.lc.near_mul, P.lc.loose_mul, P.lc.default_mul, P.lc.strikes, P.lc.sample_first, P.lc.sample_last, P.lc.sample_decay, P.lc.queue);
+        armlet_log(M64MSG_INFO, "latch policy: evidence %.1f, %u distinct (NEAR x %.2f, loose x %.2f, default record x %.2f), override x %.2f, NEAR run %u, repeat %.2f, %u strikes, sampling 1/%u .. 1/%u (halving every %u), %u capture slots", P.lc.evidence,
+                   P.lc.distinct, P.lc.near_mul, P.lc.loose_mul, P.lc.default_mul, P.lc.override_mul, P.lc.near_run, P.lc.repeat_min, P.lc.strikes, P.lc.sample_first, P.lc.sample_last, P.lc.sample_decay, P.lc.queue);
 }
 
 static void store_pol(struct pair *p);

@@ -32,11 +32,12 @@ void latch_cfg_default(struct latch_cfg *c)
     c->repeat_min = 0.05;
     c->override_mul = 4.0;
     c->resume = 128;
+    c->near_run = 192;
 }
 
 int latch_cfg_parse(struct latch_cfg *c, const char *s, const char **bad)
 {
-    static const char *const keys[] = { "evidence", "distinct", "near", "strikes", "sample", "sample_last", "decay", "queue", "fingerprints", "loose", "default", "repeat", "override", "resume" };
+    static const char *const keys[] = { "evidence", "distinct", "near", "strikes", "sample", "sample_last", "decay", "queue", "fingerprints", "loose", "default", "repeat", "override", "resume", "near_run" };
     int rc = 0;
     while (s && *s) {
         size_t n = strcspn(s, "=,"), k;
@@ -73,6 +74,7 @@ int latch_cfg_parse(struct latch_cfg *c, const char *s, const char **bad)
             case 11: c->repeat_min = v > 1 ? 1 : v; break;
             case 12: c->override_mul = v > 0 && v < 1 ? 1 : v; break;
             case 13: c->resume = (unsigned)v; break;
+            case 14: c->near_run = (unsigned)v; break;
             }
         }
         s = end + strcspn(end, ",");
@@ -205,7 +207,8 @@ int latch_match(struct latch_state *s, const struct latch_cfg *c, uint64_t fp, c
         s->fpn[i]++;
     }
     if ((s->evidence + 1e-9 >= latch_need_evidence(s, c) && s->distinct >= LMUT(433, latch_need_distinct(s, c), 0)) ||
-        (c->override_mul > 0 && s->evidence + 1e-9 >= c->evidence * c->override_mul && s->distinct >= LMUT(469, 2u, 1u))) {   /* (the override: variety is not to be had, the evidence is; on the base bar, whatever the tier: variety and the record's certainty are separate questions) */
+        (c->override_mul > 0 && s->evidence + 1e-9 >= c->evidence * c->override_mul && s->distinct >= LMUT(469, 2u, 1u)) ||   /* (the override: variety is not to be had, the evidence is; on the base bar, whatever the tier: variety and the record's certainty are separate questions) */
+        (c->near_run && LMUT(470, s->near && !s->loose, 1) && s->matches >= LMUT(471, c->near_run, c->near_run / 2) && s->distinct >= LMUT(472, 2u, 1u))) {   /* (the NEAR run: one mismatch kills a NEAR build, so a long clean run is the proof) */
         s->state = LATCH_LATCHED;
         s->post = 0;
         return LATCH_EV_LATCH;

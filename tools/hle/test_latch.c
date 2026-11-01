@@ -86,15 +86,48 @@ int main(void)
     latch_init(&s, &c, 0, 0, 0);
     hist_of(h, 0x01, 5, 0);
     hist_of(h2, 0x01, 5, 0x10);
-    for (i = 0; i < 1000 && s.state == LATCH_CAND; i++)
+    for (i = 0; i < 4000 && s.state == LATCH_CAND; i++)
         latch_match(&s, &c, latch_fingerprint(i & 1 ? h : h2), i & 1 ? h : h2);
     CHECK(s.state == LATCH_LATCHED && s.distinct == 2 && s.evidence + 1e-9 >= 96 && s.evidence < 97, "override: two fingerprints latch once the evidence reaches 4 x 24");
     latch_free(&s);
     c.override_mul = 0;
     latch_init(&s, &c, 0, 0, 0);
-    for (i = 0; i < 1000; i++)
+    for (i = 0; i < 4000; i++)
         latch_match(&s, &c, latch_fingerprint(i & 1 ? h : h2), i & 1 ? h : h2);
     CHECK(s.state == LATCH_CAND, "override=0: never");
+    latch_free(&s);
+    latch_cfg_default(&c);
+    /* the NEAR run: a strict NEAR build latches after near_run (192) equal replays with 2 distinct fingerprints (Mario Party's F3DLX.Rej 2.06: 649 replays, 2 fingerprints, never reached 42 / 14) */
+    CHECK(c.near_run == 192 && latch_cfg_parse(&c, "near_run=50", &bad) == 0 && c.near_run == 50, "near_run is a key (default 192)");
+    latch_cfg_default(&c);
+    latch_init(&s, &c, 1, 0, 0);
+    for (i = 0; i < 1000 && s.state == LATCH_CAND; i++)
+        latch_match(&s, &c, latch_fingerprint(i & 1 ? h : h2), i & 1 ? h : h2);
+    CHECK(s.state == LATCH_LATCHED && s.matches == 192 && s.distinct == 2 && s.evidence < 42, "NEAR run: two fingerprints latch at the 192nd equal replay, below the evidence bar");
+    latch_free(&s);
+    latch_init(&s, &c, 1, 0, 0);
+    for (i = 0; i < 1000; i++)
+        latch_match(&s, &c, latch_fingerprint(h), h);
+    CHECK(s.state == LATCH_CAND, "NEAR run: one fingerprint never latches");
+    latch_free(&s);
+    latch_init(&s, &c, 1, 0, 0);
+    for (i = 0; i < 1000; i++)
+        latch_match(&s, &c, latch_fingerprint(i & 1 ? h : h2), i & 1 ? h : h2);
+    CHECK(s.state == LATCH_LATCHED && latch_mismatch(&s, &c, LATCH_G_STRUCTURAL) == LATCH_EV_DEAD && s.state == LATCH_DEAD, "NEAR run: a latched NEAR build's first mismatch unlatches it for good");
+    latch_free(&s);
+    for (i = 0; i < 2; i++) {                       /* an EXACT build and a loose NEAR build keep their own bars */
+        unsigned j;
+        latch_init(&s, &c, i, !i ? 0 : 1, 0);
+        for (j = 0; j < 400; j++)
+            latch_match(&s, &c, latch_fingerprint(j & 1 ? h : h2), j & 1 ? h : h2);
+        CHECK(s.state == LATCH_CAND, i ? "NEAR run: not for a loose build" : "NEAR run: not for an EXACT build");
+        latch_free(&s);
+    }
+    c.near_run = 0;
+    latch_init(&s, &c, 1, 0, 0);
+    for (i = 0; i < 400; i++)
+        latch_match(&s, &c, latch_fingerprint(i & 1 ? h : h2), i & 1 ? h : h2);
+    CHECK(s.state == LATCH_CAND, "near_run=0: never");
     latch_free(&s);
     latch_cfg_default(&c);
     c.repeat_min = 0;
@@ -118,6 +151,7 @@ int main(void)
     CHECK(!latch_kind_ok(s.kinds, 0x05) && !latch_kind_ok(s.kinds, LATCH_K_CLIP) && !latch_kind_ok(s.kinds, LATCH_NKINDS + 3), "the others are not");
     latch_free(&s);
 
+    c.override_mul = 0;                                         /* (the distinct bar alone: 2800 replays would cross the override's 96) */
     latch_init(&s, &c, 0, 0, 0);                                /* 7 fingerprints with plenty of repeats: the evidence is there, the variety is not */
     for (i = 0; i < 7 * 400; i++) {
         hist_of(h, 0x01, 1u << (i % 7), 0);
@@ -127,6 +161,7 @@ int main(void)
     hist_of(h, 0x01, 1u << 7, 0);
     CHECK(latch_match(&s, &c, latch_fingerprint(h), h) == LATCH_EV_LATCH, "the 8th distinct fingerprint latches it");
     latch_free(&s);
+    latch_cfg_default(&c);
 
     /* NEAR: 1.75 times both (42 evidence, 14 distinct) */
     latch_init(&s, &c, 1, 0, 0);
