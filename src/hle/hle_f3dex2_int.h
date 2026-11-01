@@ -34,6 +34,7 @@ struct f3dex2_build {
     unsigned clip204;               /* the clipper's 2.04 reciprocal (fx2_clip_ctx.sign0); equal to gen204 except in F3DEX fifo 2.05 (Chameleon Twist 2: the 2.04 reciprocal, the 2.06 fan and stores) */
     unsigned zex;                   /* F3DZEX: other lanes of the constant vectors, no mask on the slope fractions */
     unsigned bz_w;                  /* G_BRANCH_Z compares the integer clip w (`lh 6(vertex)`) although zex is 0 (F3DZEX.NoN 2.08I, Majora's Mask: Paper Mario's 2.08 text with one changed word) */
+    unsigned plight;                /* the Turok 2 engine's point-light pass in G_VTX (geometry bit 0x80, lights at DMEM 0x250, scratch 0x2d0; hle_f3dex2.c plight_pass) */
     unsigned bz_z;                  /* with zex: G_BRANCH_Z still compares the screen z (`lw 0x1c(vertex)`), not the integer part of the clip w that the F3DZEX builds compare (F3DEX 2.06: Blues Brothers 2000's text has the F3DZEX triangle code and the F3DEX branch) */
     uint64_t load_key;              /* FNV-1a-64 (armlet_ucode_hash) of the first 0xf48 bytes of the text: the part a G_LOAD_UCODE copies to IMEM, which names the build that command loads (loaded_build) */
     uint32_t reject_mask;           /* a triangle whose three clip-flag words have a common bit in this mask is rejected */

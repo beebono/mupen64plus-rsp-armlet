@@ -1025,3 +1025,20 @@ Desktop x86_64, 57 s wall-clock runs (`tools/ucode_coverage_run.sh`), the module
 | in the module (`ucode_coverage_run.sh`, 30 s, fresh cache) | Heiwa, Super Robot Spirits: 1 derivation (was 16 and a full pair table); Blast Corps EU 2; Snowboard Kids 2, Body Harvest, Airboarder 64: task and native counts, latches and derivations as before `texts_alike` |
 
 Runs: `RSPT_TARGET=<parallel-rsp> RSPT_HASH=... RSPT_DEADTEXT=mask|poison`, `Core[RdpFullSyncDelayMax]=0`, `FOIR_THREADS=0`, the same seconds for both; compare the common prefix of the two hash files.
+
+## Turok 2 engine: F3DEX.NoN fifo 2.05 with point lights (2026-11-01; docs/ucode-f3dex2-dialects.md section 9)
+
+Desktop x86_64, `GfxMode=hle`, 3700 frames, the reference pairing; the build's dead ranges passed to the harness with `EXTRA_MASKS` (the replay tool of the tree did not have the build yet).
+
+| check | result |
+|---|---|
+| gates (hash, state, 6 screenshots, audio), `ref` against `armlet-hle` and `ARMLET_HLE_VERIFY=1` | identical: Turok 2, South Park, Turok: Rage Wars, Armorines; verify 0 differences in all four |
+| native share (`ARMLET_UCODE_STATS`) | Turok 2 1151 of 1152, South Park 1663 of 1664, Rage Wars 895 of 896, Armorines 1407 of 1408 (the first task: the JIT) |
+| on the way | with the bit declined: 93 of 1152 (Turok 2) and 1104 of 1664 (South Park) tasks declined, all lit point-light vertices. The scratch 0x2d0 differed (the lit alpha, the pair it holds) until it became a dead range |
+| captured task starts (`ARMLET_HLE_CAPTURE`, Turok 2 and South Park, 48 snapshots), `armlet-native-replay` | 48 equal, 0 declined; qemu-aarch64 NEON and scalar the same |
+| synthetic tasks on a South Park base, 200 seeds per case (clip zneg tri mix misc lit wild bad, and the new `plight` case of `mksyn_ex2.py`: 8 point lights, some off, lit or not, fog or not, the bit switched between batches) | 0 differences; `bad` declines by design, `wild` 6 of 200. qemu NEON and scalar, 100 seeds of plight / clip / lit: 0 differences |
+| mutation 493 (the pass's product + 0x80) | `plight` 198 of 200 seeds differ, 10 of 48 snapshots; in game, verify on Turok 2 (with + 1 in place of + 0x80) 70 tasks |
+| mutation 494 (`clip204 = 0`) | `clip` 48, `wild` 34, `lit` 11 of 200 differ; 0 snapshots and 0 in-game tasks (the clipper's reciprocal is rarely decisive) |
+| equivalent mutants, not kept | skipping no light (an off light's negative radius adds nothing either); the lit alpha under fog (the fog value replaces it) |
+| regression, verify 3700 f | Paper Mario, Banjo-Tooie: identical, 0 differences |
+| `armlet-probe-replay --sync` | 37 references, 0 out of step |

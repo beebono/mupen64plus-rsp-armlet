@@ -188,3 +188,29 @@ Majora's Mask (`1c724a38139c0669`) is Paper Mario's F3DEX 2.08 text plus four wo
 
 Before: derived NEAR and probed 25 of 28 equal (`bz/0`, `bz/1`, `misc/1` differ), so never latched. With `bz_w`: 28 of 28; `bz_w` forced to 0 in the probe record (354): 25 of 28, the same three tasks. No game run notices the branch (6000 frames of Majora's Mask: identical, 2431 of 2432 tasks native); the probe's `bz` case and the synthetic `misc` case do (321: 37 of 300 seeds).
 
+
+## 9. F3DEX.NoN fifo 2.05: the Turok 2 engine's point lights (2026-11-01)
+
+The text `7847866d95f40933` ("F3DEX.NoN fifo 2.05", one data image) runs Turok 2, Turok 3, Turok: Rage Wars, Armorines, South Park and the Japanese Turok (the priority analysis' biggest single near miss: 7 titles).
+`derive_build.py` aligns 941 of 1154 words with F3DEX 2.06 and leaves 49 unexplained, all in `G_VTX`. They are one inserted block (0x624 .. 0x6dc), so the code behind it sits 0xb0 higher, and two `slv` stores.
+
+**The block is a point-light pass**, used when geometry-mode bit 0x80 is set (a bit no Nintendo F3DEX2 defines).
+- **The lights:** 8 of them at DMEM 0x250 + 16 k, the lights' base 0x1f0 + 0x60, which `G_MOVEMEM` writes. Each holds x y z, colour bytes at +6 .. +9, a radius at +10 (bit 15: off) and a scale at +12.
+- **Per vertex and channel:**
+  - start at C = colour << 7 (`luv`);
+  - for every light that is on, d = |Lx - X| + |Ly - Y| + |Lz - Z| against the vertex's **integer clip coordinates** (each sum saturating);
+  - f = |min(d - r, 0)| x scale (`VMUDN`, the low half);
+  - C = min(C + (L << 7) x f >> 16, 0x7f80);
+  - the result is C >> 7 (`suv`).
+- **The colour it runs on** is the one `G_VTX` has made: the input's, or the lighting overlay's, which writes its colours over the input and rejoins the vertex code in front of the pass. The fog value replaces the alpha after it.
+- **Without the bit** the block only moves the colours through DMEM 0x2d0 (`luv` / `suv` are exact for bytes), and the two `slv` stores swap their source halves to match. The result is 2.06's.
+
+The record, `l_b_turok` (`hle_f3dex2_dialects.c`), is the derived one:
+- 2.06's pcs moved by the block, NoN mask `0x70b0`, `zex`, `bz_z`;
+- **`clip204 = 1`**: the 2.04 clipper reciprocal, as in Chameleon Twist 2's 2.05 (section 7);
+- **`plight = 1`**: the front-end gives bit 0x80 a meaning (`geom_def(f)`) and runs `plight_pass` on the records after `fx2_vtx_xform`.
+
+The triangle code ORs the geometry mode's low byte into a command byte that already has 0x80, so the bit changes nothing there. The pass's scratch (0x2d0 .. 0x2d7, a pair's colours, written before every read) is a dead range of the build.
+`derive_refs.c` was not regenerated: this machine's dump set is smaller than the one the committed file was made from, so the text is not yet a reference of the C derivation.
+
+Without the pass (the bit declined), 8 % of Turok 2's tasks and 67 % of South Park's ran on the JIT. With it, all but the first task of each game run natively (testing.md, "Turok 2 engine").

@@ -191,6 +191,51 @@ static void do_mtx_mul_mvp(struct f3 *f, uint32_t w0)
 
 static inline unsigned first_slot(unsigned first, unsigned i) { return (first + F2_VSTRIDE * i - 0x420) / F2_VSTRIDE; }
 
+/* the geometry mode bits the build gives a meaning to (the point-light builds: also 0x80, which the triangle code ORs into a command byte that has it already) */
+static inline uint32_t geom_def(const struct f3 *f) { return f2L->geom_def | (f->b->plight ? 0x80u : 0); }
+
+/* The point-light pass of the Turok 2 engine's F3DEX.NoN fifo 2.05 (its G_VTX at 0x624 .. 0x6dc): per channel C = colour << 7; for each of the 8 lights at 0x250 + 16 k (x y z, colour bytes at +6 .. +9,
+ * +10 radius with bit 15 = off, +12 scale) whose bit 15 is clear, d = |Lx - X| + |Ly - Y| + |Lz - Z| against the integer clip coordinates (each sum saturating), f = |min(d - r, 0)| x scale (VMUDN, low half),
+ * C = min(C + (L << 7) x f >> 16, 0x7f80); the colour is C >> 7. Without the geometry bit the pass leaves the colour alone. */
+static void plight_one(const struct hle_task *t, const int16_t *cx, const uint8_t *in, uint8_t *o)
+{
+    int32_t C[4];
+    unsigned k, ch;
+    for (ch = 0; ch < 4; ch++)
+        C[ch] = in[ch] << 7;
+    for (k = 0; k < 8; k++) {
+        unsigned a = 0x250 + 16 * k;
+        int16_t r = (int16_t)hle_dm16(t, a + 10), d, e;
+        uint16_t f;
+        if (r & 0x8000)                                 /* (an off light's negative radius would add nothing either) */
+            continue;
+        d = hle_clamp16(hle_abs16(hle_clamp16((int16_t)hle_dm16(t, a) - cx[0])) + hle_abs16(hle_clamp16((int16_t)hle_dm16(t, a + 2) - cx[1])));
+        d = hle_clamp16(d + hle_abs16(hle_clamp16((int16_t)hle_dm16(t, a + 4) - cx[2])));
+        e = hle_clamp16(d - r);
+        f = (uint16_t)(hle_abs16(e < 0 ? e : 0) * (int32_t)(int16_t)hle_dm16(t, a + 12));
+        for (ch = 0; ch < 4; ch++) {
+            int32_t p = (int32_t)(((int64_t)(hle_dm8(t, a + 6 + ch) << 7) * f) >> 16);
+            C[ch] = hle_clamp16(C[ch] + MUT(493, p, p + 0x80));
+            if (C[ch] > 0x7f80)
+                C[ch] = 0x7f80;
+        }
+    }
+    for (ch = 0; ch < 4; ch++)
+        o[ch] = (uint8_t)(C[ch] >> 7);
+}
+
+/* The pass runs on the colour G_VTX has made (the input's, or the lighting overlay's, which rejoins the vertex code in front of it); with fog the fog value replaces the alpha after it. Its scratch at
+ * 0x2d0 is a dead range of the build. */
+static void plight_pass(const struct hle_task *t, unsigned n, struct fx2_vtx *out, int fog)
+{
+    unsigned i;
+    for (i = 0; i < n; i++) {
+        uint8_t o[4];
+        plight_one(t, out[i].cx, out[i].col, o);
+        memcpy(out[i].col, o, fog ? 3 : 4);
+    }
+}
+
 static int cmd_vtx(struct f3 *f)
 {
     struct hle_task *t = f->t;
@@ -204,7 +249,7 @@ static int cmd_vtx(struct f3 *f)
         return hle_decline(t, "G_VTX with an unusual count");
     if (lit && hle_cmd(t, LATCH_K_LIT))
         return HLE_DECLINE;
-    if (MUT(224, hle_dm32(t, F2_GEOM) & ~f2L->geom_def, 0))        /* (as for the triangles, tri_consts) */
+    if (MUT(224, hle_dm32(t, F2_GEOM) & ~geom_def(f), 0))        /* (as for the triangles, tri_consts) */
         return hle_decline(t, "geometry mode bits the build does not define");
     if (MUT(221, ((w0 & 0xfff) > 0x40 || (w0 & 1) || (w0 & 0xfff) < 2 * n || (w0 & 0xf00000)), 0))
         return hle_decline(t, "G_VTX with an unusual end index");
@@ -288,6 +333,8 @@ static int cmd_vtx(struct f3 *f)
         if (hle_vtx_kinds(t, fo, wn))
             return HLE_DECLINE;
     }
+    if (f->b->plight && (hle_dm32(t, F2_GEOM) & 0x80))
+        plight_pass(t, n, out, a1 & FX2_FOG);
     if (f->trace)
         for (i = 0; i < n; i++)
             fprintf(stderr, "    v%u in=(%d %d %d) clip=(%d.%04x %d.%04x %d.%04x %d.%04x) flags=%08x\n", first_slot(first, i), in[i].x, in[i].y, in[i].z, out[i].cx[0], out[i].cf[0], out[i].cx[1], out[i].cf[1], out[i].cx[2], out[i].cf[2], out[i].cx[3], out[i].cf[3], out[i].flags);
@@ -384,7 +431,7 @@ static int tri_consts(struct f3 *f)
     struct hle_task *t = f->t;
     struct fx2_tri_in *in = &f->tin;
     unsigned ca = F2_CULLTAB + hle_dm8(t, F2_GEOM + 2);
-    if (MUT(224, hle_dm32(t, F2_GEOM) & ~f2L->geom_def, 0))        /* a bit the build gives no meaning to: bits 8 .. 15 index the culling table (past its 10 bytes into the clipper's scratch, which the front-end does not keep), the low byte goes into the command id, and the rest is data of the code paths nobody tests */
+    if (MUT(224, hle_dm32(t, F2_GEOM) & ~geom_def(f), 0))        /* a bit the build gives no meaning to: bits 8 .. 15 index the culling table (past its 10 bytes into the clipper's scratch, which the front-end does not keep), the low byte goes into the command id, and the rest is data of the code paths nobody tests */
         return hle_decline(t, "geometry mode bits the build does not define");
     if (MUT(233, (hle_dm8(t, F2_TEXTURE + 3) & 0xfd) || (hle_dm8(t, F2_TEXTURE + 2) & 0xc0), 0))   /* the texture on byte is 0 or 2 (the triangle command's id takes it ORed in), the tile byte level << 3 | tile (6 bits) */
         return hle_decline(t, "G_TEXTURE with an unusual on / tile byte");

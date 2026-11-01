@@ -16,6 +16,7 @@
          wild    vertices with coordinates over the whole 16-bit range and matrices of large scale (the overflow and saturation paths of the vertex pipeline and the triangle setup), triangles between
          bad     commands whose vertex numbers, indices or offsets no game writes (past the 32 slots, odd, past the tables): a triangle, G_MODIFYVTX, G_CULLDL, G_BRANCH_Z, G_MOVEWORD, G_MOVEMEM; the front-ends decline them
          lit     lit vertices (1 to 5 lights, look-at vectors, texture generation linear or not, fog), the triangles between them
+         plight  (the Turok 2 engine's F3DEX.NoN 2.05) geometry bit 0x80 with 8 point lights at DMEM 0x250, some off, unlit or lit, fog or not, odd and even batches, the bit switched between them
          mtx     matrices whose halfwords are random 16-bit values (any integer and fraction part, the saturating corners of the product): G_MTX load, multiply and push, modelview and projection, then vertices
          s2      a task that starts with S2DEX (Resident Evil 2's; MKSYN_S2DATA = its data address + 0x180): the S2DEX commands of the stage below, then G_ENDDL
          s2ring  a task that starts with S2DEX: 60 .. 119 sprite rectangles, more than the ring of an XBUS text holds (StarCraft 64's)
@@ -361,6 +362,49 @@ def case(name, seed):
             for _ in range(4):
                 a, b2, c = r.sample(range(v0, v0 + n), 3)
                 d.cmd((0x05 << 24) | (a * 2 << 16) | (b2 * 2 << 8) | c * 2)
+        d.cmd(0xdf000000, 0)
+    elif name == "plight":
+        shade = 0x4 | 0x200000
+        lit = r.random() < 0.5
+        gm = shade | 1 | 0x80 | (0x20000 if lit else 0) | r.choice([0, 0x10000]) | 0x800000
+        d, data = common(r, gm, r.choice([0x1ff, 0]), 2)
+        if len(sys.argv) > 3:
+            print('INFO plight', seed, 'lit %d fog %d' % (lit, bool(gm & 0x10000)), file=sys.stderr)
+        if lit:                                            # one light (its ambient slot ends at 0x60, below the point lights) and the look-at slots
+            d.cmd(0xdb020000, 24)
+            for slot, ofs in ((0, 0), (1, 24), (2, 0x30), (3, 0x48)):
+                col = bytes([r.randrange(256), r.randrange(256), r.randrange(256), 0])
+                dirv = bytes([r.randrange(256), r.randrange(256), r.randrange(256), 0])
+                data[0x1000 + 0x20 * slot] = col + col + dirv + b"\0" * 4 if slot >= 2 else b"\0" * 8 + bytes([0x7f, 0, 0, 0] if slot == 0 else [0, 0x7f, 0, 0]) + b"\0" * 4
+                d.cmd(0xdc000000 | (1 << 19) | ((ofs // 8) << 8) | 0x0a, BASE + 0x1000 + 0x20 * slot)
+        pl = b""                                           # the 8 point lights of the Turok 2 engine's F3DEX.NoN 2.05 (DMEM 0x250 = the lights' base 0x1f0 + 0x60): x y z, colour, radius (bit 15: off), scale
+        for k in range(8):
+            rad = r.choice([r.randrange(0, 0x100), r.randrange(0, 0x1000), r.randrange(0, 0x8000)]) | (0x8000 if r.random() < 0.25 else 0)
+            pl += struct.pack(">3h4BHH", *[r.choice([r.randint(-600, 600), r.randint(-32768, 32767)]) for _ in range(3)],
+                              *[r.randrange(256) for _ in range(4)], rad, r.choice([r.randrange(0x10000), r.randrange(0x100), 0x7fff, 0xffff]))
+        data[0x1100] = pl
+        d.cmd(0xdc000000 | (15 << 19) | ((0x60 // 8) << 8) | 0x0a, BASE + 0x1100)
+        data[0x500] = mtx([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1])
+        data[0x540] = mtx(rnd_matrix(r, r.choice([1, 0.5, 1 / 8])))
+        d.cmd(0xda380007, BASE + 0x540)
+        d.cmd(0xda380003, BASE + 0x500)
+        vaddr = 0x600
+        for b in range(3):
+            n = r.choice([1, 2, 3, 4, 5, 8, 11])
+            v0 = r.randrange(0, 32 - n + 1)
+            vs = b""
+            for i in range(n):
+                vs += struct.pack(">3hH2h4B", r.randint(-400, 400), r.randint(-400, 400), r.randint(-400, 400), 0, r.randrange(-1024, 1024), r.randrange(-1024, 1024),
+                                  *[r.randrange(256) for _ in range(4)])
+            data[vaddr] = vs
+            if b and r.random() < 0.3:
+                d.cmd(0xd9ffff7f if r.random() < 0.5 else 0xd9ffffff, 0 if r.random() < 0.5 else 0x80)   # the point-light bit off or on between batches
+            d.cmd((0x01 << 24) | (n << 12) | ((v0 + n) << 1), BASE + vaddr)
+            vaddr += 0x100
+            if n >= 3:
+                for _ in range(4):
+                    a, b2, c = r.sample(range(v0, v0 + n), 3)
+                    d.cmd((0x05 << 24) | (a * 2 << 16) | (b2 * 2 << 8) | c * 2)
         d.cmd(0xdf000000, 0)
     elif name == "mtx":
         geom = r.choice([0, 0x4]) | r.choice([0, 1]) | 0x800000

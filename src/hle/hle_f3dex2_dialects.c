@@ -96,5 +96,14 @@ static const struct f3dex2_build l_b_mm = {
     .head = 0x194, .copy = 0x210, .sync = 0x214, .segcopy = 0x220, .ef = 0x240, .ed = 0x24c, .tri1 = 0xa44, .tri2 = 0xa3c, .vtx = 0x780,
     .mtx = 0x0f0, .geom = 0x1d8, .enddl = 0x1ec, .half2 = 0x200, .modvtx = 0xf08, .culldl = 0xec8, .branchz = 0xef0, .bz_w = 1, .reject_mask = 0x70b0, .load_key = 0xc9efea08ae04999bull };
 HLE_UCODE(l_mm) = { .id = 0x1c724a38139c0669ull, .name = "F3DZEX.NoN fifo 2.08I (Majora's Mask)", .fam = &f3dex2_fam, .fam_data = &l_b_mm, F3DEX2_DEAD };
+/* F3DEX.NoN fifo 2.05 (the Turok 2 engine): F3DEX 2.06's text with the NoN mask, the 2.04 clipper reciprocal (clip204) and a point-light pass in G_VTX (0x624 .. 0x6dc, the code behind it
+ * 0xb0 higher): with geometry bit 0x80, up to 8 lights at DMEM 0x250 add colour x max(radius - Manhattan distance, 0) x scale to the vertex colour (plight, hle_f3dex2.c plight_pass) */
+static const struct f3dex2_build l_b_turok = {
+    .head = 0x18c, .copy = 0x208, .sync = 0x20c, .segcopy = 0x218, .ef = 0x238, .ed = 0x244, .tri1 = 0x864, .tri2 = 0x85c, .vtx = 0x4e8,
+    .mtx = 0x0f0, .geom = 0x1d0, .enddl = 0x1e4, .half2 = 0x1f8, .modvtx = 0xd24, .culldl = 0xce4, .branchz = 0xd0c, .zex = 1, .clip204 = MUT(494, 1, 0), .bz_z = 1, .plight = 1,
+    .reject_mask = 0x70b0, .load_key = 0x140511db5b423647ull };
+static const struct hle_dead_range l_dead_turok[] = { F3DEX2_DEAD_RANGES, { 0x2d0, 0x2d8 } };      /* (the point-light pass's scratch: the colours of a pair, written before every read) */
+HLE_UCODE(l_turok) = { .id = 0x7847866d95f40933ull, .name = "F3DEX.NoN fifo 2.05 (Turok 2, Turok 3, Turok: Rage Wars, Armorines, South Park)", .fam = &f3dex2_fam, .fam_data = &l_b_turok,
+    .ring_off = 0xfe8, .dead = l_dead_turok, .n_dead = F3DEX2_N_DEAD_OUT + 1 };
 
 #endif
