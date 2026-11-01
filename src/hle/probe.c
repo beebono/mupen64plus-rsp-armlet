@@ -34,11 +34,11 @@
 #include "native/native_internal.h"
 #include "probe_cases.h"
 #include "ucache.h"
+#include "ucode_live.h"
 #include "validate.h"
 
 #define PAIR_MAX 16
 #define MAX_TASKS 128
-#define ALIKE_WORDS 32                  /* a text this close to one that has nothing to run is the same build (texts_alike) */
 
 enum { PS_NEW, PS_PROBING, PS_DONE };
 
@@ -78,7 +78,8 @@ struct pair {
     int deflt;                          /* (loose) the default-record arm: a NONE derivation outside the word bound, probed with the family's record as derived */
     int sig;                            /* did is the static data signature (data_sig), not the hash of the whole image: set once the record is known */
     uint64_t last_fd;                   /* the last whole-image hash that matched this pair (the signature is not recomputed for it) */
-    uint32_t *text;                     /* a pair with nothing to run (NONE, unsupported, a cached failure): its text, for texts_alike */
+    int alike;                          /* a pair with nothing to run (NONE, unsupported, a cached failure): texts_alike compares lsig */
+    uint64_t lsig;                      /* ... the signature of its live text (ucode_live.c) */
     uint64_t img;                       /* ... and the whole-image hash of its first task */
     unsigned n_alike;                   /* texts taken as this one */
 };
@@ -199,9 +200,8 @@ void armlet_probe_reset(void)
         if (p->latched && p->b)
             armlet_hle_unregister_dynamic(&p->b->uc);
         if (p->n_alike)
-            armlet_log(M64MSG_INFO, "probe: ucode %016" PRIx64 ": %u more texts taken as this one (at most %u words differ), not derived", p->tid, p->n_alike, ALIKE_WORDS);
+            armlet_log(M64MSG_INFO, "probe: ucode %016" PRIx64 ": %u more texts taken as this one (the same live text), not derived", p->tid, p->n_alike);
         free(p->b);
-        free(p->text);
     }
     memset(P.pairs, 0, sizeof(P.pairs));
     ucache_close();
@@ -1291,27 +1291,33 @@ static int offer_loaded(struct armlet_ctx *c, uint32_t ta, uint32_t da, uint32_t
 static void offer_locked(struct armlet_ctx *c, const struct armlet_ucode_id *u);
 
 /* Texts that are one build with different words behind its code (game variables linked after the text, inside the 4 KiB the id covers: a frame counter at 0xf08 in Super Robot
- * Spirits, seven at 0xee0 .. 0xf84 in Heiwa Pachinko World 64, six floats at 0xfcc .. 0xfe8 in Blast Corps' level select): a new id on nearly every task. A text within ALIKE_WORDS words of
- * a pair with nothing to run, and with the same data image, gets that pair's verdict without a derivation (~40 ms each on the rgdsplus), a pair or a cache entry. */
-static int texts_alike(const struct armlet_ctx *c, uint64_t tid, uint32_t ta, uint64_t did)
+ * Spirits, seven at 0xee0 .. 0xf84 in Heiwa Pachinko World 64, six floats at 0xfcc .. 0xfe8 in Blast Corps' level select): a new id on nearly every task. A text whose live part
+ * (ucode_live.c) is that of a pair with nothing to run, with the same data image, gets that pair's verdict without a derivation (~40 ms each on the rgdsplus), a pair or a
+ * cache entry. */
+static uint64_t live_sig(const struct armlet_ctx *c, uint32_t ta, uint32_t da, uint32_t ds)
 {
-    uint32_t text[1024];
+    struct armlet_live l;
+    armlet_ucode_live((const unsigned char *)c->rsp.RDRAM, ta, da, ds, armlet_dmem32(c, ARMLET_TASK_UCODE_BOOT), armlet_dmem32(c, ARMLET_TASK_UCODE_BOOT_SIZE), &l);
+    return armlet_ucode_live_sig((const unsigned char *)c->rsp.RDRAM, ta, &l);
+}
+
+static int texts_alike(const struct armlet_ctx *c, uint64_t tid, uint32_t ta, uint64_t did, uint32_t da, uint32_t ds)
+{
+    uint64_t sig = 0;
     int have = 0;
-    unsigned i, j, nd;
+    unsigned i;
     for (i = 0; i < PAIR_MAX; i++) {
         struct pair *p = &P.pairs[i];
-        if (!p->text || p->img != did)
+        if (!p->alike || p->img != did)
             continue;
         if (!have) {
-            read_text(c, ta, text);
+            sig = live_sig(c, ta, da, ds);
             have = 1;
         }
-        for (j = nd = 0; j < 1024 && nd <= ALIKE_WORDS; j++)
-            nd += text[j] != p->text[j];
-        if (nd <= ALIKE_WORDS) {
+        if (sig == p->lsig) {
             if (!p->n_alike++)
-                armlet_log(M64MSG_INFO, "probe: ucode %016" PRIx64 " data %016" PRIx64 ": %u words from ucode %016" PRIx64 ", taken as that one (%s); texts like it are not logged",
-                           tid, p->did, nd, p->tid, p->note);
+                armlet_log(M64MSG_INFO, "probe: ucode %016" PRIx64 " data %016" PRIx64 ": the live text of ucode %016" PRIx64 ", taken as that one (%s); texts like it are not logged",
+                           tid, p->did, p->tid, p->note);
             return 1;
         }
     }
@@ -1365,7 +1371,7 @@ static void offer_locked(struct armlet_ctx *c, const struct armlet_ucode_id *u)
     p = task_pair(c, u->id, did, da, ds);
     if (!p) {
         uint32_t ta = armlet_dmem32(c, ARMLET_TASK_UCODE) & 0x7ffffc;
-        if (!registered && texts_alike(c, u->id, ta, did))
+        if (!registered && texts_alike(c, u->id, ta, did, da, ds))
             return;
         p = new_pair(u->id, did);
         if (!p)
@@ -1375,9 +1381,9 @@ static void offer_locked(struct armlet_ctx *c, const struct armlet_ucode_id *u)
         p->da = da;
         p->ds = ds;
         first_sight(c, p, u, did, da, ds);
-        if (p->state == PS_DONE && !p->force && (p->outcome == PROBE_OUT_NO_CANDIDATE || p->outcome == PROBE_OUT_UNSUPPORTED || p->outcome == PROBE_OUT_FAIL) &&
-            (p->text = (uint32_t *)malloc(4096)) != NULL) {
-            read_text(c, ta, p->text);
+        if (p->state == PS_DONE && !p->force && (p->outcome == PROBE_OUT_NO_CANDIDATE || p->outcome == PROBE_OUT_UNSUPPORTED || p->outcome == PROBE_OUT_FAIL)) {
+            p->alike = 1;
+            p->lsig = live_sig(c, ta, da, ds);
             p->img = did;
         }
         return;                                         /* (the first canned tasks run on the next graphics task: the derivation took long enough for this one) */

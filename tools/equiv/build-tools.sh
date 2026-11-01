@@ -15,7 +15,7 @@ rg35xxsp) CC=$RG35/bin/rg35-gcc ;;
 esac
 O=$R/out/$1/tools; mkdir -p "$O"
 here=$(dirname "$0")
-$CC -O2 -shared -fPIC -I"$API" -o "$O/rsp-shim.so" "$here/rsp_shim.c" -ldl
+$CC -O2 -shared -fPIC -I"$API" -I"$R/src" -o "$O/rsp-shim.so" "$here/rsp_shim.c" "$R/src/ucode_live.c" -ldl
 $CC -O2 -shared -fPIC -I"$API" -o "$O/input-det.so" "$here/inp_det.c"
 $CC -O2 -shared -fPIC -I"$API" -o "$O/audio-adump.so" "$FT/adump.c"
 "$here/stamp.sh" > "$O/STAMP"

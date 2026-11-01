@@ -1,7 +1,7 @@
 /*
  * Survey-only RSP shim: forwards to the RSP plugin named by $UDUMP_TARGET and, for every graphics task (OSTask type 1), records
  * the ucode text and data segment from RDRAM (big-endian byte order) once per distinct (text, data) pair into $UDUMP_DIR, plus a
- * per-task sequence log $UDUMP_DIR/seq.txt ("<task#> <texthash> <datahash> <ucode_size> <data_size>") and the IMEM after the first run of each pair.
+ * per-task sequence log $UDUMP_DIR/seq.txt ("<task#> <texthash> <datahash> <ucode_size> <data_size>"), the IMEM after the first run of each pair and the boot ucode.
  * Used by tools/ucode_survey.py (docs/ucode-survey.md). Not part of any build.
  */
 #define _GNU_SOURCE
@@ -116,6 +116,9 @@ EXPORT unsigned int CALL DoRspCycles(unsigned int c)
             snprintf(n, sizeof n, "%s.text", key); wr(n, tb, 0x1000);
             snprintf(n, sizeof n, "%s.data", key); wr(n, db, ds);
             { uint8_t xb[0x2000]; rd_be(xb, rinfo.RDRAM, ua + 0x1000, sizeof xb); snprintf(n, sizeof n, "%s.ext", key); wr(n, xb, sizeof xb); }   /* RDRAM behind the 4 KiB: the overlays the data descriptors point at (tools/derive_build.py) */
+            { uint32_t ba = dm32(0xfc8) & 0x7fffff & ~3u, bs = dm32(0xfcc); uint8_t bb[0x1000];   /* the boot ucode: where it puts the text (src/ucode_live.c) */
+              if (bs > 0x1000) bs = 0x1000;
+              bs &= ~3u; rd_be(bb, rinfo.RDRAM, ba, bs); snprintf(n, sizeof n, "%s.boot", key); wr(n, bb, bs); }
             done = 1;
         }
     }

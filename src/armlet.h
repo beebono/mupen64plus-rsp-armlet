@@ -59,6 +59,7 @@ struct armlet_ctx {
 enum {
     ARMLET_TASK_TYPE = 0xfc0,
     ARMLET_TASK_FLAGS = 0xfc4,
+    ARMLET_TASK_UCODE_BOOT = 0xfc8,
     ARMLET_TASK_UCODE_BOOT_SIZE = 0xfcc,
     ARMLET_TASK_UCODE = 0xfd0,
     ARMLET_TASK_UCODE_SIZE = 0xfd4,

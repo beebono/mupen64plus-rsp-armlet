@@ -8,6 +8,12 @@
  *   RSPT_MASKS="<ucode id>:<lo>-<hi>,<lo>-<hi>;..."  DMEM byte ranges (hex) that are zeroed before the hash of a graphics task of that ucode: the DMEM that the task-level native path
  *                     declares dead (docs/design.md, "DMEM masks"); the reference runs use the same list, so the hash streams stay comparable. The ucode is identified like
  *                     src/gfx_ucode.c does (FNV-1a over the text words). armlet-native-replay --masks prints the list.
+ *   RSPT_DEADTEXT=mask|poison  the words of a graphics task's 4 KiB text that src/ucode_live.c calls dead. The boot load puts those of text 0 .. 0xf80 into IMEM: "poison"
+ *                     fills them with fresh junk in RDRAM before every call of the task and puts back the ones still holding it afterwards (the CPU never sees it), and both modes
+ *                     zero their IMEM words in the RSPT_HASH of every call up to the next graphics task: a mask run and a poison run must give the same stream (never executed).
+ *                     The others (the tail behind the code: game data, display lists in Heiwa Pachinko World 64, which junk would corrupt) must never reach IMEM: after every
+ *                     graphics call both modes look for a run of 4 of them, nonzero, anywhere in IMEM but where the text holds the same words in the boot range ("loads"; must be 0). A shim built with -DULIVE_MUT=1 or 2 must fail one of
+ *                     the two (docs/testing.md). The counts go to stderr at RomClosed.
  *   RSPT_LOG=<file>   about once a second "<CLOCK_BOOTTIME s> <calls> <cumulative RSP ms>"
  *   RSPT_MARK=<file>[,<file>...]  at the first call after each file exists (a FOIR_SHOT screenshot, written on the emulation thread,
  *                     so the point is the same for every build): "MARK <calls> <RSP ms> <emu-thread CPU ms> <process CPU ms>" to RSPT_LOG,
@@ -26,6 +32,7 @@
 
 #include "m64p_plugin.h"
 #include "m64p_types.h"
+#include "ucode_live.h"
 
 static void *h;
 static FILE *lg, *hl, *sl;
@@ -45,6 +52,12 @@ static char *mark_files[MAX_MARKS];
 static int n_marks, next_mark;
 static double last_markchk;
 static RSP_INFO rinfo;
+static int deadtext;                    /* RSPT_DEADTEXT: 1 mask, 2 poison */
+static unsigned dt_n, dt_addr[1024], dt_orig[1024], dt_junk[1024];
+static unsigned dt_nim, dt_im[1024];    /* IMEM words to zero in the hash (sticky until the next graphics task) */
+static unsigned long dt_tasks, dt_words, dt_kept, dt_wide, dt_loads;
+static unsigned dt_ta, dt_nd, dt_dead[1024];    /* the task's text and its dead word offsets (for the IMEM scan) */
+static unsigned dt_rng = 0x9e3779b9u;
 static m64p_error (*p_start)(m64p_dynlib_handle, void *, void (*)(void *, int, const char *));
 static m64p_error (*p_stop)(void);
 static m64p_error (*p_ver)(m64p_plugin_type *, int *, int *, const char **, int *);
@@ -115,6 +128,8 @@ EXPORT m64p_error CALL PluginStartup(m64p_dynlib_handle ch, void *ctx, void (*cb
         }
     }
     hash_rdram = getenv("RSPT_RDRAM") && *getenv("RSPT_RDRAM") == '1';
+    if (getenv("RSPT_DEADTEXT"))
+        deadtext = !strcmp(getenv("RSPT_DEADTEXT"), "poison") ? 2 : !strcmp(getenv("RSPT_DEADTEXT"), "mask");
     if (getenv("RSPT_MARK")) {
         char *m = strdup(getenv("RSPT_MARK")), *save = NULL, *p;
         for (p = strtok_r(m, ",", &save); p && n_marks < MAX_MARKS; p = strtok_r(NULL, ",", &save))
@@ -157,6 +172,87 @@ static void mask_identify(void)
     }
 }
 
+static void deadtext_pre(void)
+{
+    const unsigned char *dm = rinfo.DMEM;
+    unsigned ta, da, ds, t, k;
+    struct armlet_live l;
+    dt_n = 0;
+    if (!deadtext || !dm || *(const unsigned *)(dm + 0xfc0) != 1 || *(const unsigned *)(dm + 0xfcc) > 0x1000)
+        return;
+    ta = *(const unsigned *)(dm + 0xfd0) & 0x7ffffc;
+    da = *(const unsigned *)(dm + 0xfd8) & 0x7ffffc;
+    ds = *(const unsigned *)(dm + 0xfdc);
+    if (!ds || ds > 0x1000)
+        ds = ds ? 0x1000 : 0x800;
+    armlet_ucode_live(rinfo.RDRAM, ta, da, (ds + 3) & ~3u, *(const unsigned *)(dm + 0xfc8), *(const unsigned *)(dm + 0xfcc), &l);
+    dt_tasks++;
+    dt_nim = dt_nd = 0;
+    dt_ta = ta;
+    for (t = 0; t < 0x1000; t += 4) {
+        int live = 0;
+        for (k = 0; k < l.n && !live; k++)
+            live = t >= l.r[k].lo && t < l.r[k].hi;
+        if (live)
+            continue;
+        dt_dead[dt_nd++] = t;
+        if (t < 0xf80)
+            dt_im[dt_nim++] = 0x80 + t;
+        if (deadtext == 2 && t < 0xf80) {
+            unsigned a = (ta + t) & 0x7ffffc;
+            dt_rng ^= dt_rng << 13;
+            dt_rng ^= dt_rng >> 17;
+            dt_rng ^= dt_rng << 5;
+            memcpy(&dt_orig[dt_n], rinfo.RDRAM + a, 4);
+            memcpy(rinfo.RDRAM + a, &dt_rng, 4);
+            dt_addr[dt_n] = a;
+            dt_junk[dt_n++] = dt_rng;
+        }
+    }
+    dt_words += dt_nim ? dt_nim : 0;
+    dt_wide += l.n == 1 && l.r[0].lo == 0 && l.r[0].hi == 0x1000;
+}
+
+/* the text holds the same 4 words at the place the boot load put IMEM m (Wipeout 64: text 0xff0 repeats text 0) */
+static int boot_copy(unsigned m, const uint32_t *tw)
+{
+    uint32_t b[4];
+    unsigned k;
+    for (k = 0; k < 4; k++)
+        memcpy(&b[k], rinfo.RDRAM + ((dt_ta + m - 0x80 + 4 * k) & 0x7ffffc), 4);
+    return !memcmp(b, tw, 16);
+}
+
+static void deadtext_post(void)
+{
+    unsigned i, w, m, k;
+    for (i = 0; i < dt_n; i++) {
+        memcpy(&w, rinfo.RDRAM + dt_addr[i], 4);
+        if (w == dt_junk[i])
+            memcpy(rinfo.RDRAM + dt_addr[i], &dt_orig[i], 4);
+        else
+            dt_kept++;                  /* (the task wrote it: left as it is) */
+    }
+    /* a run of 4 dead words (consecutive in the text, one nonzero) anywhere in IMEM but where the boot load put it: a load the live ranges miss */
+    for (i = 0; i + 3 < dt_nd; i++) {
+        uint32_t t = dt_dead[i], tw[4], any = 0;
+        if (dt_dead[i + 3] != t + 12)
+            continue;
+        for (k = 0; k < 4; k++) {
+            memcpy(&tw[k], rinfo.RDRAM + ((dt_ta + t + 4 * k) & 0x7ffffc), 4);
+            any |= tw[k];
+        }
+        if (!any)
+            continue;
+        for (m = 0; m + 16 <= 0x1000; m += 4)
+            if (m != 0x80 + t && !memcmp(rinfo.IMEM + m, tw, 16) && !(m >= 0x80 && m + 16 <= 0x1000 && boot_copy(m, tw))) {
+                if (!dt_loads++)
+                    fprintf(stderr, "rsp-shim: deadtext: text %03x (task text %06x) found in IMEM at %03x\n", t, dt_ta, m);
+                break;
+            }
+    }
+}
+
 EXPORT unsigned int CALL DoRspCycles(unsigned int c)
 {
     struct stat st;
@@ -164,9 +260,11 @@ EXPORT unsigned int CALL DoRspCycles(unsigned int c)
     unsigned r;
     if (hl)
         mask_identify();
+    deadtext_pre();
     a = now(CLOCK_MONOTONIC);
     r = p_do(c);
     double b = now(CLOCK_MONOTONIC);
+    deadtext_post();
 
     cum_ms += (b - a) * 1e3;
     calls++;
@@ -208,7 +306,15 @@ EXPORT unsigned int CALL DoRspCycles(unsigned int c)
             }
         }
         x = fnv(dmem, 4096, 0xcbf29ce484222325ull);
-        x = fnv(rinfo.IMEM, 4096, x);
+        if (dt_nim) {
+            unsigned char im[4096];
+            unsigned i;
+            memcpy(im, rinfo.IMEM, 4096);
+            for (i = 0; i < dt_nim; i++)
+                memset(im + dt_im[i], 0, 4);
+            x = fnv(im, 4096, x);
+        } else
+            x = fnv(rinfo.IMEM, 4096, x);
         x = (x ^ r) * 0x100000001b3ull;
         fprintf(hl, "%llx\n", x);
     }
@@ -246,5 +352,8 @@ EXPORT void CALL InitiateRSP(RSP_INFO i, unsigned int *cc)
 
 EXPORT void CALL RomClosed(void)
 {
+    if (deadtext)
+        fprintf(stderr, "rsp-shim: deadtext %s: %lu graphics calls, %lu with the whole 4 KiB live, %lu dead IMEM words masked, %lu poisoned words the task overwrote, %lu loads\n",
+                deadtext == 2 ? "poison" : "mask", dt_tasks, dt_wide, dt_words, dt_kept, dt_loads);
     p_rc();
 }
