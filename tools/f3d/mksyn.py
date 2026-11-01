@@ -11,6 +11,8 @@
          popmtx     lit vertices before and after a G_POPMTX (finds a missing lights-stale flag)
          nested     calls five levels deep and a branch (the G_DL depth bookkeeping, the stack words)
          mwpoints   G_MW_POINTS (gSPModifyVertex: Cruis'n USA) rewrites of a loaded vertex's colour, texture, screen and z words before the triangle
+         pd SEED    (Perfect Dark's build) random 12-byte vertices (palette offsets, records at +0 and +4 of the operand), op 7 palette loads, flat / smooth / lit / fogged modes, triangles across
+                    the clip planes with every flat selector
          mwpoints-bad  a G_MW_POINTS offset past the vertex buffer (into the 2.0D command buffer: rewrites a pending G_TRI1): must be declined; mutation 238 runs it and differs
 """
 import struct, sys
@@ -164,6 +166,61 @@ def case(name):
         p[15] = 1
         data[0x540] = mtx(p)
         data[0x580] = vtx(-60, -40, 0, 0, 0, c=(0xff, 0x20, 0x20, 255)) + vtx(70, -30, 0, 32, 32, c=(0x20, 0xff, 0x20, 255)) + vtx(0, 60, 0, 0, 32, c=(0x20, 0x20, 0xff, 255))
+    elif name == "pd":
+        import random
+        r = random.Random(SEED)
+        d = dl
+        lit = r.random() < 0.4
+        geom = 0x4 | r.choice([0, 1]) | r.choice([0, 0x200]) | r.choice([0, 0x1000, 0x2000]) | (0x20000 if lit else 0) | r.choice([0, 0x10000])
+        common(d, geom)
+        if geom & 0x10000:
+            d.cmd(0xbc000008, (r.randrange(0x100, 0x2000) << 16) | r.randrange(0x10000))      # G_MW_FOG: multiplier, offset
+        if lit:                                     # one light and the ambient slot: the two light slots Perfect Dark has
+            d.cmd(0xbc000002, 0x80000040)
+            for k, (idx, off) in enumerate(((0x86, 0x600), (0x82, 0x610), (0x84, 0x620), (0x88, 0x630))):
+                col = bytes(r.randrange(256) for _ in range(3))
+                data[off] = (col + b"\0" + col + b"\0" + bytes(r.randrange(256) for _ in range(3)) + b"\0" * 5) if k in (0, 3) else \
+                    bytes(8) + (bytes([0, 0x7f, 0]) if k == 1 else bytes([0x7f, 0, 0])) + bytes(5)
+                d.cmd(0x03000000 | (idx << 16) | 0x0f, BASE + off)
+        scale = r.choice([1, 2, 8])
+        m = [0] * 16
+        for i in range(3):
+            for k in range(3):
+                m[4 * i + k] = r.choice([0, 0, 1, -1, 2])
+        m[0] = m[0] or 1; m[5] = m[5] or 1; m[10] = m[10] or 1; m[15] = 1
+        data[0x500] = mtx(m)
+        p = IDENT[:]
+        p[15] = scale
+        data[0x540] = mtx(p)
+        d.cmd(0x01000040 | (0x02 << 16), BASE + 0x500)
+        d.cmd(0x01010040 | (0x02 << 16), BASE + 0x540)
+        vaddr = 0x800
+        for batch in range(3):
+            if batch == 0 or r.random() < 0.4:      # op 7: b1 + 4 bytes of palette
+                np = r.randrange(1, 65)
+                data[0x2000 + 0x200 * batch] = bytes(r.randrange(256) for _ in range(4 * np))
+                d.cmd(0x07000000 | ((4 * (np - 1)) << 16) | (4 * np - 1), BASE + 0x2000 + 0x200 * batch)
+            n = r.randrange(1, 17)
+            v0 = r.randrange(0, (22 if r.random() < 0.1 else 16) - n + 1)   # (the 16 slots below the palette; now and then past them, into it: declined)
+            off = r.choice([0, 4])
+            vs = b""
+            for i in range(n):
+                big = r.random() < 0.3
+                c = lambda: r.randint(-3000, 3000) if big else r.randint(-scale * 120, scale * 120)
+                pi = r.choice([4 * r.randrange(0, 64), r.randrange(0, 0xfd)])
+                vs += struct.pack(">3h2B2h", c(), c(), c(), r.randrange(256), pi, r.randrange(-1024, 1024), r.randrange(-1024, 1024))
+            data[vaddr] = bytes(off) + vs
+            d.cmd(0x04000000 | (((n - 1) << 4 | v0) << 16) | (12 * n + off - 1), BASE + vaddr + off)
+            vaddr += 0x100
+            if n >= 3:
+                for _ in range(r.randrange(1, 6)):
+                    a, b, c2 = r.sample(range(v0, v0 + n), 3)
+                    d.cmd(0xbf000000, (r.randrange(3) << 24) | (a * 10 << 16) | (b * 10 << 8) | c2 * 10)
+            if r.random() < 0.3:
+                d.cmd(0xb6000000, 0x200)            # smooth off / on between batches
+                if r.random() < 0.5:
+                    d.cmd(0xb7000000, 0x200)
+        d.cmd(0xb8000000, 0)
     else:
         sys.exit("unknown case " + name)
     data[0] = dl.bytes()
@@ -173,6 +230,7 @@ def case(name):
     print("HLE_PATCH=" + ";".join(patch), "HLE_POKE=" + poke)
 
 
-if len(sys.argv) != 2:
+if len(sys.argv) not in (2, 3):
     sys.exit(__doc__)
+SEED = int(sys.argv[2]) if len(sys.argv) == 3 else 0
 case(sys.argv[1])

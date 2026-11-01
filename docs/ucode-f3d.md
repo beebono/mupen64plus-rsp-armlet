@@ -2025,3 +2025,27 @@ else of GoldenEye's text is Pilotwings' family (its clip flag word and masks, th
 
 Bit-exact with the hand-switched front-end on every captured and perturbed F3D snapshot (testing.md, "F3D data-driven").
 
+
+## 16. Perfect Dark (2026-11-01)
+
+Perfect Dark's only graphics text (`eb2cc8ed91b299e1`, no banner) descends from GoldenEye's 2.0G, not from Rare's own ucodes (Diddy Kong Racing, Jet Force Gemini).
+- **How close:** 965 of 992 words align with GoldenEye's, against about 760 with the Rare texts. It also has GoldenEye's four overlays and G_TRI4.
+- **How it runs:** the F3D front-end's build `l_pd` (`f3d.c`), with the layout `f3d_layout_pd`.
+
+What differs from GoldenEye, apart from addresses:
+
+| | GoldenEye | Perfect Dark |
+|---|---|---|
+| DMEM layout | | the state from G_MOVEMEM's table to the vertex buffer 0xc0 lower: G_TRI4's table 0x220, movemem table 0x230, viewport 0x260, matrices 0x2a0 / 0x320, vertex buffer 0x360. The buffers are 0x40 higher: command buffer 0x6e0, operand 0x820, triangle scratch 0x920, output 0xa20 |
+| light slots | 8 + ambient | 2 (0x1f0, 0x210); G_MOVEMEM's higher light indices all lead to 0x1f0. The front-end declines a light count whose transformed slots would reach G_TRI4's table |
+| G_VTX input | 16 bytes | **12 bytes**: x y z, +6 a byte, +7 a byte offset into a palette at DMEM 0x5e0, s t. The records start at operand + (w1 & 4). The colour (or, lit, the normal) is the palette word at 0x5e0 + offset (`f3d_load_vin12`). An offset whose word reaches the command buffer declines |
+| vertex slots | up to the command buffer | **16**: the palette follows them, and a slot behind it would overwrite it (`nslots_of`) |
+| op 7 | (unused) | copies the operand's words b1, b1 - 4, ..., 0 to the palette (`K3_PAL`). A b1 that is not a multiple of 4 declines (the loop would end at offset -2) |
+| flat shading | the smooth bit selects; G_TRI1's byte names the flat vertex | **none**: the triangle code takes each vertex's colour whatever the smooth bit (`no_flat`: the front-end sets the bit for the triangle) |
+| G_CULLDL | 0xbe | gone (its cell leads to the no-op) |
+| start-up | `mtc0` 0x2800 to SP_STATUS | gone (the interpreter runs the start-up code) |
+| class-0 dispatcher | | also stores its return address at 0x158 (a dead range) |
+
+- **Not in the derivation's record:** `vtx12`, `no_flat`, `pal` and `pal_pc`.
+- **So `dbuild_make` refuses Perfect Dark as a primary reference.** A derived build would read other vertices instead of declining.
+- **As a reference** it gives GoldenEye's G_TRI4 to the derivation, so GoldenEye's own leave-one-out now has 4 unexplained words (was 17).

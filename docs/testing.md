@@ -1043,3 +1043,19 @@ Desktop x86_64, `GfxMode=hle`, 3700 frames, the reference pairing; the build's d
 | regression, verify 3700 f | Paper Mario, Banjo-Tooie: identical, 0 differences |
 | `armlet-probe-replay --sync` | 37 references, 0 out of step |
 | `derive_refs.c` regenerated (38 references) | the local dump set had lost three reference texts (Excitebike 64's loaded F3DEX.NoN xbus 2.08: a link into a deleted scratch directory; Majora's Mask, StarCraft 64): dumped again (USA ROMs, 60 s, `UDUMP_LOADS=1`), with them the generator of the previous commit reproduces its `derive_refs.c` byte for byte. Four more dead links in `not-coded` dumped again. `--sync` 38, 0 out of step; `derive_check.sh` passes (`l_b_turok` NONE, 49 unexplained, all 82 fields equal) |
+
+## Perfect Dark on the F3D front-end (2026-11-01; docs/ucode-f3d.md section 16)
+
+Desktop x86_64, `GfxMode=hle`, Perfect Dark (Europe), 3700 frames of the scripted pad: the title and the menus over 3D backgrounds, not the levels. The build's dead ranges are passed with `EXTRA_MASKS`.
+
+| check | result |
+|---|---|
+| gates against the reference: `armlet-hle`, `ARMLET_HLE_VERIFY=1`, `+ ARMLET_HLE_EXACT=1`, `ARMLET_DMEM_POISON=mask` + `ARMLET_HLE_POISON=1`, `ARMLET_DMEM_POISON=ring` | identical (hash, state, 6 screenshots, audio); verify 0 differences; 1919 of 1920 tasks native |
+| captured task starts (`ARMLET_GFX=jit` + `ARMLET_HLE_CAPTURE`: a registered build's tasks reach the JIT only so), 30 snapshots | equal on x86 and on qemu-aarch64 NEON and scalar |
+| `tools/f3d/mksyn.py pd SEED`, 300 seeds on snapshot 10 | 263 equal, 0 differ, 37 declined (G_VTX past the 16 slots, by design); qemu NEON / scalar, 100 seeds: 0 differ. From most other snapshots the JIT oracle does not finish (as tools/f3d/synth.sh notes for its cases) |
+| what the synthetic case found | slots 16 .. 21 accepted: they overlap the palette, 94 of 300 seeds differed. Now the slots end at the palette |
+| mutations | 496 (flat shading kept) 54 seeds; 497 (records not at + (w1 & 4)) 221 seeds, 28 of 30 snapshots; 498 (palette one word short) 263 seeds, 28 snapshots; 499 (no slot bound at the palette) 12 seeds |
+| regression, verify 3700 f | GoldenEye 007, Super Mario 64, Wave Race 64: identical, 0 differences |
+| `derive_refs.c` (39 references), `--sync`, `derive_check.sh` | 0 out of step; passes (`l_pd` NONE, 45 unexplained, `pc.tri1` expected) |
+
+Not covered: the levels (fog, the clipper and lit geometry of gameplay), the other regions' texts, the devices.

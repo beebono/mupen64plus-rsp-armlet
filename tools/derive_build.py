@@ -284,6 +284,7 @@ EXPECTED = {
     ("l_ge", "pc.tri4"): "GoldenEye's G_TRI4 (2.0G) is in no other reference: no handler to map it from (the derived build declines the command). Verdict NONE (its 17 words unexplained)",
     ("l_b_s2_xbus", "lay.out_bytes"): "an XBUS build has no output buffer (hand value 0): the words that carry Worms' buffer size are replaced by the ring code (init, the flush routine at 0x648), and the tool reads an unrelated immediate there as a size (16)",
     ("l_ge", "lay.tri4_tab"): "follows from the handler: without a G_TRI4 pc there is no table to read",
+    ("l_pd", "pc.tri1"): "Perfect Dark's G_TRI1 entry: GoldenEye's first word there (the flat-shading selector load, lbu a1, -4(k1)) is gone with flat shading, so the reference's handler pc has no aligned counterpart; the derived build declines G_TRI1 (and the record could not carry the 12-byte vertices anyway: dbuild refuses Perfect Dark as a primary reference)",
     ("l_b_ex2_208n_xbus", "lay.out_bytes"): "an XBUS build has no RDP output buffers (its list is a ring in DMEM, the layout's xbus / ring_start): the buffer sizes that its flush code does not name are 0 in the hand record; the transport is not derived (the XBUS work); verdict NONE",
     ("l_b_ex2_208n_xbus", "lay.out_toggle"): "the same",
     ("l_b_rej_xbus", "lay.out_bytes"): "the same: Excitebike 64's Rej text is an XBUS build, derived here from the fifo Rej texts (the flush code is unexplained words); xbus / ring_start are the primary reference's, not derived",

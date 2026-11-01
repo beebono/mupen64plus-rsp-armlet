@@ -53,6 +53,10 @@ static const struct f3d_layout f3d_layout_h = {
 static const struct f3d_layout f3d_layout_ge = {
     .half1 = 0x10c, .persp = 0x112, .geom = 0x114, .omh = 0x118, .oml = 0x11c, .texture = 0x120, .rdp_wp = 0x128, .lights = 0x12c, .mtx_sp = 0x134, .mtx_lim = 0x15c, .depth = 0x15a, .fifo = 0x150, .segs = 0x160, .mm_tab = 0x2f0, .mw_tab = 0x30e, .retstack = 0x336, .viewport = 0x320, .fog = 0x330, .mv = 0x360, .mp = 0x3e0, .vtx_base = 0x420, .cmdbuf = 0x6a0, .geombuf = 0x7e0, .outbuf = 0x9e0, .ring_end = 0xde0, .vret = 0x106, .jt0 = 0x0c4, .jt2 = 0x076, .tri4_tab = 0x2d0, .light = 0x1a0, .lim = 0x028, .vsign = 0x050, .clip_k = 0x076, .planes = 0x098, .tg = 0x0a2, .plane_masks = 0x0b2,
     .flags_variant = F3D_FLAGS_PW };
+/* Perfect Dark (a 2.0G descendant): the state between the lights and the vertex buffer packed 0xc0 lower (two light slots, G_TRI4's table at 0x220), the buffers 0x40 higher */
+static const struct f3d_layout f3d_layout_pd = {
+    .half1 = 0x10c, .persp = 0x112, .geom = 0x114, .omh = 0x118, .oml = 0x11c, .texture = 0x120, .rdp_wp = 0x128, .lights = 0x12c, .mtx_sp = 0x134, .mtx_lim = 0x15c, .depth = 0x15a, .fifo = 0x150, .segs = 0x160, .mm_tab = 0x230, .mw_tab = 0x24e, .retstack = 0x276, .viewport = 0x260, .fog = 0x270, .mv = 0x2a0, .mp = 0x320, .vtx_base = 0x360, .cmdbuf = 0x6e0, .geombuf = 0x820, .outbuf = 0xa20, .ring_end = 0xe20, .vret = 0x106, .jt0 = 0x0c4, .jt2 = 0x076, .tri4_tab = 0x220, .light = 0x1a0, .lim = 0x028, .vsign = 0x050, .clip_k = 0x076, .planes = 0x098, .tg = 0x0a2, .plane_masks = 0x0b2,
+    .flags_variant = F3D_FLAGS_PW };
 /* Wave Race: the buffers 0x280 higher, so 32 vertex slots */
 static const struct f3d_layout f3d_layout_wr = {
     .half1 = 0x10c, .persp = 0x112, .geom = 0x114, .omh = 0x118, .oml = 0x11c, .texture = 0x120, .rdp_wp = 0x128, .lights = 0x12c, .mtx_sp = 0x134, .mtx_lim = 0x15c, .depth = 0x110, .fifo = 0x150, .segs = 0x160, .mm_tab = 0x2f0, .mw_tab = 0x30e, .retstack = 0x336, .viewport = 0x320, .fog = 0x330, .mv = 0x360, .mp = 0x3e0, .vtx_base = 0x420, .cmdbuf = 0x920, .geombuf = 0xa60, .outbuf = 0xc60, .ring_end = 0xde0, .vret = 0x106, .jt0 = 0x0c4, .jt2 = 0x076, .tri4_tab = 0x000, .light = 0x1a0, .lim = 0x028, .vsign = 0x050, .clip_k = 0x076, .planes = 0x098, .tg = 0x0a2, .plane_masks = 0x0b2,
@@ -84,6 +88,21 @@ static inline void f3d_store_mtx(const struct f3d_mtx *m, uint32_t *dmem, unsign
             fs16(dmem, a + 8 * r + 2 * c, (uint16_t)m->i[r][c]);
             fs16(dmem, a + 0x20 + 8 * r + 2 * c, m->f[r][c]);
         }
+}
+
+/* Perfect Dark's 12-byte input vertex at byte address a of an image: x y z, +7 a byte offset into the colour palette in DMEM (the word there is the colour, or the normal), s t at +8 */
+static inline void f3d_load_vin12(struct f3d_vin *v, const uint32_t *img, unsigned a, int rdram, const uint32_t *dmem, unsigned pal)
+{
+    uint16_t (*r16)(const uint32_t *, unsigned) = rdram ? fr16 : fd16;
+    uint8_t (*r8)(const uint32_t *, unsigned) = rdram ? fr8 : fd8;
+    unsigned p = pal + r8(img, a + 7);
+    v->x = (int16_t)r16(img, a);
+    v->y = (int16_t)r16(img, a + 2);
+    v->z = (int16_t)r16(img, a + 4);
+    v->s = (int16_t)r16(img, a + 8);
+    v->t = (int16_t)r16(img, a + 10);
+    for (int i = 0; i < 4; i++)
+        v->c[i] = fd8(dmem, p + i);
 }
 
 /* an input vertex at byte address a of an image */

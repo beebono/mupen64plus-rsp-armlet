@@ -108,7 +108,8 @@ Every registered build is derived **without its own table** (all texts of its re
 | f3d | l_wr | fb483893 | l_sm64 | l_tt | NONE | 80 | - / 47 | 70 | expected 2, noted 1 |
 | f3d | l_mm | 4212d63f | l_tt | - | NONE | 48 | - / 50 | 70 | none |
 | f3d | l_tt | 88fa3c0a | l_sm64 | l_mm | NONE | 2 | - / 2 | 70 | none |
-| f3d | l_ge | 538f79d8 | l_pw | l_tt | NONE | 17 | - / 16 | 70 | expected 2 |
+| f3d | l_ge | 538f79d8 | l_pd | l_pw | NONE | 4 | - / 7 | 70 | unconfirmed 1 (mm_tab: Perfect Dark's; before it was registered: l_pw primary, 17 unexplained, the G_TRI4 handler "expected") |
+| f3d | l_pd | eb2cc8ed | l_ge | l_sm64 | NONE | 45 | - / 27 | 70 | unconfirmed 1, expected 1 (pc.tri1: the flat selector load is gone; ucode-f3d.md section 16) |
 
 Mismatches, with the class the tool gives them (**unconfirmed**: the derived value is the reference's and the report says no aligned instruction confirms it; **noted**: the tool said it could not decide the attribute; **expected**: understood and
 listed in `EXPECTED` of `derive_build.py`; **UNEXPLAINED** would fail the check, and there is none):

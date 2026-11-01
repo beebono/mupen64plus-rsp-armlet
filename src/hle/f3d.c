@@ -51,7 +51,7 @@ enum { OV_TEXT = 0, OV_CLIP = 1, OV_LIGHT = 2 };   /* what is in the overlay win
 
 /* the command kinds: what a handler pc of the build's tables is (classify) */
 enum { K3_BAD = 0, K3_NOP0, K3_NOP, K3_MTX, K3_MOVEMEM, K3_VTX, K3_DL, K3_TRI1, K3_QUAD, K3_HALF2, K3_HALF1, K3_PERSP, K3_CLRGEOM, K3_SETGEOM, K3_ENDDL, K3_OML, K3_OMH, K3_TEXTURE,
-       K3_MOVEWORD, K3_POPMTX, K3_CULLDL, K3_TRI4 };
+       K3_MOVEWORD, K3_POPMTX, K3_CULLDL, K3_TRI4, K3_PAL };
 
 /* the per-task state */
 struct f3d_task {
@@ -295,11 +295,20 @@ static int cmd_movemem(struct f3d_task *f, uint32_t w0, uint32_t w1)
     return HLE_OK;
 }
 
+/* the vertex slots: up to the command buffer, or up to the palette of a build that has one in between (Perfect Dark: 16; a slot behind it would overwrite the palette) */
+static inline unsigned nslots_of(const struct f3d_task *f)
+{
+    unsigned n = f3d_nslots(f->L);
+    if (f->b->pal > f->L->vtx_base && MUT(499, (unsigned)(f->b->pal - f->L->vtx_base) / F3D_VSTRIDE < n, 0))
+        n = (unsigned)(f->b->pal - f->L->vtx_base) / F3D_VSTRIDE;
+    return n;
+}
+
 static int cmd_vtx(struct f3d_task *f, uint32_t w0, uint32_t w1)
 {
     struct hle_task *t = f->t;
     const struct f3d_layout *lay = f->L;
-    const unsigned nslots = f3d_nslots(lay);
+    const unsigned nslots = nslots_of(f);
     unsigned at = (w0 >> 16) & 0xff, a2 = at & 15, n = (at >> 4) + 1, i;
     if (f->b->vtx_wr) {
         n = (w0 >> 9) & 0x7f;
@@ -312,7 +321,8 @@ static int cmd_vtx(struct f3d_task *f, uint32_t w0, uint32_t w1)
     struct f3d_vtx out[32];
     struct src s;
     uint32_t geom = hle_dm32(t, lay->geom);
-    if ((((w0 & 0x1ff) + 1 + 7) & ~7u) < 16 * n || a2 + n > nslots)
+    unsigned rsz = f->b->vtx12 ? 12 : 16, off = f->b->vtx12 ? (w1 & 4) : 0;   /* (Perfect Dark's records start 4 bytes into the 8-aligned operand when w1 says so) */
+    if ((((w0 & 0x1ff) + 1 + 7) & ~7u) < rsz * n + off || a2 + n > nslots)
     {
         return hle_decline(t, "G_VTX length or slot range unusual");
     }
@@ -332,6 +342,8 @@ static int cmd_vtx(struct f3d_task *f, uint32_t w0, uint32_t w1)
             struct f3d_mtx mv;
             if ((W & 31) || ns < 1 || ns > F3D_MAX_SLOTS)
                 return hle_decline(t, "G_VTX: light count unusual");
+            if (lay->tri4_tab > lay->light && lay->light + 0x28 + 32 * ns > lay->tri4_tab)   /* (the transformed slots would overwrite G_TRI4's table: Perfect Dark has two light slots there) */
+                return hle_decline(t, "G_VTX: more lights than slots");
             for (k = 0; k <= ns; k++)
                 for (i = 0; i < 3; i++)
                     raw[k][i] = (int8_t)hle_dm8(t, lay->light + 0x18 + 32 * k + i);
@@ -353,8 +365,17 @@ static int cmd_vtx(struct f3d_task *f, uint32_t w0, uint32_t w1)
     if (f->ctx_bad)
         return hle_decline(t, "G_VTX: light state unusual");
     ctxp = &f->ctx;
+    if (f->b->vtx12)
+        for (i = 0; i < n; i++) {
+            unsigned a = s.base + off + 12 * i + 7;
+            if (f->b->pal + (s.ram ? fr8(s.img, a) : fd8(s.img, a)) + 4 > lay->cmdbuf)    /* (a word that reaches into the command buffer, which the default mode does not keep) */
+                return hle_decline(t, "G_VTX: palette offset past the palette");
+        }
     for (i = 0; i < n; i++)
-        f3d_load_vin(&in[i], s.img, s.base + 16 * i, s.ram);
+        if (f->b->vtx12)
+            f3d_load_vin12(&in[i], s.img, s.base + MUT(497, off, 0) + 12 * i, s.ram, t->dmem, f->b->pal);
+        else
+            f3d_load_vin(&in[i], s.img, s.base + 16 * i, s.ram);
     if (f3d_vtx_xform(ctxp, in, n, out))
         return hle_decline(t, "G_VTX: state outside what the native code supports");
     if (t->gate || t->cmds) {                           /* (the latch policy's data situations) */
@@ -385,7 +406,7 @@ static int cmd_tri3(struct f3d_task *f, const unsigned idx[3], unsigned flag)
 {
     struct hle_task *t = f->t;
     const struct f3d_layout *lay = f->L;
-    const unsigned vend = lay->vtx_base + f3d_nslots(lay) * F3D_VSTRIDE;
+    const unsigned vend = lay->vtx_base + nslots_of(f) * F3D_VSTRIDE;
     struct f3d_vtx v[3];
     struct f3d_tri_in ti;
     unsigned k;
@@ -408,7 +429,7 @@ static int cmd_tri3(struct f3d_task *f, const unsigned idx[3], unsigned flag)
         }
         ti.v[k] = &v[k];
     }
-    ti.geom = hle_dm32(t, lay->geom);
+    ti.geom = hle_dm32(t, lay->geom) | (f->b->no_flat ? MUT(496, F3D_G_SMOOTH, 0) : 0);   /* (no flat shading: the smooth rule, and no selector) */
     ti.variant = f->b->tri_wr ? F3D_TRIV_WR : F3D_TRIV_SM64;
     if (flag > 2 && !(ti.geom & 0x200) && !f->b->tri_wr)
         return hle_decline(t, "G_TRI1: flat-shading selector outside 0..2");   /* the microcode reads a leftover word at 0xde0 + 4 flag; with smooth shading the selector is not used */
@@ -503,7 +524,7 @@ static int cmd_quad(struct f3d_task *f, uint32_t w1)
 {
     struct hle_task *t = f->t;
     const struct f3d_layout *lay = f->L;
-    const unsigned vend = lay->vtx_base + f3d_nslots(lay) * F3D_VSTRIDE;
+    const unsigned vend = lay->vtx_base + nslots_of(f) * F3D_VSTRIDE;
     unsigned q[4] = { (w1 >> 16) & 0xff, (w1 >> 8) & 0xff, w1 & 0xff, (w1 >> 24) & 0xff };   /* at, v0, v1, a0 */
     int y[4], k;
     for (k = 0; k < 4; k++) {
@@ -550,6 +571,8 @@ static unsigned classify(const struct f3d_build *b, int cls0, unsigned h)
     unsigned k;
     if (h == b->pc[F3PC_nop])
         return cls0 ? K3_NOP0 : K3_NOP;
+    if (cls0 && b->pal_pc && h == b->pal_pc)
+        return K3_PAL;
     for (k = F3PC_mtx; k < F3_NPC; k++)
         if (b->pc[k] && h == b->pc[k]) {
             unsigned kd = kind_of_pc[k];
@@ -696,6 +719,18 @@ static int f3d_run(struct hle_task *t, const struct hle_ucode *u)
             f.gp = 0;
             break;
         }
+        case K3_PAL: {                                  /* Perfect Dark's op 7: the operand's words b1, b1 - 4, ..., 0 to the palette (a b1 that is not a multiple of 4 ends at offset -2) */
+            unsigned b1 = (w0 >> 16) & 0xff, a;
+            struct src s;
+            if (b1 & 3)
+                return hle_decline(t, "palette copy of an unaligned length");
+            if ((((w0 & 0x1ff) | 7) + 1) < b1 + 4)      /* (the rest would be the geometry buffer's stale bytes) */
+                return hle_decline(t, "palette copy longer than its operand");
+            s = fetch(&f, seg(&f, w1), w0 & 0x1ff);
+            for (a = 0; a < MUT(498, b1 + 4, b1); a++)
+                hle_st8(t, f.b->pal + a, s.ram ? fr8(s.img, s.base + a) : fd8(s.img, s.base + a));
+            break;
+        }
         case K3_QUAD:
             if (cmd_quad(&f, w1) != HLE_OK)
                 return HLE_DECLINE;
@@ -738,7 +773,7 @@ static int f3d_run(struct hle_task *t, const struct hle_ucode *u)
             {
                 /* a game's offsets are words within the group: segments 0 .. 0x3c, the light colours up to the last light, G_MW_POINTS
                  * (gSPModifyVertex: Cruis'n USA) any word of the vertex buffer */
-                unsigned lim = ii == 0x0a ? 0x1fc : ii == 0x0c ? f3d_nslots(L) * F3D_VSTRIDE - 4 : 0x3c;
+                unsigned lim = ii == 0x0a ? 0x1fc : ii == 0x0c ? nslots_of(&f) * F3D_VSTRIDE - 4 : 0x3c;
                 if (MUT(238, (off & 3) || off > lim, 0)) {
                     static char why[96];
                     snprintf(why, sizeof why, "G_MOVEWORD offset outside what a game writes (index %02x offset %04x)", ii, off);
@@ -857,6 +892,12 @@ static const struct f3d_build l_ge = { .lay = &f3d_layout_ge,
     .pc = { 0x060, 0x0a8, 0x7a8, 0x3e0, 0x55c, 0x56c, 0x758, 0x250, 0, 0x384, 0x388, 0x37c, 0, 0x364, 0x354, 0x334, 0x2d8, 0x2d0, 0x2ac, 0x294, 0, 0x318, 0x20c },
     .clip_mask = 0x4343, .reject_mask = 0x7030, .culldl_mask = 0x7030, .vptr_mul = 4, .load_key = 0x1e3311bf53a4ae12ull };
 
+/* Perfect Dark: GoldenEye's text with 12-byte vertices whose colour is a word of a palette at 0x5e0 (op 7 loads it), no flat shading, no G_CULLDL (its cell leads to the no-op), and the layout
+ * packed (f3d_layout_pd; docs/ucode-f3d.md 16) */
+static const struct f3d_build l_pd = { .lay = &f3d_layout_pd,
+    .pc = { 0x060, 0x0a8, 0x7b8, 0x3b4, 0x530, 0x540, 0x750, 0x24c, 0, 0x358, 0x35c, 0x350, 0, 0x338, 0x328, 0x308, 0x2c8, 0x2c0, 0x29c, 0x284, 0, 0, 0x20c },
+    .clip_mask = 0x4343, .reject_mask = 0x7030, .culldl_mask = 0x7030, .vptr_mul = 4, .vtx12 = 1, .no_flat = 1, .pal = 0x5e0, .pal_pc = 0x784, .load_key = 0xdfe1a189dd6954e5ull };
+
 /* DMEM dead at the end of a task: scratch and leftovers (docs/ucode-f3d.md 11); the justification of each range is the poison proof (ARMLET_DMEM_POISON, docs/testing.md), the
  * references are to docs/ucode-f3d.md. The fourth byte of each transformed light direction (and of its copy) is a leftover of the vector registers the relight reads (7.2), never read:
  * slot k of the lookat and light vectors at 0x1b0 + 0x20 k, k = 0 .. 9 */
@@ -875,6 +916,16 @@ static const struct f3d_build l_ge = { .lay = &f3d_layout_ge,
 static const struct hle_dead_range l_dead_sm64[] = {
     { 0x106, 0x108 },       /* the return address G_VTX and the clipper keep */
     F3D_DEAD_A
+};
+static const struct hle_dead_range l_dead_pd[] = {      /* F3D_DEAD_A 0x40 higher, the light slots that exist */
+    { 0x106, 0x108 },
+    { 0x0b4, 0x0b6 },
+    { 0x6e0, 0x920 },       /* the command buffer and the geometry DMA buffer (default mode) */
+    { 0x158, 0x15a },       /* (the class-0 dispatcher also stores its return address here) */
+    { 0x920, 0x970 },
+    { 0x980, 0x9a8 },
+    { 0xa20, 0xfc0 },
+    F3D_DEAD_LIGHT(0), F3D_DEAD_LIGHT(1), F3D_DEAD_LIGHT(2)
 };
 static const struct hle_dead_range l_dead_wr[] = {      /* the layout of Wave Race: everything from its command buffer up is scratch or the RDP output buffer (10.3.2) */
     { 0x106, 0x108 },
@@ -899,6 +950,7 @@ F3D_UCODE_R(l_f3d_wr, 0xfb483893c5b0ad3dull, "Fast3D 2.0D (Wave Race 64)", l_wr,
 /* the lists go through a ring in DMEM (no ring in RDRAM) */
 F3D_UCODE_R(l_f3d_mm, 0x4212d63f6e483348ull, "Fast3D 2.0H (Mischief Makers, War Gods; XBUS)", l_mm, l_dead_tt, 0, .flags = HLE_F_XBUS_OK);
 F3D_UCODE(l_f3d_tt, 0x0b574ecb06d75978ull, "Fast3D 2.0H (Tetrisphere)", l_tt, l_dead_tt);
+F3D_UCODE(l_f3d_pd, 0xeb2cc8ed91b299e1ull, "Fast3D 2.0G-based (Perfect Dark)", l_pd, l_dead_pd);
 F3D_UCODE(l_f3d_ge, 0x538f79d8ff151c3eull, "Fast3D 2.0G (GoldenEye 007)", l_ge, l_dead_sm64);
 
 #endif

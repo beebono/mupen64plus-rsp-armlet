@@ -39,6 +39,9 @@ struct f3d_build {
     uint8_t tri_wr;                     /* the triangle code of Wave Race (F3D_TRIV_WR: no front-face culling, no flat shading, the shade block with any of the low three geometry bits) */
     uint8_t popmtx_stale;               /* G_POPMTX sets the lights-stale flag */
     uint8_t xbus;                       /* the RDP reads its lists from a ring in DMEM (outbuf .. ring_end): every command is written at the ring pointer and handed over on its own */
+    uint8_t vtx12;                      /* Perfect Dark: G_VTX reads 12-byte records (f3d_load_vin12) from the operand at + (w1 & 4), the colour from the palette at `pal`; not in the derivation's record */
+    uint8_t no_flat;                    /* Perfect Dark: no flat shading (the triangle code takes each vertex's colour whatever the smooth bit) */
+    uint16_t pal, pal_pc;               /* Perfect Dark: the palette's DMEM address and the handler of class-0 op 7, which copies the operand there, or 0 */
     uint64_t load_key;                  /* FNV-1a-64 of the text's first 0xf48 bytes (the derivation's record key; 0: no dump of the text) */
 };
 

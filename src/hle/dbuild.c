@@ -257,6 +257,10 @@ static int make_f3(struct dbuild *d, uint64_t text_id, const struct derive_resul
         *why = "the primary reference is not a registered build";
         return 1;
     }
+    if (((const struct f3d_build *)pu->fam_data)->vtx12) {   /* (a vertex format the record cannot carry: the derived build would read other vertices, not decline) */
+        *why = "the primary reference's vertex format is not in the record";
+        return 1;
+    }
     d->primary = r->primary;
     d->verdict = r->verdict;
     d->rec = *rec;
