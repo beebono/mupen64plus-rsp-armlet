@@ -203,3 +203,30 @@ F3DLX.Rej 1.21 and 1.23 are F3DLX 1.23's skeleton and lighting with the Rej vert
 adds to the loop: the output alternates between two buffers (the halfword at `rej.bufsel` toggles on every flush, in the lean mode as in the exact one); the return stack is not word-aligned (unaligned stores
 and loads for every build); and in a task that switched to a Rej text by `G_LOAD_UCODE` the command window is read into DMEM and G_TRI1 writes its bytes there as the microcode does, because the Rej window lies
 over three vertex slots of the F3DEX 1.x builds that load it. The range 0xd90 .. 0xddf, which F3DEX 1.x never uses and the Rej output buffer does, is dead for the F3DEX 1.x builds.
+
+## 10. L3DEX 1.21 / 1.23 (2026-11-08)
+
+L3DEX 1.x (`3c7a` 1.21: Wipeout 64, Hiryuu no Ken Twin; `79fb` 1.23: Hamster Monogatari 64; loaded by F3DEX 1.2x hosts under the load keys `4be5` (Body Harvest, Madden 64 .. 2002) and `c5d6` (Nintama
+Rantarou 64, Pro Mahjong Tsuwamono 64, SD Hiryuu no Ken Densetsu)) is F3DEX 1.2x's command set and vertex code with line commands in place of the triangles. The builds `l_b_l3_121` / `l_b_l3_123` run on
+this front-end; the line commands run on the interpreter.
+
+What differs from F3DEX 1.2x:
+
+- **The layout**: everything from 0x340 up 0x20 lower (viewport 0x360 .. outbuf 0xcc0, `l_lay_l3`), the list depth byte at 0x15a. `vbuf` is 0x480 (the vertex table at 0x31e); no instruction names it, so
+  the derivation keeps its reference's 0x4a0.
+- **The loop is in the text** (`head` 0x14c: the DMA wait, then the window), not below it at 0x058; with 0x058 the start-up never stops and the whole task runs on the interpreter (equal, but no native work).
+- **No overlays**: the DMA table's entries 2 .. 4 are empty. The task ends in the text (SIG2, the BREAK at 0x1c0: `f3dex1_build.l3brk` = 0x1c4), not in overlay 3. Since nothing is loaded at the end, the SP
+  DMA address registers stay where the last DMA of the task left them; the lean mode issues none of the window, operand and output DMAs, so it keeps their would-be values (`dma_note`) and writes them at the end.
+  A lit G_VTX would DMA the empty entry 2 into DMEM 0 and run what IMEM holds: declined (no game lights with L3DEX).
+- **G_SETSCISSOR** is copied to 0x144 .. 0x14b (ulx, uly, lrx, lry halfwords) on its way to the RDP, for the line code.
+- **The lines.** Three opcodes lead into them: 0xb5 (G_LINE3D at the quad slot: w1's two vertices, width = w1's low byte + 3), 0xbf and 0xb1 (the triangle slots: the outline of w1's triangle, of w0's
+  and w1's, width 3). Each line is one call of the routine at 0x910 (1.21: 0x918): the trivial reject, the clipping against the planes (a new vertex finished by G_VTX's own tail at 0x608), then a
+  G_SETSCISSOR narrowed to the line from the copied scissor and one RDP triangle with the geometry mode's shade / texture / z coefficients, flushed at once. `l3_line` runs the opcode's handler on the
+  interpreter, from the command in the window (written there: the lean mode does not read it) to the loop return, after a sync of the staged output and with the DMA registers the lean mode tracks; the
+  FIFO pointer and the registers are taken back after. **The vector state**: the line setup reads lanes of v8 .. v15 it does not write (`vrcp` sets one lane, the multiplies read all), so the result depends
+  on what was there: the MVP rows G_VTX's subroutine (`l3mvp`: 0x87c, 1.21 0x884) loaded from DMEM at the last G_VTX, or the previous line's leftovers. Nothing else writes v8 .. v15 (G_MTX does not).
+  The native G_VTX keeps a copy of the 64 MVP bytes; the first line after it runs the subroutine on the interpreter with that copy in DMEM (a G_MTX since then changes DMEM, not the registers). A line after
+  a host build's G_VTX (a task that loaded L3DEX and draws before its own G_VTX) declines: the host's loads are not modelled.
+
+Not done: the line routine as native code (it runs on the interpreter: a few hundred instructions a line), and the L3DEX builds as references of the derivation (a derived L3DEX variant would need `l3brk`
+and `l3mvp`; none is known).

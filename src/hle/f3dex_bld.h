@@ -57,6 +57,8 @@ struct f3dex1_build {
     uint64_t load_key;                  /* FNV-1a-64 of the text's first 0xf48 bytes (the derivation's record key; 0: no dump of the text) */
     const struct s2d1_build *s2;        /* S2DEX 1.x: the commands are the 2D ones (hle_s2dex1.h); NULL for the F3DEX 1.x / F3DLX builds */
     const struct f3dex_rej1 *rej;       /* the 1.x Rej builds (F3DLX.Rej 1.2x, rej1_dmem.h): the vertex, triangle, G_CULLDL, G_BRANCH_Z and G_MODIFYVTX commands and the output buffers are those; NULL for the others */
+    uint16_t l3brk;                     /* L3DEX: the task ends in the text (SIG2, the BREAK; this: the pc after it), not in overlay 3, and G_SETSCISSOR's rectangle is kept at DMEM 0x144 .. 0x14b for the line code; 0 for the others */
+    uint16_t l3mvp;                     /* L3DEX: G_VTX's subroutine that loads the MVP rows into v8 .. v15 (the line code reads lanes of them it does not write) */
 };
 
 #ifdef ARMLET_NATIVE

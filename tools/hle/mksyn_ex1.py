@@ -13,6 +13,8 @@
   MKSYN1_B_TEXT / MKSYN1_B_DATA   another build of the front-end (registered, or latched by the probe)
   MKSYN1_X_TEXT / MKSYN1_X_DATA   a text no F3DEX 1.x build covers (S2DEX 1.x: SpaceStation Silicon Valley, Pokemon Puzzle League), or an F3DEX 1.x text whose IMEM tail differs (F3DEX 0.95: declined)
   MKSYN1_GEOM_EXTRA               geometry bits ORed into every stage's mode (e.g. 0x100000, G_LOD: a bit the front-end should accept or decline)
+  MKSYN1_NOTRI=1                  no triangle commands (the L3DEX builds, whose triangle opcodes are the line commands): the vertices stay in the slots, a G_CULLDL over them now and then
+  MKSYN1_L3=1                     the L3DEX builds: G_LINE3D among the triangle commands (their outlines there) and far vertices, which the line code clips
 
   CASES  stage   no load: lit and unlit vertices, triangles, matrices, state commands, display list calls (the generator's own check: native == JIT)
          load    a few stages, then loads in a sequence drawn from  A -> A, A -> B, A -> B -> A, A -> B -> B, A -> A -> B  (the data of the loaded text 2048 bytes, or fewer: the DMEM above is the old state);
@@ -129,14 +131,23 @@ class Gen:
                 vs += struct.pack(">3hH2h4B", r.randint(-200, 200), r.randint(-200, 200), r.randint(-200, 200), 0, r.randrange(-1024, 1024), r.randrange(-1024, 1024),
                                   nrm[0] & 255, nrm[1] & 255, nrm[2] & 255, r.randrange(256))
             else:
-                sp = r.choice([2, 5, 20, 100])
+                sp = r.choice([2, 5, 20, 100] + ([400, 2000] if os.environ.get("MKSYN1_L3") == "1" else []))      # (L3DEX: far vertices, for the line code's clipping)
                 vs += vtx(r.randint(-sp, sp) * r.choice([1, 2]), r.randint(-sp, sp), r.randint(-sp, sp), r.randrange(-1024, 1024), r.randrange(-1024, 1024),
                           (r.randrange(256), r.randrange(256), r.randrange(256), r.randrange(256)))
         self.data[self.vaddr] = vs
         d.cmd(0x04000000 | (v0 * 2 << 16) | (n << 10) | (16 * n - 1), BASE + self.vaddr)
         self.vaddr += 0x200
+        if os.environ.get("MKSYN1_L3") == "1" and r.random() < 0.3:          # (a new matrix between the vertices and their lines: the line code's v8 .. v15 are G_VTX's, not the new MVP's)
+            self.matrices(r.choice([1, 0.5, 1 / 8]))
+        if os.environ.get("MKSYN1_NOTRI") == "1":                  # (no triangles: L3DEX has none; the vertices stay in the slots for the compare, a G_CULLDL over them now and then)
+            if r.random() < 0.3:
+                d.cmd(0xbe000000 | v0 * 2, (v0 + n - 1) * 2)
+            return
         for _ in range(r.randrange(2, 8)):
             a, b, c = r.sample(range(v0, v0 + n), 3)
+            if os.environ.get("MKSYN1_L3") == "1" and r.random() < 0.4:      # (L3DEX: G_LINE3D, w1 = the two vertices and the width - 3)
+                d.cmd(0xb5000000, (a * 2 << 16) | (b * 2 << 8) | r.choice([0, 0, 1, 2, 5, 13, 255]))
+                continue
             if r.random() < 0.3:
                 a2, b2, c2 = r.sample(range(v0, v0 + n), 3)
                 d.cmd(0xb1000000 | (a2 * 2 << 16) | (b2 * 2 << 8) | c2 * 2, (a * 2 << 16) | (b * 2 << 8) | c * 2)
