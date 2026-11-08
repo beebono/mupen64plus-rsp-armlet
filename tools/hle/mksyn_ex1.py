@@ -12,6 +12,7 @@
                                   MKSYN1_A_ADDR: the physical address of the snapshot's own text (OSTask.ucode): its text and overlays are written there too
   MKSYN1_B_TEXT / MKSYN1_B_DATA   another build of the front-end (registered, or latched by the probe)
   MKSYN1_X_TEXT / MKSYN1_X_DATA   a text no F3DEX 1.x build covers (S2DEX 1.x: SpaceStation Silicon Valley, Pokemon Puzzle League), or an F3DEX 1.x text whose IMEM tail differs (F3DEX 0.95: declined)
+  MKSYN1_GEOM_EXTRA               geometry bits ORed into every stage's mode (e.g. 0x100000, G_LOD: a bit the front-end should accept or decline)
 
   CASES  stage   no load: lit and unlit vertices, triangles, matrices, state commands, display list calls (the generator's own check: native == JIT)
          load    a few stages, then loads in a sequence drawn from  A -> A, A -> B, A -> B -> A, A -> B -> B, A -> A -> B  (the data of the loaded text 2048 bytes, or fewer: the DMEM above is the old state);
@@ -174,7 +175,7 @@ class Gen:
         G_CULLDL, G_BRANCH_Z, G_MODIFYVTX and G_MW_POINTS"""
         r, d = self.r, self.d
         lit = r.random() < 0.35
-        geom = r.choice([0, 0x4, 0x4 | 0x200, 0x200]) | r.choice([0, 1]) | r.choice([0, 0, 0x1000, 0x2000, 0x3000]) | (0x20000 if lit else 0) | r.choice([0, 0x10000]) | r.choice([0, 0x800000])
+        geom = r.choice([0, 0x4, 0x4 | 0x200, 0x200]) | r.choice([0, 1]) | r.choice([0, 0, 0x1000, 0x2000, 0x3000]) | (0x20000 if lit else 0) | r.choice([0, 0x10000]) | r.choice([0, 0x800000]) | int(os.environ.get("MKSYN1_GEOM_EXTRA", "0"), 0)
         if lit and r.random() < 0.4:
             geom |= 0x40000 | r.choice([0, 0x80000])
         self.setup(geom, lit)
@@ -261,7 +262,7 @@ def case(name, seed):
     kseg = r.random() < 0.5
     sizes = []
     if name == "stage":
-        g.stage()
+        g.stage(int(env.get("MKSYN1_GEOM_EXTRA", "0"), 0))
         g.d.cmd(0xb8000000, 0)
     elif name == "rej":
         for _ in range(r.randrange(1, 3)):
@@ -299,7 +300,7 @@ def case(name, seed):
         if name == "call":
             sub = DL()
             g.d = sub
-        g.stage()
+        g.stage(int(env.get("MKSYN1_GEOM_EXTRA", "0"), 0))
         for ch in seq:
             sz = size()
             sizes.append(sz)
@@ -308,7 +309,7 @@ def case(name, seed):
             else:
                 load(g, BASE + TB, BASE + DB, sz, kseg)
             for _ in range(int(env.get("MKSYN1_STAGES", "1"))):        # (more than one: lists longer than the command window after a load)
-                g.stage()
+                g.stage(int(env.get("MKSYN1_GEOM_EXTRA", "0"), 0))
         if env.get('MKSYN1_INFO'):
             print('SIZES', [hex(x) for x in sizes], 'kseg', kseg, file=sys.stderr)
         g.d.cmd(0xb8000000, 0)
@@ -319,9 +320,9 @@ def case(name, seed):
             g.d = outer
             g.d.w = outer.w
     elif name == "xload":
-        g.stage()
+        g.stage(int(env.get("MKSYN1_GEOM_EXTRA", "0"), 0))
         load(g, BASE + TX, BASE + DX, 0x7ff, kseg)
-        g.stage()
+        g.stage(int(env.get("MKSYN1_GEOM_EXTRA", "0"), 0))
         g.d.cmd(0xb8000000, 0)
     else:
         sys.exit("unknown case " + name)

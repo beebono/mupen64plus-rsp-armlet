@@ -70,9 +70,15 @@ struct f3dex_vtx {
     uint16_t flags;                 /* clip flags (+36); F3DLX without G_CLIPPING: 0 (the microcode leaves junk there that no consumer reads except G_CULLDL) */
 };
 
+#if defined(ARMLET_HLE_MUTATE) && ARMLET_HLE_MUTATE == 644
+#define MUT_LOD(x) 0                                         /* (mutation 644: G_LOD declined again) */
+#else
+#define MUT_LOD(x) (x)
+#endif
 enum { F3DEX_G_ZBUFFER = 0x1, F3DEX_G_TEXTURE = 0x2, F3DEX_G_SHADE = 0x4, F3DEX_G_SMOOTH = 0x200, F3DEX_G_CULL_FRONT = 0x1000, F3DEX_G_CULL_BACK = 0x2000,
-       F3DEX_G_FOG = 0x10000, F3DEX_G_LIGHTING = 0x20000, F3DEX_G_TEXGEN = 0x40000, F3DEX_G_TEXGEN_LINEAR = 0x80000, F3DEX_G_CLIPPING = 0x800000,
-       F3DEX_G_DEFINED = 0x1 | 0x2 | 0x4 | 0x200 | 0x1000 | 0x2000 | 0x10000 | 0x20000 | 0x40000 | 0x80000 | 0x800000 };
+       F3DEX_G_FOG = 0x10000, F3DEX_G_LIGHTING = 0x20000, F3DEX_G_TEXGEN = 0x40000, F3DEX_G_TEXGEN_LINEAR = 0x80000, F3DEX_G_LOD = 0x100000, F3DEX_G_CLIPPING = 0x800000,
+       /* (G_LOD: set by games (Fighting Force 64), tested by none of the F3DEX 1.x texts: synthetic stages with the bit set run equal to the JIT on the 10 builds with a snapshot, docs/testing.md "G_LOD") */
+       F3DEX_G_DEFINED = 0x1 | 0x2 | 0x4 | 0x200 | 0x1000 | 0x2000 | 0x10000 | 0x20000 | 0x40000 | 0x80000 | MUT_LOD(0x100000) | 0x800000 };
 
 #define F3DEX_MAX_REC 16            /* light records above the look-at records: nrec <= F3DEX_MAX_REC (the word at DMEM 0x12c is (nrec) * 32) */
 

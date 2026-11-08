@@ -50,7 +50,7 @@ REJ1, REJ1_TEXF0, REJ1_FLAT1, REJ1_LP = 1, 2, 4, 8      # the rej1 attribute (de
 REJ1_W_TEXF, REJ1_W_FLAT = 0xcaf01c01, 0x21040000      # `ldv v16[8], 8(s7)` (the load of those fractions), `addi a0, t0, 0` (the second triangle's flat vertex)
 REJ1_W_LP = 0x4b1e73f3                                 # `vmov v15, v14, v30[8]`: F3DLP.Rej's constant texture lane (present: lp, F3DLP.Rej's 16-byte records)
 F1_BASE29 = 0x110           # $29: the constant base register of the whole run (`addi sp, zero, 0x110` at IMEM 0x84); state words are addressed relative to it
-F1_GEOM_DEF = 0x1 | 0x2 | 0x4 | 0x200 | 0x1000 | 0x2000 | 0x10000 | 0x20000 | 0x40000 | 0x80000 | 0x800000     # F3DEX_G_DEFINED: the geometry bits the front-end gives a meaning to
+F1_GEOM_DEF = 0x1 | 0x2 | 0x4 | 0x200 | 0x1000 | 0x2000 | 0x10000 | 0x20000 | 0x40000 | 0x80000 | 0x100000 | 0x800000     # F3DEX_G_DEFINED: the geometry bits the front-end gives a meaning to
 
 
 def new_f1_record(name):

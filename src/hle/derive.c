@@ -2026,7 +2026,7 @@ done:
 
 /* ---- the variant families (derive_f1d.derive_variant): only what decides the family and the verdict --------------------------------------------------------------------- */
 /* ---- the F3DEX 1.x derivation (derive_f1d.derive_f1) --------------------------------------------------------------------------------------------------------------------- */
-#define F1_GEOM_DEF (0x1u | 0x2u | 0x4u | 0x200u | 0x1000u | 0x2000u | 0x10000u | 0x20000u | 0x40000u | 0x80000u | 0x800000u)
+#define F1_GEOM_DEF (0x1u | 0x2u | 0x4u | 0x200u | 0x1000u | 0x2000u | 0x10000u | 0x20000u | 0x40000u | 0x80000u | 0x100000u | 0x800000u)
 static int is_op(uint32_t w, unsigned op) { return (w >> 26) == op; }
 static unsigned w_rs(uint32_t w) { return (w >> 21) & 31; }
 static unsigned w_rt(uint32_t w) { return (w >> 16) & 31; }
