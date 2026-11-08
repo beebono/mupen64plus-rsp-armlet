@@ -1123,3 +1123,17 @@ Mario Kart 64, Turok, Wipeout 64, Yoshi's Story, Pokemon Puzzle League, Glover, 
 **Derivation**: `derive_refs.c` 42 references (the three 1.x Rej texts); `tools/derive_check.sh` passes: left out, the 1.23 and the 1.21 text derive NONE from the others (10 and 1 unexplained words: the variant
 code), the earlier 1.23 EXACT from 1.21 + 1.23 with its record (`rej1 = 3`); `tools/derive_c_check.sh`: C = Python on 66 texts, 42 leave-one-out, 17 mutants, 854 shortcut pairs; `--sync` 0 out of step. The offline
 probe on the earlier 1.23 text without its own record: PASS 28 / 28, latched.
+
+## Command & Conquer's S2DEX xbus 2.06 (2026-11-07; docs/ucode-s2dex2.md section 9)
+
+Build `l_b_s2_xbus_cnc` (the loaded text `b2b01e17177e5881`). Desktop x86_64, `GfxMode=hle`, `GfxProbe=on` (default), fresh cache, 3700 frames of the scripted pad, Command & Conquer (USA).
+
+| check | result |
+|---|---|
+| before (device log, rgdsplus) | `65ad`: 2059 replays, **2059 declined** (`G_LOAD_UCODE of another ucode`), a candidate, 0 % native |
+| `ref` against `armlet-hle`, `EXTRA_MASKS` = `65ad`'s `latch: masks` with `418-f90` added (the tasks end in the loaded text's layout) | **identical** (hash 5081, state 5059, 6 of 6 shots, audio); `65ad` LATCHED after 506 equal tasks (8.98 s); **1778 of 1792** graphics tasks native, 13 declined (`a command kind the latched build has not run in a validated task`) |
+| `ARMLET_HLE_VERIFY=1` (no extra masks) | identical to `ref` (hash 5077, state, shots, audio) |
+| without the extra masks | hash differs from call 1035 on, state / shots / audio identical: the masking artefact of the 2026-10-18 `loose` gate |
+| mutation **641** (load key - 1) | back to the old state: replays declined `G_LOAD_UCODE of another ucode`, no latch |
+| mutation **640** (`head` 0x1ac, StarCraft's) | 350 of 1056 replays declined (`unsupported command db`, 0 with the build); the sprite and rectangle pcs were tried first and not caught: C&C does not send those commands in the 3700 frames |
+| builds: `scripts/build.sh native`, `aarch64` | succeed, no new warning |

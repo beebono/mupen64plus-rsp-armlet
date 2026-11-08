@@ -335,4 +335,15 @@ static const struct f3dex2_build l_b_s2_xbus = {
 static const struct hle_dead_range l_dead_s2x[] = { { 0x418, 0xf90 }, { 0xfc8, 0xfcc } };
 HLE_UCODE(l_s2_xbus) = { .id = 0x3ee636569037de5bull, .name = "S2DEX xbus 2.08 (StarCraft 64)", .fam = &f3dex2_fam, .flags = HLE_F_XBUS_OK, .fam_data = &l_b_s2_xbus, .dead = l_dead_s2x, .n_dead = 2 };
 
+/* S2DEX xbus 2.06 (Command & Conquer's, loaded by G_LOAD_UCODE in every task of its F3DEX.NoN xbus 2.06 `65ad`): Kirby 64's 2.06 word for word up to the flush, StarCraft's XBUS flush and overlays behind
+ * it; the handlers 8 bytes below StarCraft's from 0x184 on, the same DMEM layout, ring and constants. The derivation says NONE on it (docs/ucode-s2dex2.md section 9: a second overlay descriptor in the data). */
+static const uint16_t l_ext_s2xc[][2] = {
+    { 0x024, K_S2_SELDL }, { 0x550, K_S2_LOADTXTR }, { 0xb4c, K_S2_BG1CYC }, { 0x208, K_S2_BGCOPY }, { 0x0e8, K_S2_RENDERMODE }, { 0xb58, K_S2_RECT }, { 0x698, K_S2_SPRITE },
+    { 0x0a4, K_S2_MOVEMEM }, { 0x1d0, K_S2_SCISSOR }, { 0x128, K_S2_HALF2 }, { 0xffff, 0 } };
+static const struct f3dex2_build l_b_s2_xbus_cnc = {
+    .head = MUT(640, 0x1a4, 0x1ac), .copy = 0x140, .sync = 0x144, .segcopy = 0x150, .ef = 0x170, .ed = MUT(248, 0xffff, 0xfff), .tri1 = 0, .tri2 = 0, .vtx = 0,
+    .mtx = 0, .geom = 0, .enddl = 0x07c, .half2 = MUT(248, 0xffff, 0xfff), .modvtx = 0, .culldl = 0, .branchz = 0, .reject_mask = 0, .tri4 = 0, .ldtx_spr = 0x6b8, .ldtx_rect = 0xb78, .lay = &l_lay_s2_xbus, .pcs = &l_pcs_s2, .ext = l_ext_s2xc, .ext_cmd = s2_ext_cmd, .load_key = MUT(641, 0xb2b01e17177e5881ull, 0xb2b01e17177e5880ull) };
+/* (never a task's own microcode: the id is the key of the loaded text) */
+HLE_UCODE(l_s2_xbus_cnc) = { .id = 0xb2b01e17177e5881ull, .name = "S2DEX xbus 2.06 (Command & Conquer, loaded by G_LOAD_UCODE)", .fam = &f3dex2_fam, .flags = HLE_F_XBUS_OK, .fam_data = &l_b_s2_xbus_cnc, .dead = l_dead_s2x, .n_dead = 2 };
+
 #endif
