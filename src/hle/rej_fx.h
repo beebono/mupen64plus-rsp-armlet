@@ -34,8 +34,9 @@ struct rej_vtx {
     uint16_t rwf;                                   /* fraction (+18) */
 };
 /* flags of the variants of the Rej texts (f2_layout.rej_flags; REJ_X1: the 1.x texts, rej1_fx.h: a rejected vertex is one whose x is 0x7fff, and a flat-shaded triangle takes the whole colour of its first vertex;
- * REJ_X1T0: the 1.x texts that do not load the top vertex's texture fractions, which are then 0: F3DLX.Rej 1.21 and the earlier 1.23). REJ_FLAT_A: a flat-shaded triangle takes the alpha of its first vertex too (the others take the alpha of each vertex). REJ_LIT_FLX: the lighting is F3DFLX.Rej's (rej_flx_lit); REJ_LIT_LX: F3DLX.Rej 2.03's (the F3DEX2 lighting loop with the unsigned multiply-accumulates: rej_lx_lit_vertex) */
-enum { REJ_YQ = 1, REJ_FLAT_A = 2, REJ_LIT_FLX = 4, REJ_LIT_LX = 8, REJ_X1 = 16, REJ_X1T0 = 32 };                                /* the screen y is rounded to whole pixels: the viewport's y translation + 2, the two low bits cleared; the mark of a rejected vertex is then 0x7ffc, else 0x7fff (F3DEX.Rej 2.06 does neither) */
+ * REJ_X1T0: the 1.x texts that do not load the top vertex's texture fractions, which are then 0: F3DLX.Rej 1.21 and the earlier 1.23; REJ_X1LP: F3DLP.Rej, the texture lanes s, t and x1_w as the records have them,
+ * no perspective, no y gradient, fractions 0 at the start). REJ_FLAT_A: a flat-shaded triangle takes the alpha of its first vertex too (the others take the alpha of each vertex). REJ_LIT_FLX: the lighting is F3DFLX.Rej's (rej_flx_lit); REJ_LIT_LX: F3DLX.Rej 2.03's (the F3DEX2 lighting loop with the unsigned multiply-accumulates: rej_lx_lit_vertex) */
+enum { REJ_YQ = 1, REJ_FLAT_A = 2, REJ_LIT_FLX = 4, REJ_LIT_LX = 8, REJ_X1 = 16, REJ_X1T0 = 32, REJ_X1LP = 64 };                                /* the screen y is rounded to whole pixels: the viewport's y translation + 2, the two low bits cleared; the mark of a rejected vertex is then 0x7ffc, else 0x7fff (F3DEX.Rej 2.06 does neither) */
 enum { REJ_VSTRIDE = 20, REJ_NSLOTS = 64, REJ_MARK_Y = 0x7ffc };                /* (64 vertex slots of 20 bytes: DMEM 0x410 .. 0x910) */
 
 /* n vertices (no pair partner is needed: the records carry no clip bits). out[i] is the record of in[i]. */
@@ -67,10 +68,11 @@ struct rej_tri_in {
     unsigned pass_neg, pass_pos;                    /* the cull table (DMEM 0x402 + the cull byte of the geometry mode) lets a triangle with a negative / positive cross product through */
     unsigned flags;                                 /* REJ_* */
     uint16_t rcp_k, dx_k;                           /* the constants of the triangle code that come from the vector constants (0x1b0 lanes 2 and 5: 8, 0x4000) */
-    /* REJ_X1: the fractions of the colour lanes of the middle and the low vertex (the registers are cleared once per command: the second triangle of a G_TRI2 finds the first one's x gradient and
-     * edge gradient there, times 32), and where a drawn triangle leaves them for the next (NULL: nowhere) */
-    uint16_t x1_frac[8];
+    /* REJ_X1: the fractions of the middle ([0..7]) and the low vertex ([8..15]) by lane (the registers are cleared once per command: the second triangle of a G_TRI2 finds the first one's x gradient and
+     * edge gradient there, times 32; the colour lanes, with REJ_X1LP also the texture lanes), and where a drawn triangle leaves them for the next (NULL: nowhere) */
+    uint16_t x1_frac[16];
     uint16_t *x1_next;
+    int16_t x1_w;                                   /* REJ_X1LP: the third texture lane of every vertex (the constant at DMEM 0x40: 0x7fff) */
     const struct rej_vtx *x1_flat;                  /* REJ_X1: the vertex a flat-shaded triangle takes its colour from (NULL: v[0]) */
 };
 /* The decisions and the RDP triangle command. FX2_TRI_DRAW: *len bytes (a multiple of 8, at most 0xb0), in cmd as the host words of DMEM hold them; FX2_TRI_SKIP: nothing is emitted (a vertex was rejected, the

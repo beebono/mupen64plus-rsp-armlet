@@ -253,3 +253,23 @@ again for the second triangle of a `G_TRI2`, which takes the colour of w1's firs
 
 Registered (`l_lxrej123`, `l_lxrej123a`, `l_lxrej121` in `f3dex.c`) and references of the derivation (`rej1` of the F3DEX 1.x record: the primary reference's Rej words, the variants read from the text). Declines: vertex
 numbers outside the 64 slots or odd, a `G_VTX` count past them or with too short an operand, `G_CULLDL` / `G_BRANCH_Z` / `G_MODIFYVTX` numbers and fields no game writes, geometry bits the build does not define. See testing.md, "1.x Rej".
+
+## 12. F3DLP.Rej 1.21 and 1.23 (2026-11-07)
+
+F3DLX.Rej (section 11) with a smaller vertex record and textures without perspective. Same skeleton, layout, lighting, marks, triangle decisions and output buffers; a mode of the same front-end (`f3dex_rej1.lp`).
+
+| text | id | `load_key` | games | G_VTX / G_TRI2 / G_TRI1 | variants |
+|---|---|---|---|---|---|
+| F3DLP.Rej 1.23 | `caa044a03073af58` | `3f452a886ec5e6ae` | Quake II; loaded by `G_LOAD_UCODE` in All-Star Baseball 99, ISS '98, Jikkyou World Soccer France '98 | 0x394 / 0xa28 / 0x1c0 | - |
+| F3DLP.Rej 1.21 | `9dac48512ee7d3e3` | `e736939ad4e44309` | Ken Griffey Jr.'s Baseball (AU), J.League Eleven Beat 1997, Jangou Simulation Mahjong Dou 64; loaded in Bio F.R.E.A.K.S., Fighting Force 64, NFL Quarterback Club 98, Madden | 0x39c / 0xa30 / 0x1c8 | `flat1` |
+
+The two differ as F3DLX.Rej 1.21 and 1.23 do (the start-up, one `addi a0, t0, 0`). `texf0` has no meaning here: no text loads texture fractions.
+
+- **Record: 16 bytes**, F3DLX.Rej's without the 1/w words: `+0` sx, `+2` sy, `+4` sz integer, `+6` fraction, `+8` r g b a, `+12` s t; 64 slots from 0x440. A vertex number (twice the slot) becomes
+  `0x440 + 8 n` (`sll 3`; the triangle code's constant at DMEM 0x144 is `0x0800`). G_VTX computes the reciprocal as F3DLX.Rej (the screen position needs it) and does not store it.
+- **Triangles**: the decisions, edges and colour / z attributes are F3DLX.Rej's. The texture lanes are **s, t and 0x7fff** (DMEM 0x40, the `v30` constant) as the records have them, loaded whether or not the
+  triangle is textured; their start fractions and their **y gradient are zeros** (`sdv v0`). The middle and low vertex's fraction registers keep the previous triangle's x and edge gradients (times 32) in the
+  texture lanes too, so the second triangle of a `G_TRI2` starts from them (`rej_tri_in.x1_frac`, 16 halfwords now).
+- **`G_CULLDL`**: the numbers times 8, step 16. **`G_BRANCH_Z`**: the record at `(w0 << 3) & 0xfff`, its z word at +4. **`G_MODIFYVTX`**: the record of `w0 * 8`, the field offset `^ 0x18` as in section 11.
+
+Registered (`l_lprej123`, `l_lprej121` in `f3dex.c`) and references of the derivation (a derived build takes `lp` with the primary reference's Rej words). Testing: docs/testing.md, "F3DLP.Rej".

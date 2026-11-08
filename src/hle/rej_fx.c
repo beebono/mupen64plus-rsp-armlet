@@ -446,23 +446,23 @@ static unsigned rej1_tri_attrs(const struct rej_tri_in *in, const struct fx2_tri
 {
     const struct fx2_vtx *v3[3] = { st->H, st->M, st->L };
     uint32_t g = in->g;
-    unsigned tex = in->tex, zb = g & 1, k, l, o;
+    unsigned tex = in->tex, zb = g & 1, lp = (in->flags & REJ_X1LP) != 0, nfr = lp ? 7 : 4, k, l, o;
     struct fx2_pair att[3][8], dMH[8], dLH[8], dX[8], dY[8], dE[8], R, RLH;
     int16_t dyMH4 = hle_clamp16(4 * (int32_t)st->dyMH), nyLH4 = hle_clamp16(4 * (int32_t)st->nyLH), dxLH4 = hle_clamp16(4 * (int32_t)st->dxLH), nxMH4 = hle_clamp16(4 * (int32_t)st->nxMH);
     int16_t dyLH = hle_clamp16((int32_t)st->L->sy - st->H->sy);
     hle_acc tt, full;
 
     for (k = 0; k < 3; k++) {
-        for (l = 0; l < 4; l++) {
+        for (l = 0; l < 4; l++)
             att[k][l].i = v3[k]->col[l];
-            att[k][l].f = k == 0 ? 0 : MUT(616, in->x1_frac[4 * (k - 1) + l], 0);
-        }
-        for (l = 4; l < 7; l++)
-            att[k][l].i = 0, att[k][l].f = 0;
+        for (l = 4; l < 7; l++)                                         /* (F3DLP.Rej: s, t and the constant, loaded whether the triangle is textured or not) */
+            att[k][l].i = !lp ? 0 : l == 4 ? v3[k]->s : l == 5 ? v3[k]->t : MUT(633, in->x1_w, 0x7ffe);
+        for (l = 0; l < 7; l++)
+            att[k][l].f = k == 0 || l >= nfr ? 0 : MUT(616, in->x1_frac[8 * (k - 1) + l], 0);
         att[k][7].i = v3[k]->szi;
         att[k][7].f = v3[k]->szf;
     }
-    if (tex) {                                                          /* s, t, 0x7fff times 1/w over the largest 1/w of the three */
+    if (tex && !lp) {                                                          /* s, t, 0x7fff times 1/w over the largest 1/w of the three */
         int32_t w[3], mw;
         struct fx2_pair Rm;
         for (k = 0; k < 3; k++)
@@ -512,9 +512,9 @@ static unsigned rej1_tri_attrs(const struct rej_tri_in *in, const struct fx2_tri
         dE[l] = rd(tt, full);
     }
     if (in->x1_next)
-        for (l = 0; l < 4; l++) {
+        for (l = 0; l < nfr; l++) {
             in->x1_next[l] = (uint16_t)(dX[l].f * 32u);
-            in->x1_next[4 + l] = (uint16_t)x32(dE[l]).i;
+            in->x1_next[8 + l] = (uint16_t)x32(dE[l]).i;
         }
     o = 32;
     for (l = 0; l < 4; l++) {                                           /* the shade */
@@ -532,12 +532,12 @@ static unsigned rej1_tri_attrs(const struct rej_tri_in *in, const struct fx2_tri
         for (l = 0; l < 4; l++) {
             put16(cmd, o + 2 * l, (uint16_t)att[0][4 + l].i);
             put16(cmd, o + 8 + 2 * l, (uint16_t)dX[4 + l].i);
-            put16(cmd, o + 16 + 2 * l, MUT(614, 0, att[0][4 + l].f));      /* (the lanes of the colour fractions) */
+            put16(cmd, o + 16 + 2 * l, lp ? 0 : MUT(614, 0, att[0][4 + l].f));      /* (the lanes of the colour fractions; F3DLP.Rej stores zeros there and for the y gradient) */
             put16(cmd, o + 24 + 2 * l, dX[4 + l].f);
             put16(cmd, o + 32 + 2 * l, (uint16_t)dE[4 + l].i);
-            put16(cmd, o + 40 + 2 * l, (uint16_t)dY[4 + l].i);
+            put16(cmd, o + 40 + 2 * l, lp ? 0 : (uint16_t)dY[4 + l].i);
             put16(cmd, o + 48 + 2 * l, dE[4 + l].f);
-            put16(cmd, o + 56 + 2 * l, dY[4 + l].f);
+            put16(cmd, o + 56 + 2 * l, MUT(634, lp ? 0 : dY[4 + l].f, dY[4 + l].f));
         }
         o += 64;
     }

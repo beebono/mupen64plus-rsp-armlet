@@ -34,9 +34,10 @@ struct rctx {
 #endif
 #define LAY rej1_lay_123
 #ifndef RJ
-#define RJ rej1_123                                         /* (rej1_121: F3DLX.Rej 1.21 and the earlier 1.23) */
+#define RJ rej1_123                                         /* (rej1_121: F3DLX.Rej 1.21 and the earlier 1.23; rej1_lp121 / rej1_lp123: F3DLP.Rej) */
 #endif
 static const struct f3dex_build FX = { 0x7070, 0, 1, &LAY };
+#define TNSLOTS (RJ.lp ? REJ1_NSLOTS_LP : REJ1_NSLOTS)             /* (the slots the cases use: the test's own count, not rej1_nslots, so that a wrong count in the closed forms shows as declines) */
 
 /* the registers the code reaches through MTC0 / MFC0 */
 static uint32_t creg[16];
@@ -86,7 +87,7 @@ static void base_dmem(uint32_t *dm)
     unsigned k;
     for (k = 0; k < 0x1000; k++)
         st8(dm, k, k < 0x800 ? data_seg[k] : (uint8_t)rnd());
-    for (k = RJ.vbuf; k < RJ.vbuf + REJ1_VSTRIDE * REJ1_NSLOTS; k++)
+    for (k = RJ.vbuf; k < RJ.vbuf + REJ1_VSTRIDE * REJ1_NSLOTS; k++)      /* (F3DLP.Rej: the 64 records and what lies behind them) */
         st8(dm, k, (uint8_t)rnd());
 }
 
@@ -302,7 +303,7 @@ static unsigned vtx_cases(unsigned n, unsigned *fails_out)
         base_dmem(a);
         vtx_state(a, &lit);
         l0 = xd32(a, LAY.lights);
-        v0 = rnd() % (REJ1_NSLOTS + 1 - nv);
+        v0 = rnd() % (TNSLOTS + 1 - nv);
         w0 = 0x04000000u | (v0 * 2) << 16 | (nv == 1 && rnd() % 8 == 0 ? 0 : nv) << 10 | (16 * nv - 1);
         st32(a, cmd_at, w0);
         st32(a, cmd_at + 4, w1);
@@ -312,7 +313,7 @@ static unsigned vtx_cases(unsigned n, unsigned *fails_out)
         why = rej1_vtx_dmem(b, &FX, &RJ, w0, b, LAY.operand, 0, &marked);
         if (!why)
             for (k = 0; k < (nv ? nv : 1); k++)
-                nvm += xd16(b, RJ.vbuf + REJ1_VSTRIDE * (v0 + k)) == REJ1_MARK_X, nvt++;
+                nvm += xd16(b, RJ.vbuf + rej1_rec(&RJ) * (v0 + k)) == REJ1_MARK_X, nvt++;
         if (why) {
             decl++;
             continue;
@@ -380,7 +381,7 @@ static void tri_state(uint32_t *dm)
     unsigned k, wild = rnd() % 5 == 0;
     uint32_t g;
     struct rej_vtx prev;
-    for (k = 0; k < REJ1_NSLOTS; k++) {
+    for (k = 0; k < TNSLOTS; k++) {
         struct rej_vtx r;
         rand_rec(&r, wild);
         if (k && rnd() % 6 == 0) {                          /* near-duplicates: horizontal / vertical / zero edges */
@@ -388,7 +389,7 @@ static void tri_state(uint32_t *dm)
             if (rnd() % 2)
                 r.sy = prev.sy;
         }
-        rej1_st_vtx(dm, RJ.vbuf + REJ1_VSTRIDE * k, &r);
+        rej1_st_vtx(dm, RJ.vbuf + rej1_rec(&RJ) * k, &r, RJ.lp);
         prev = r;
     }
     g = (rnd() % 2 ? F3DEX_G_ZBUFFER : 0) | (rnd() % 2 ? F3DEX_G_SHADE : 0) | (rnd() % 2 ? F3DEX_G_TEXTURE : 0) | (rnd() % 2 ? F3DEX_G_SMOOTH : 0) | (rnd() % 3 == 0 ? F3DEX_G_CULL_BACK : 0) |
@@ -409,7 +410,7 @@ static unsigned tri_cases(unsigned n, unsigned *fails_out)
         base_dmem(a);
         tri_state(a);
         for (k = 0; k < 6; k++)
-            idx[k] = 2 * (rnd() % REJ1_NSLOTS);
+            idx[k] = 2 * (rnd() % TNSLOTS);
         if (rnd() % 8 == 0)
             idx[1] = idx[0];
         if (rnd() % 8 == 0)
@@ -430,7 +431,7 @@ static unsigned tri_cases(unsigned n, unsigned *fails_out)
         st32(a, LAY.fifo + 4, 0x300000);
         memcpy(b, a, sizeof a);
         /* the closed forms: w1's triangle, then (TRI2) w0's, one chunk */
-        uint16_t frac[8] = { 0 };
+        uint16_t frac[16] = { 0 };
         for (j = 0; j < (two ? 2u : 1u) && !why; j++) {
             uint32_t ww = j == 0 ? w1 : w0, cmd[0xb0 / 4];
             unsigned l = 0;
@@ -494,7 +495,7 @@ static unsigned tri_cases(unsigned n, unsigned *fails_out)
                             uint32_t ww = q < 3 ? w1 : w0;
                             unsigned bb = (ww >> (16 - 8 * (q % 3))) & 0xff;
                             struct rej_vtx rv;
-                            rej1_ld_vtx(a, RJ.vbuf + 10 * bb, &rv);
+                            rej1_ld_vtx(a, RJ.vbuf + rej1_rec(&RJ) / 2 * bb, &rv, RJ.lp);
                             printf("  v%u(%u): col %02x%02x%02x%02x st %d %d xy %d %d z %d.%04x rw %d.%04x\n", q, bb / 2, rv.col[0], rv.col[1], rv.col[2], rv.col[3], rv.s, rv.t, rv.sx, rv.sy, rv.szi, rv.szf,
                                    rv.rwi, rv.rwf);
                         }

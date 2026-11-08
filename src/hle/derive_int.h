@@ -59,9 +59,10 @@ struct derive_rec {
 enum { F3F_FV, F3F_VTX_WR, F3F_GP_END, F3F_TRI_WR, F3F_POPMTX_STALE, F3F_XBUS, F3F_VPTR_MUL, F3F_N };
 /* derive_rec.rej1: a 1.x Rej build; its variants (struct f3dex_rej1): the top vertex's texture fractions are 0 (the text lacks `ldv v16[8], 8(s7)`), the second triangle of a G_TRI2 takes the first one's flat
  * vertex (the text lacks `addi a0, t0, 0`) */
-enum { DERIVE_REJ1 = 1, DERIVE_REJ1_TEXF0 = 2, DERIVE_REJ1_FLAT1 = 4 };
+enum { DERIVE_REJ1 = 1, DERIVE_REJ1_TEXF0 = 2, DERIVE_REJ1_FLAT1 = 4, DERIVE_REJ1_LP = 8 };
 #define DERIVE_REJ1_W_TEXF 0xcaf01c01u
 #define DERIVE_REJ1_W_FLAT 0x21040000u
+#define DERIVE_REJ1_W_LP 0x4b1e73f3u          /* `vmov v15, v14, v30[8]`: F3DLP.Rej's constant texture lane (present: f3dex_rej1.lp) */
 
 struct derive_seg {             /* a segment of an image: the text (off 0) or an overlay behind it */
     uint16_t base;              /* IMEM address of its first word */

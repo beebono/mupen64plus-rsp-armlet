@@ -2358,12 +2358,13 @@ static int derive_f1(const struct derive_in *in, struct dimg *U, const struct dc
     rec->name = "(derived)";
     rec->fam = DERIVE_F3DEX1;
     if (prim->rec->rej1) {                                  /* (the variants from the text: the primary's are a reference's, and the composite explains the words of the other one) */
-        int tf = 0, fl = 0;
+        int tf = 0, fl = 0, lp = 0;
         for (j = 0; j < U->n; j++) {
             tf |= U->w[j] == DERIVE_REJ1_W_TEXF;
             fl |= U->w[j] == DERIVE_REJ1_W_FLAT;
+            lp |= U->w[j] == DERIVE_REJ1_W_LP;
         }
-        rec->rej1 = (uint8_t)(DERIVE_REJ1 | (tf ? 0 : DERIVE_REJ1_TEXF0) | (fl ? 0 : DERIVE_REJ1_FLAT1));
+        rec->rej1 = (uint8_t)(DERIVE_REJ1 | (tf ? 0 : DERIVE_REJ1_TEXF0) | (fl ? 0 : DERIVE_REJ1_FLAT1) | (lp ? DERIVE_REJ1_LP : 0));
     }
     merge_knobs(order1, nrefs, mg);
     for (i = 0; i < DERIVE_NF1LAY; i++)

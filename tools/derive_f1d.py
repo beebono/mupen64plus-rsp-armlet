@@ -46,8 +46,9 @@ F1_LAY_NKNOB = 29
 F1_PC_FIELDS = ["head", "nop", "mtx", "movemem", "vtx", "dl", "loaduc", "branchz", "tri2", "modvtx", "half2", "half1", "persp", "quad", "clrgeom", "setgeom", "enddl", "oml", "omh", "texture",
                 "moveword", "popmtx", "culldl", "tri1"]
 F1_FLAGS = ["non", "dlx", "culldl_off", "rej1"]
-REJ1, REJ1_TEXF0, REJ1_FLAT1 = 1, 2, 4      # the rej1 attribute (derive_int.h DERIVE_REJ1*): a 1.x Rej build, the top vertex's texture fractions 0, the second triangle's flat vertex the first's
+REJ1, REJ1_TEXF0, REJ1_FLAT1, REJ1_LP = 1, 2, 4, 8      # the rej1 attribute (derive_int.h DERIVE_REJ1*): a 1.x Rej build, the top vertex's texture fractions 0, the second triangle's flat vertex the first's
 REJ1_W_TEXF, REJ1_W_FLAT = 0xcaf01c01, 0x21040000      # `ldv v16[8], 8(s7)` (the load of those fractions), `addi a0, t0, 0` (the second triangle's flat vertex)
+REJ1_W_LP = 0x4b1e73f3                                 # `vmov v15, v14, v30[8]`: F3DLP.Rej's constant texture lane (present: lp, F3DLP.Rej's 16-byte records)
 F1_BASE29 = 0x110           # $29: the constant base register of the whole run (`addi sp, zero, 0x110` at IMEM 0x84); state words are addressed relative to it
 F1_GEOM_DEF = 0x1 | 0x2 | 0x4 | 0x200 | 0x1000 | 0x2000 | 0x10000 | 0x20000 | 0x40000 | 0x80000 | 0x800000     # F3DEX_G_DEFINED: the geometry bits the front-end gives a meaning to
 
@@ -85,7 +86,7 @@ def load_f1_records(T, C):
             rj = b.get("rej")
             if rj:
                 rv = T.vars[rj[1]][1]
-                r.flags["rej1"] = REJ1 | (REJ1_TEXF0 if rv.get("texf0") else 0) | (REJ1_FLAT1 if rv.get("flat1") else 0)
+                r.flags["rej1"] = REJ1 | (REJ1_TEXF0 if rv.get("texf0") else 0) | (REJ1_FLAT1 if rv.get("flat1") else 0) | (REJ1_LP if rv.get("lp") else 0)
             else:
                 r.flags["rej1"] = 0
             r.load_key = b.get("load_key") or None
@@ -283,7 +284,7 @@ def derive_f1(U, refs):
     order1 = [prim] + [P for P in order if P is not prim]
     flags["rej1"] = 0
     if prim.R.rec.flags.get("rej1", 0):                # (the variants from the text: the primary's are a reference's, and the composite explains the words of the other one)
-        flags["rej1"] = REJ1 | (0 if REJ1_W_TEXF in U.img.w else REJ1_TEXF0) | (0 if REJ1_W_FLAT in U.img.w else REJ1_FLAT1)
+        flags["rej1"] = REJ1 | (0 if REJ1_W_TEXF in U.img.w else REJ1_TEXF0) | (0 if REJ1_W_FLAT in U.img.w else REJ1_FLAT1) | (REJ1_LP if REJ1_W_LP in U.img.w else 0)
     if flags["rej1"]:                       # (a 1.x Rej primary: its vertex and triangle code has neither the NoN nor the F3DLX signatures; the attributes are its)
         for k in ("non", "dlx"):
             flags[k] = prim.R.rec.flags[k]

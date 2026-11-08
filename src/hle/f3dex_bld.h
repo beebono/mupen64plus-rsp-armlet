@@ -48,6 +48,7 @@ struct f3dex_rej1 {
     uint16_t vbuf, tab, ymask, bufsel, buftog;
     uint8_t texf0;          /* the top vertex's texture fractions are 0 (REJ_X1T0) */
     uint8_t flat1;          /* the second triangle of a G_TRI2 takes the flat colour of the first one's first vertex (1.21: the register is not set again) */
+    uint8_t lp;             /* F3DLP.Rej: 16-byte records (no 1/w), a vertex number times 8; the texture lanes s, t, 0x7fff without perspective and no y gradient (REJ_X1LP) */
 };
 struct f3dex1_build {
     struct f3dex_build fx;              /* reject mask, NoN, LX, the DMEM layout */

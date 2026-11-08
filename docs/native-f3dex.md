@@ -74,7 +74,7 @@ Builds (ids as gfx_ucode.c logs them) and the games they were run with:
 | `pc[24]` | the start-up code's stop (`head`), the loop's return point that the no-op commands lead to (`nop`), and the handler of every command (0: the build has none) | read from each text's tables |
 | `culldl_off` | G_CULLDL takes byte offsets into the vertex buffer and leaves the last vertex out (0.95), not vertex numbers | 1 for the 0.95 builds |
 | `load_key` | the FNV-1a-64 of the text's first 0xf48 bytes: the record's key for the derivation and the probe | from the dumps (F3DLX 0.95: none) |
-| `rej` | the 1.x Rej builds (`struct f3dex_rej1`: the slots, the mark table, the y mask, the output buffer selector and its toggle, the variants `texf0` / `flat1`): section 9 | F3DLX.Rej 1.21 / 1.23; NULL for the others |
+| `rej` | the 1.x Rej builds (`struct f3dex_rej1`: the slots, the mark table, the y mask, the output buffer selector and its toggle, the variants `texf0` / `flat1`, `lp` for F3DLP.Rej's 16-byte records): section 9 | F3DLX.Rej 1.21 / 1.23, F3DLP.Rej 1.21 / 1.23; NULL for the others |
 
 The commands are dispatched through the build's own handler tables in DMEM (class 0: `jt0 + 2 op`, ops 0x00 .. 0x09; class 2: `jt2 + 2 (op & 0x7f)`, ops 0xaf .. 0xbf; the other cells of the overlapping tables
 are not handler pointers and decline), whose pcs are matched against the record once per task (`make_kinds`): the 0.95 numbering of RDPHALF / PERSPNORM / G_QUAD, Turok's missing G_BRANCH_Z and G_LOAD_UCODE

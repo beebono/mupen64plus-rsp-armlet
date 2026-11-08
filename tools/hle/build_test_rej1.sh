@@ -1,6 +1,6 @@
 #!/bin/bash
 # builds and runs test_rej1 (the 1.x Rej closed forms on random DMEM images; against the microcode when the rsp2c translations are given, docs/testing.md "1.x Rej").
-#   tools/hle/build_test_rej1.sh [CASES [SEED]]      env: REJ_DATA=<.data dump of the text> (required), REJ1_BUILD=123 (F3DLX.Rej 1.23) | 121 (1.21) | 123a (the earlier 1.23), REJ1_VTX_ORACLE / REJ1_TRI_ORACLE=<generated .inc> (tools/hle/gen_rej1_oracles.sh), EXTRA=<compiler flags>
+#   tools/hle/build_test_rej1.sh [CASES [SEED]]      env: REJ_DATA=<.data dump of the text> (required), REJ1_BUILD=123 (F3DLX.Rej 1.23) | 121 (1.21) | 123a (the earlier 1.23) | lp123 | lp121 (F3DLP.Rej), REJ1_VTX_ORACLE / REJ1_TRI_ORACLE=<generated .inc> (tools/hle/gen_rej1_oracles.sh), EXTRA=<compiler flags>
 #   HOST=1: natively (x86_64, scalar); else the aarch64 cross compiler under qemu-aarch64-static (with SCALAR=1 the scalar forms)
 set -e
 H=$(cd "$(dirname "$0")" && pwd); R=$(cd "$H/../.." && pwd)
@@ -11,6 +11,8 @@ case ${REJ1_BUILD:-123} in            # the build under test (its pcs; tools/hle
 123) OR= ;;
 121) OR="-DRJ=rej1_121 -DREJ1_VTX_ENTRY=0x3b4 -DREJ1_TRI2_ENTRY=0xa78 -DREJ1_TRI1_ENTRY=0x1c8 -DREJ1_HEAD=0x09c" ;;
 123a) OR="-DRJ=rej1_123a -DREJ1_VTX_ENTRY=0x3b4 -DREJ1_TRI2_ENTRY=0xa78 -DREJ1_TRI1_ENTRY=0x1c8 -DREJ1_HEAD=0x09c" ;;
+lp123) OR="-DRJ=rej1_lp123 -DREJ1_VTX_ENTRY=0x394 -DREJ1_TRI2_ENTRY=0xa28 -DREJ1_TRI1_ENTRY=0x1c0 -DREJ1_HEAD=0x09c" ;;
+lp121) OR="-DRJ=rej1_lp121 -DREJ1_VTX_ENTRY=0x39c -DREJ1_TRI2_ENTRY=0xa30 -DREJ1_TRI1_ENTRY=0x1c8 -DREJ1_HEAD=0x09c" ;;
 *) echo "unknown REJ1_BUILD" >&2; exit 2 ;;
 esac
 [ -n "$REJ1_VTX_ORACLE" ] && OR="$OR '-DREJ1_VTX_ORACLE=\"$REJ1_VTX_ORACLE\"'"

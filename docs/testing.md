@@ -1137,3 +1137,20 @@ Build `l_b_s2_xbus_cnc` (the loaded text `b2b01e17177e5881`). Desktop x86_64, `G
 | mutation **641** (load key - 1) | back to the old state: replays declined `G_LOAD_UCODE of another ucode`, no latch |
 | mutation **640** (`head` 0x1ac, StarCraft's) | 350 of 1056 replays declined (`unsupported command db`, 0 with the build); the sprite and rectangle pcs were tried first and not caught: C&C does not send those commands in the 3700 frames |
 | builds: `scripts/build.sh native`, `aarch64` | succeed, no new warning |
+
+## F3DLP.Rej 1.21 and 1.23 (2026-11-07; docs/ucode-rej.md section 12)
+
+Builds `caa0` (F3DLP.Rej 1.23, load key `3f45`) and `9dac` (1.21, `e736`): the F3DLX.Rej mode with `f3dex_rej1.lp`. Desktop x86_64, `GfxMode=hle`, 3700 frames of the scripted pad.
+
+| check | result |
+|---|---|
+| `test_rej1` against rsp2c oracles of each text (`REJ1_BUILD=lp121 \| lp123`, `gen_rej1_oracles.sh` with the LP pcs; 80 slots) | 4000 + 3887 cases each, **0 failures**; the same under qemu-aarch64 (800 each); F3DLX.Rej 1.23 / 1.21 / earlier 1.23 against their own oracles: 0 failures (unchanged) |
+| the variants told apart | 1.21's Rej words on 1.23's oracle and back: 269 of 1500 fail; F3DLX.Rej 1.21's words on the LP 1.21 oracle: 1271 |
+| mutations, `test_rej1` | **633** (the constant texture lane), **634** (the texture y gradient stored), **635** (1/w stored), **636** (no LP flag), 616 (the carried fractions): 270 .. 1500 failures; **642** (64 slots, not 80): 336 G_VTX and 998 triangle cases decline (0 / 47) |
+| `ref` against `armlet-hle` and `ARMLET_HLE_VERIFY=1` | **identical** (hash, state, 6 shots, audio): Quake II, Ken Griffey Jr.'s Baseball (AU), J.League Eleven Beat 1997, Jangou Simulation Mahjong Dou 64, Bio F.R.E.A.K.S., Fighting Force 64, NFL QBC 98, All-Star Baseball 99, ISS '98, World Soccer France '98; F3DLX.Rej: Bust-A-Move 2, Mortal Kombat 4. Quake II needs its latched F3DEX.NoN 1.23 `efe4`'s `latch: masks` as `EXTRA_MASKS` (without: the hash differs from call 2485 on, the rest identical) |
+| native share (`ARMLET_HLE_STATS`, last print) | Quake II 4020 of 4032, Ken Griffey Jr. 3839 of 3840, All-Star Baseball 99 1471 of 1472, J.League Eleven Beat 3135 of 3136, ISS '98 2751 of 2752, World Soccer France '98 2815 of 2816, Bio F.R.E.A.K.S. 1535 of 1536, NFL QBC 98 1407 of 1408, Jangou 511 of 512; Fighting Force 64 1735 of 2624 (888 declined by its host F3DLX 1.21 `76c7`: geometry bits the build does not define, not the Rej code) |
+| first run (64 slots, the operand bound of the F3DEX 1.x layout) | Quake II 1505 / 4032 and All-Star Baseball 99 536 / 1472 native (`G_VTX slot range unusual`: the games use slots 64 .. 79), Ken Griffey Jr. 2848 / 3840 (`class-0 operand longer than the operand buffer`: a G_VTX of 62 vertices, 992 bytes, whose DMA runs into the output buffers, dead up to 0xf48) |
+| mutations, games | **643** (the old operand bound): Ken Griffey Jr. back to 1023 declined; **638** (G_CULLDL stride 10): J.League Eleven Beat 652 declined; **637** (G_BRANCH_Z `w0 << 2`): no game of the set sends G_BRANCH_Z in 3700 frames |
+| synthetic tasks (`mksyn_ex1.py` `rej` / `rejbad` on two Quake II snapshots, `MKSYN1_A_TEXT` = the text dump, `MKSYN1_A_ADDR=0x62320`) | `rej` 200 + 200 seeds equal; `rejbad` 0 differ, 120 declined, 80 equal (the G_VTX past slot 64 is legal here); **637**: 14 differ, 46 declined; **638**: 1 differs, 81 declined. Without `MKSYN1_A_*` the lit seeds differ on F3DLX.Rej and F3DLP.Rej alike (the snapshot's RDRAM has no lighting overlay for the JIT): the setup, not the code |
+| derivation (`derive_refs.c` with both texts, `DERIVE_REJ1_LP` read from the text: `vmov v15, v14, v30[8]`) | `derive_check.sh` 0 unexplained; leave-one-out: LP 1.23 EXACT from 1.21, 1.21 NONE (0 unexplained, 2 missing words), F3DLX.Rej 1.23 NONE from the LP 1.23 primary with its own (no LP) Rej word; `derive_c_check.sh`: 72 texts, 45 leave-one-out, 17 mutants, 863 pairs, C = Python. **639** (the LP bit inverted in a derived build) is the dbuild.c mutation |
+| builds: `scripts/build.sh native`, `--tools`, `aarch64` | succeed, no new warning in `src/` |

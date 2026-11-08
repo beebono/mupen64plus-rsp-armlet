@@ -600,7 +600,7 @@ static int cmd_tri_rej1(struct f3dex_task *f, uint32_t w0, uint32_t w1, int two)
     struct hle_task *t = f->t;
     uint32_t cmd[0xb0 / 4];
     uint8_t out[2 * 0xb0];
-    uint16_t frac[8] = { 0, 0, 0, 0, 0, 0, 0, 0 };
+    uint16_t frac[16] = { 0 };
     unsigned j, k, tot = 0;
     if (!two && (f->exact || MUT(632, t->switched, 0))) {          /* (G_TRI1 writes w1's last byte over w0's three in the window: DMEM that is live when the task started with another build) */
         unsigned a = f->L->window + 312 - (unsigned)f->gp;
@@ -1039,7 +1039,8 @@ static int f3dex_run(struct hle_task *t, const struct hle_ucode *u)
             unsigned kd = f.kind[op];
             if (op < 0x40) {                            /* class 0: a DMA into the operand buffer is started for every one of them; then the handler */
                 /* (the DMA is not issued in the lean mode, and the buffer and the output buffer after it are dead: a length that runs on into the live DMEM past the output buffer is not a game's) */
-                if (MUT(227, dma_bytes(w0) > (unsigned)(L->outbuf - L->operand), 0))
+                /* (the 1.x Rej builds: the output buffers behind it are dead between commands up to 0xf48, which no DMA reaches; F3DLP.Rej's G_VTX of up to 62 vertices runs into them) */
+                if (MUT(227, dma_bytes(w0) > (b->rej ? MUT(643, 0xf48u, L->outbuf) : (unsigned)L->outbuf) - L->operand, 0))
                     return hle_decline(t, "class-0 operand longer than the operand buffer");
             }
             switch (kd) {
@@ -1088,9 +1089,9 @@ static int f3dex_run(struct hle_task *t, const struct hle_ucode *u)
             }
             case K1_BRANCHZ: {
                 uint32_t vz;
-                if (b->rej) {                           /* (the screen z of the record w0 >> 10 bytes in: the GBI's 5 v << 12) */
-                    unsigned o = (w0 >> 10) & 0xfff;
-                    if (MUT(620, o % REJ1_VSTRIDE || o >= REJ1_VSTRIDE * REJ1_NSLOTS, 0))
+                if (b->rej) {                           /* (the screen z of the record w0 >> 10 bytes in: the GBI's 5 v << 12; F3DLP.Rej w0 << 3, the address wrapping as DMEM's) */
+                    unsigned rs = rej1_rec(b->rej), o = (b->rej->lp ? MUT(637, w0 << 3, w0 << 2) : w0 >> 10) & 0xfff;
+                    if (MUT(620, o % rs || o >= rs * rej1_nslots(b->rej), 0))
                         return hle_decline(t, "G_BRANCH_Z vertex out of range");
                     vz = hle_dm32(t, b->rej->vbuf + o + 4);
                 } else {
@@ -1109,11 +1110,11 @@ static int f3dex_run(struct hle_task *t, const struct hle_ucode *u)
                     return HLE_DECLINE;
                 break;
             case K1_MODVTX: {
-                if (b->rej) {                           /* the field's offset ^ 0x18 into the record of w0 * 10 (0x10 colour -> +8, 0x14 st -> +12, 0x18 xy -> +0, 0x1c z -> +4) */
+                if (b->rej) {                           /* the field's offset ^ 0x18 into the record of w0 * 10 (F3DLP.Rej * 8; 0x10 colour -> +8, 0x14 st -> +12, 0x18 xy -> +0, 0x1c z -> +4) */
                     unsigned v2 = w0 & 0xfff, fo = (w0 >> 16) & 0xff;
-                    if (MUT(621, (v2 & 1) || v2 >= 2 * REJ1_NSLOTS || fo < 0x10 || fo > 0x1c || (fo & 3), 0))
+                    if (MUT(621, (v2 & 1) || v2 >= 2 * rej1_nslots(b->rej) || fo < 0x10 || fo > 0x1c || (fo & 3), 0))
                         return hle_decline(t, "G_MODIFYVTX out of range");
-                    st32u(t, b->rej->vbuf + 10 * v2 + (fo ^ MUT(622, 0x18, 0x10)), w1);
+                    st32u(t, b->rej->vbuf + rej1_rec(b->rej) / 2 * v2 + (fo ^ MUT(622, 0x18, 0x10)), w1);
                     break;
                 }
                 if (MUT(471, f1_vidx_bad(w0) || ((w0 >> 16) & 0xff) >= 0x28 || ((w0 >> 16) & 3), 0))      /* a vertex outside the 32 slots, an odd number, or a field outside the record: the slot address is read from, and the store goes to, anywhere in DMEM (Toy Story 2 perturbed: 0x800 read the staging area the lean mode does not fill) */
@@ -1166,11 +1167,11 @@ static int f3dex_run(struct hle_task *t, const struct hle_ucode *u)
             case K1_CULLDL: {                               /* culled when some clip-flag bit is set in all the vertices of the range */
                 uint32_t acc = f.fx->reject_mask;
                 unsigned guard = 0;
-                if (b->rej) {                               /* the 1.x Rej builds: when the x of every vertex from w0's to w1's is the mark (the numbers times 10 are byte offsets) */
-                    uint32_t pa = (w0 * 10) & 0xffff, pb = w1 * 10, p;
-                    if (MUT(623, pa % REJ1_VSTRIDE || pb % REJ1_VSTRIDE || pb < pa || pb >= REJ1_VSTRIDE * REJ1_NSLOTS, 0))
+                if (b->rej) {                               /* the 1.x Rej builds: when the x of every vertex from w0's to w1's is the mark (the numbers times 10, F3DLP.Rej 8, are byte offsets) */
+                    uint32_t rs = rej1_rec(b->rej), pa = (w0 * (rs / 2)) & 0xffff, pb = w1 * MUT(638, rs / 2, 10), p;
+                    if (MUT(623, pa % rs || pb % rs || pb < pa || pb >= rs * rej1_nslots(b->rej), 0))
                         return hle_decline(t, "G_CULLDL range unusual");
-                    for (p = pa; acc && p <= pb; p += REJ1_VSTRIDE)
+                    for (p = pa; acc && p <= pb; p += rs)
                         if (hle_dm16(t, b->rej->vbuf + p) != MUT(624, REJ1_MARK_X, 0x7ffc))
                             acc = 0;
                 } else if (b->culldl_off) {                        /* byte offsets into the vertex buffer, the last vertex excluded */
@@ -1367,6 +1368,16 @@ static const struct f3dex1_build l_b_lxrej123a = { .fx = { 0x7070, 0, 1, &rej1_l
 UR(l_lxrej123, 0x4610a50be23b3d62ull, "F3DLX.Rej 1.23 (Bust-A-Move 2, Bust-A-Move '99, Puzzle Bobble 64, Mortal Kombat 4, Dezaemon 3D)", l_b_lxrej123);
 UR(l_lxrej123a, 0x7b02bbdc4199a4baull, "F3DLX.Rej 1.23 (WCW vs. nWo World Tour, Virtual Pro Wrestling 64, Hiryuu no Ken Twin)", l_b_lxrej123a);
 UR(l_lxrej121, 0x3c51d836d337efabull, "F3DLX.Rej 1.21 (Air Boarder 64, ISS 64, Mortal Kombat Mythologies, Fighters Destiny, SimCity 2000)", l_b_lxrej121);
+/* F3DLP.Rej (docs/ucode-rej.md section 12): F3DLX.Rej with 16-byte records and the texture without perspective; the handlers below the vertex code 8 bytes (1.23: 0x10) lower than F3DLX.Rej 1.21's.
+ * The ids are those of the task texts; the load keys are the ids the games that load them show (e736.., 3f45..) */
+static const struct f3dex1_build l_b_lprej123 = { .fx = { 0x7070, 0, 1, &rej1_lay_123 },                 /* F3DLP.Rej 1.23 */
+    .pc = { 0x058, 0x09c, 0x6a8, 0x824, 0x394, 0x834, 0xf80, 0x2c8, 0xa28, 0x304, 0x324, 0x31c, 0, 0, 0x2f0, 0x2e0, 0x2a8, 0x248, 0x240, 0x21c, 0x204, 0x1d0, 0x284, 0x1c0 },
+    .culldl_off = 0, .load_key = 0x3f452a886ec5e6aeull, .rej = &rej1_lp123 };
+static const struct f3dex1_build l_b_lprej121 = { .fx = { 0x7070, 0, 1, &rej1_lay_123 },                 /* F3DLP.Rej 1.21 */
+    .pc = { 0x058, 0x09c, 0x6b0, 0x82c, 0x39c, 0x83c, 0xf80, 0x2d0, 0xa30, 0x30c, 0x32c, 0x324, 0, 0, 0x2f8, 0x2e8, 0x2b0, 0x250, 0x248, 0x224, 0x20c, 0x1d8, 0x28c, 0x1c8 },
+    .culldl_off = 0, .load_key = 0xe736939ad4e44309ull, .rej = &rej1_lp121 };
+UR(l_lprej123, 0xcaa044a03073af58ull, "F3DLP.Rej 1.23 (Quake II; loaded by All-Star Baseball 99, ISS '98, World Soccer France '98)", l_b_lprej123);
+UR(l_lprej121, 0x9dac48512ee7d3e3ull, "F3DLP.Rej 1.21 (Ken Griffey Jr.'s Baseball, J.League Eleven Beat 1997; loaded by Bio F.R.E.A.K.S., Fighting Force 64, NFL QBC 98, Madden)", l_b_lprej121);
 
 /* ---- S2DEX 1.06 / 1.07 (hle_s2dex1.h; docs/ucode-s2dex1.md) ------------------------------------------------------------------------------------------------------------------------------------------ */
 static const struct f3dex_layout l_lay_s2d1 = { .half1 = 0xe0, .omh = 0xc8, .oml = 0xcc, .rdp_wp = 0xd4, .depth = 0xd0, .fifo = 0xfe8, .segs = 0xe8, .retstack = 0x128, .window = 0x3c0, .outbuf = 0x588 };

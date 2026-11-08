@@ -21,7 +21,7 @@ extern "C" {
 #endif
 
 /* the record of the 1.x texts: sx +0, sy +2, sz +4 (integer) +6 (fraction), r g b a +8, s t +12, 1/w +16 / +18 */
-enum { REJ1_VSTRIDE = 20, REJ1_NSLOTS = 64, REJ1_MARK_X = 0x7fff };
+enum { REJ1_VSTRIDE = 20, REJ1_VSTRIDE_LP = 16, REJ1_NSLOTS = 64, REJ1_NSLOTS_LP = 80, REJ1_MARK_X = 0x7fff };      /* (F3DLP.Rej: the record without 1/w) */
 
 /* what the vertex code reads besides the F3DEX 1.x state: the table the screen x and z are raised to (tab[0] for a vertex outside the guard band, tab[1] for one inside: 0x7fff, 0x8000) and the mask of the
  * rounded screen y (v30 lane 5: 0xfffc) */

@@ -53,7 +53,7 @@ void dbuild_rec_of(const struct hle_ucode *u, struct derive_rec *r)
         r->non = b1->fx.non;
         r->dlx = b1->fx.dlx;
         r->culldl_off = b1->culldl_off;
-        r->rej1 = b1->rej ? (uint8_t)(DERIVE_REJ1 | (b1->rej->texf0 ? DERIVE_REJ1_TEXF0 : 0) | (b1->rej->flat1 ? DERIVE_REJ1_FLAT1 : 0)) : 0;
+        r->rej1 = b1->rej ? (uint8_t)(DERIVE_REJ1 | (b1->rej->texf0 ? DERIVE_REJ1_TEXF0 : 0) | (b1->rej->flat1 ? DERIVE_REJ1_FLAT1 : 0) | (b1->rej->lp ? DERIVE_REJ1_LP : 0)) : 0;
         r->load_key = b1->load_key;
         return;
     }
@@ -209,6 +209,7 @@ static int make_f1(struct dbuild *d, uint64_t text_id, const struct derive_resul
         d->rej1 = *pr1;
         d->rej1.texf0 = MUT(629, (rec->rej1 & DERIVE_REJ1_TEXF0) != 0, (rec->rej1 & DERIVE_REJ1_TEXF0) == 0);
         d->rej1.flat1 = MUT(630, (rec->rej1 & DERIVE_REJ1_FLAT1) != 0, (rec->rej1 & DERIVE_REJ1_FLAT1) == 0);
+        d->rej1.lp = MUT(639, (rec->rej1 & DERIVE_REJ1_LP) != 0, (rec->rej1 & DERIVE_REJ1_LP) == 0);       /* (the text's, not the primary's: an F3DLX.Rej text can take an F3DLP.Rej primary) */
         d->b1.rej = MUT(626, &d->rej1, NULL);
     }
     snprintf(d->name, sizeof(d->name), "derived %s (%016" PRIx64 ", from %s)", derive_verdict_name(r->verdict), text_id, pr->name);

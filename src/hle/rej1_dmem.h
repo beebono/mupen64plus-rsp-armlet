@@ -1,7 +1,8 @@
 /*
  * arMLEt - rej1_dmem.h: the 1.x Rej G_VTX and triangles on a DMEM image (f3dex.c and tools/hle/test_rej1.c)
  *
- * The records are 20 bytes (rej1_fx.h) from `vbuf`; a vertex number in a command is twice the slot (the microcode turns every one into an address arithmetically: vbuf + 10 n). The DMEM layout is the
+ * The records are 20 bytes (rej1_fx.h; F3DLP.Rej's 16: no 1/w) from `vbuf`; a vertex number in a command is twice the slot (the microcode turns every one into an address arithmetically: vbuf + 10 n, F3DLP.Rej
+ * vbuf + 8 n). The DMEM layout is the
  * F3DEX 1.x one of the build (struct f3dex_layout) with the Rej words of struct f3dex_rej1 (f3dex_bld.h). docs/ucode-rej.md section 11.
  *
  * Copyright (C) 2026 arMLEt contributors
@@ -35,8 +36,16 @@ static const struct f3dex_rej1 rej1_123 __attribute__((unused)) = { .vbuf = 0x44
  * load of the top vertex's texture fractions */
 static const struct f3dex_rej1 rej1_121 __attribute__((unused)) = { .vbuf = 0x440, .tab = 0xb0, .ymask = 0x4a, .bufsel = 0x15a, .buftog = 0x160, .texf0 = 1, .flat1 = 1 };
 static const struct f3dex_rej1 rej1_123a __attribute__((unused)) = { .vbuf = 0x440, .tab = 0xb0, .ymask = 0x4a, .bufsel = 0x15a, .buftog = 0x160, .texf0 = 1 };
+/* F3DLP.Rej 1.23 (Quake II; loaded by All-Star Baseball 99, ISS '98, World Soccer France '98) and 1.21 (Ken Griffey Jr.'s Baseball, J.League Eleven Beat 1997; loaded by Bio F.R.E.A.K.S., Fighting Force 64,
+ * NFL Quarterback Club 98, Madden): F3DLX.Rej's layout and code with 16-byte records and the texture lanes without perspective (docs/ucode-rej.md section 12); 1.21 with flat1; texf0 as
+ * the derivation reads it (no text loads the fractions; REJ_X1LP does not look at it) */
+static const struct f3dex_rej1 rej1_lp123 __attribute__((unused)) = { .vbuf = 0x440, .tab = 0xb0, .ymask = 0x4a, .bufsel = 0x15a, .buftog = 0x160, .texf0 = 1, .lp = 1 };
+static const struct f3dex_rej1 rej1_lp121 __attribute__((unused)) = { .vbuf = 0x440, .tab = 0xb0, .ymask = 0x4a, .bufsel = 0x15a, .buftog = 0x160, .texf0 = 1, .lp = 1, .flat1 = 1 };
 
-static inline void rej1_ld_vtx(const uint32_t *dm, unsigned a, struct rej_vtx *v)
+static inline unsigned rej1_rec(const struct f3dex_rej1 *r) { return r->lp ? REJ1_VSTRIDE_LP : REJ1_VSTRIDE; }        /* bytes per slot (a vertex number is twice the slot: half of it per number) */
+static inline unsigned rej1_nslots(const struct f3dex_rej1 *r) { return r->lp ? MUT(642, REJ1_NSLOTS_LP, REJ1_NSLOTS) : REJ1_NSLOTS; }  /* (F3DLP.Rej: the 16-byte records fill the same space up to the window: 80) */
+
+static inline void rej1_ld_vtx(const uint32_t *dm, unsigned a, struct rej_vtx *v, int lp)
 {
     v->sx = (int16_t)xd16(dm, a);
     v->sy = (int16_t)xd16(dm, a + 2);
@@ -46,10 +55,10 @@ static inline void rej1_ld_vtx(const uint32_t *dm, unsigned a, struct rej_vtx *v
         v->col[k] = xd8(dm, a + 8 + k);
     v->s = (int16_t)xd16(dm, a + 12);
     v->t = (int16_t)xd16(dm, a + 14);
-    v->rwi = (int16_t)xd16(dm, a + 16);
-    v->rwf = xd16(dm, a + 18);
+    v->rwi = lp ? 0 : (int16_t)xd16(dm, a + 16);
+    v->rwf = lp ? 0 : xd16(dm, a + 18);
 }
-static inline void rej1_st_vtx(uint32_t *dm, unsigned a, const struct rej_vtx *v)
+static inline void rej1_st_vtx(uint32_t *dm, unsigned a, const struct rej_vtx *v, int lp)
 {
     xs16(dm, a, (uint16_t)v->sx);
     xs16(dm, a + 2, (uint16_t)v->sy);
@@ -59,8 +68,10 @@ static inline void rej1_st_vtx(uint32_t *dm, unsigned a, const struct rej_vtx *v
         xs8(dm, a + 8 + k, v->col[k]);
     xs16(dm, a + 12, (uint16_t)v->s);
     xs16(dm, a + 14, (uint16_t)v->t);
-    xs16(dm, a + 16, (uint16_t)v->rwi);
-    xs16(dm, a + 18, v->rwf);
+    if (MUT(635, !lp, 1)) {
+        xs16(dm, a + 16, (uint16_t)v->rwi);
+        xs16(dm, a + 18, v->rwf);
+    }
 }
 
 /* G_VTX (w0: v0 * 2 in bits 16..23, the count in bits 10..15; 0 is one vertex) of the input vertices at byte address a of img (RDRAM when rdram). The lights are transformed first when the word
@@ -74,7 +85,7 @@ static inline const char *rej1_vtx_dmem(uint32_t *dm, const struct f3dex_build *
     struct rej1_vparm p;
     struct f3dex_vin in[REJ1_NSLOTS];
     struct rej_vtx out[REJ1_NSLOTS];
-    if (MUT(609, (v0x2 & 1) || (v0x2 >> 1) + cnt > REJ1_NSLOTS, 0))
+    if (MUT(609, (v0x2 & 1) || (v0x2 >> 1) + cnt > rej1_nslots(r), 0))
         return "G_VTX slot range unusual";
     if (geom & ~F3DEX_G_DEFINED)
         return "geometry mode bits the build does not define";
@@ -108,7 +119,7 @@ static inline const char *rej1_vtx_dmem(uint32_t *dm, const struct f3dex_build *
         return "G_VTX: state outside what the native code supports";
     *marked = 0;
     for (i = 0; i < cnt; i++) {
-        rej1_st_vtx(dm, r->vbuf + REJ1_VSTRIDE * ((v0x2 >> 1) + i), &out[i]);
+        rej1_st_vtx(dm, r->vbuf + rej1_rec(r) * ((v0x2 >> 1) + i), &out[i], r->lp);
         *marked |= out[i].sx == REJ1_MARK_X;
     }
     return NULL;
@@ -119,7 +130,7 @@ static inline const char *rej1_vtx_dmem(uint32_t *dm, const struct f3dex_build *
  * when the triangle is drawn (rej_tri_in.x1_frac). Returns FX2_TRI_DRAW (cmd, *len: the RDP command, host words of big-endian words), FX2_TRI_SKIP (marked, culled,
  * no area), or -1: declined (*why). The decisions: a vertex whose x is 0x7fff takes the triangle with it; G_CULL_BACK (0x2000) draws only a negative cross product, else any nonzero one (the code has no
  * test of G_CULL_FRONT). The command's id is the low byte of the geometry mode | 0xcc (always shaded), its tile byte DMEM 0x122. */
-static inline int rej1_tri_dmem(const uint32_t *dm, const struct f3dex_build *fx, const struct f3dex_rej1 *r, unsigned b0, unsigned b1, unsigned b2, unsigned bflat, uint16_t frac[8], uint32_t *cmd,
+static inline int rej1_tri_dmem(const uint32_t *dm, const struct f3dex_build *fx, const struct f3dex_rej1 *r, unsigned b0, unsigned b1, unsigned b2, unsigned bflat, uint16_t frac[16], uint32_t *cmd,
                                 unsigned *len, const char **why)
 {
     const struct f3dex_layout *L = f3dex_lay(fx);
@@ -128,25 +139,26 @@ static inline int rej1_tri_dmem(const uint32_t *dm, const struct f3dex_build *fx
     struct rej_vtx v[3], vf;
     struct rej_tri_in ti;
     for (k = 0; k < 3; k++) {
-        if (MUT(610, (bs[k] & 1) || bs[k] >= 2 * REJ1_NSLOTS, 0)) {
+        if (MUT(610, (bs[k] & 1) || bs[k] >= 2 * rej1_nslots(r), 0)) {
             *why = "G_TRI: vertex number outside the slots";
             return -1;
         }
-        rej1_ld_vtx(dm, r->vbuf + 10u * bs[k], &v[k]);
+        rej1_ld_vtx(dm, r->vbuf + rej1_rec(r) / 2 * bs[k], &v[k], r->lp);
         ti.v[k] = &v[k];
     }
     if (g & ~F3DEX_G_DEFINED) {
         *why = "geometry mode bits the build does not define";
         return -1;
     }
-    rej1_ld_vtx(dm, r->vbuf + 10u * bflat, &vf);         /* (a number the triangles of the command have: in the slots) */
+    rej1_ld_vtx(dm, r->vbuf + rej1_rec(r) / 2 * bflat, &vf, r->lp);         /* (a number the triangles of the command have: in the slots) */
     ti.x1_flat = &vf;
     ti.g = g | 4;
     ti.tex = g & 2;
     ti.tile = xd8(dm, L->texture + 2);
     ti.pass_neg = 1;
     ti.pass_pos = !(g & MUT(611, F3DEX_G_CULL_BACK, F3DEX_G_CULL_FRONT));
-    ti.flags = REJ_YQ | REJ_X1 | (r->texf0 ? REJ_X1T0 : 0);
+    ti.flags = REJ_YQ | REJ_X1 | (r->texf0 ? REJ_X1T0 : 0) | (MUT(636, r->lp, 0) ? REJ_X1LP : 0);
+    ti.x1_w = (int16_t)xd16(dm, 0x40);
     ti.rcp_k = 8;
     ti.dx_k = 0x4000;
     memcpy(ti.x1_frac, frac, sizeof ti.x1_frac);
